@@ -1,6 +1,6 @@
-
 --extra-index-url https://vnstocks.com/api/packages
+
 streamlit>=1.40.0
 pandas>=2.2.0
 numpy>=1.26.0
-vnstock==5.0.1
+vnstock==5.2.2
