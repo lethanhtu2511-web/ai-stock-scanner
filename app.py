@@ -1,155 +1,163 @@
 
 import streamlit as st
 import pandas as pd
+from scanner import analyze_stock
 
 st.set_page_config(
-    page_title="AI Stock Scanner",
+    page_title="AI STOCK SCANNER",
     page_icon="📈",
     layout="wide"
 )
 
 st.title("📈 AI STOCK SCANNER")
-st.caption("Vietnam Stock Market | Swing Trading")
+st.caption("Vietnam Stock Market | Swing Trading 2–5 sessions")
 
 st.info(
-    "Phiên bản 1.0: Bộ máy phân tích kỹ thuật. "
-    "Dữ liệu realtime sẽ được kết nối ở bước tiếp theo."
+    "Phiên bản 2.0: Đã tích hợp bộ máy phân tích kỹ thuật. "
+    "Hiện tại sử dụng dữ liệu CSV, chưa kết nối giá thị trường trực tiếp."
 )
 
-st.sidebar.header("⚙️ Cấu hình")
-st.sidebar.write("Chiến lược: Lướt sóng")
-st.sidebar.write("Khung phân tích: 5 phút / 1 ngày")
-st.sidebar.write("Thị trường: HOSE, HNX, UPCOM")
+# Configuration
+st.sidebar.header("⚙️ Cấu hình giao dịch")
+capital = st.sidebar.number_input(
+    "Vốn đầu tư (VNĐ)",
+    min_value=1000000,
+    value=10000000,
+    step=1000000
+)
 
-st.header("📊 Phân tích cổ phiếu")
+risk_percent = st.sidebar.selectbox(
+    "Rủi ro mỗi giao dịch",
+    options=[0.005, 0.01, 0.02],
+    index=2,
+    format_func=lambda x: f"{x * 100:.1f}%"
+)
+
+st.sidebar.write("Thị trường: HOSE và HNX")
+st.sidebar.write("Thời gian nắm giữ: 2–5 phiên")
+st.sidebar.write("Điểm BUY tối thiểu: 85/100")
+
+st.divider()
+
+st.subheader("🔎 Phân tích cổ phiếu")
+
+ticker = st.text_input(
+    "Mã cổ phiếu",
+    placeholder="Ví dụ: FPT, HPG, SSI..."
+).strip().upper()
 
 uploaded_file = st.file_uploader(
-    "Tải dữ liệu cổ phiếu CSV lên để kiểm tra",
+    "Tải dữ liệu lịch sử cổ phiếu dạng CSV",
     type=["csv"]
 )
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+st.caption(
+    "CSV cần có các cột: Date, Open, High, Low, Close, Volume. "
+    "Cần tối thiểu 200 phiên dữ liệu."
+)
 
-    avg_gain = gain.ewm(
-        alpha=1 / period, adjust=False
-    ).mean()
-
-    avg_loss = loss.ewm(
-        alpha=1 / period, adjust=False
-    ).mean()
-
-    rs = avg_gain / avg_loss.replace(0, 1e-10)
-    return 100 - (100 / (1 + rs))
-
-
-def analyze_stock(df):
-    df = df.copy()
-
-    required = ["Close", "Volume"]
-    if not all(col in df.columns for col in required):
-        raise ValueError("Thiếu cột Close hoặc Volume")
-
-    for col in ["Close", "Volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=["Close", "Volume"])
-    df = df.sort_values("Date") if "Date" in df.columns else df
-
-    if len(df) < 50:
-        raise ValueError("Cần ít nhất 50 phiên dữ liệu")
-
-    df["MA20"] = df["Close"].rolling(20).mean()
-    df["MA50"] = df["Close"].rolling(50).mean()
-    df["RSI"] = calculate_rsi(df["Close"])
-
-    ema12 = df["Close"].ewm(span=12, adjust=False).mean()
-    ema26 = df["Close"].ewm(span=26, adjust=False).mean()
-
-    df["MACD"] = ema12 - ema26
-    df["Signal"] = df["MACD"].ewm(
-        span=9, adjust=False
-    ).mean()
-
-    df["Volume_MA20"] = df["Volume"].rolling(20).mean()
-
-    last = df.iloc[-1]
-    score = 0
-
-    if last["Close"] > last["MA20"]:
-        score += 10
-    if last["MA20"] > last["MA50"]:
-        score += 10
-    if 50 <= last["RSI"] <= 70:
-        score += 15
-    if last["MACD"] > last["Signal"]:
-        score += 15
-    if last["Volume"] > last["Volume_MA20"]:
-        score += 20
-
-    if len(df) >= 21:
-        previous_high = df["Close"].iloc[-21:-1].max()
-        if last["Close"] > previous_high:
-            score += 20
-
-    if last["RSI"] > 75:
-        score -= 10
-
-    score = max(0, min(100, score))
-
-    return df, score
-
-
-if uploaded_file:
+if uploaded_file is not None:
     try:
-        data = pd.read_csv(uploaded_file)
+        df = pd.read_csv(uploaded_file)
 
-        if "Date" in data.columns:
-            data["Date"] = pd.to_datetime(
-                data["Date"], errors="coerce"
+        st.write("### Kiểm tra dữ liệu")
+        st.write(f"Số dòng dữ liệu: {len(df)}")
+
+        with st.expander("Xem dữ liệu"):
+            st.dataframe(df.tail(10), use_container_width=True)
+
+        if st.button("🚀 PHÂN TÍCH CỔ PHIẾU", use_container_width=True):
+            with st.spinner("Đang phân tích dữ liệu..."):
+                result = analyze_stock(
+                    df,
+                    capital=capital,
+                    risk_percent=risk_percent
+                )
+
+            st.divider()
+            st.subheader(
+                f"📊 KẾT QUẢ PHÂN TÍCH: {ticker or 'CHƯA NHẬP MÃ'}"
             )
-            data = data.dropna(subset=["Date"])
 
-        result, score = analyze_stock(data)
-        latest = result.iloc[-1]
+            signal = result.get("signal", "REJECT")
 
-        col1, col2, col3 = st.columns(3)
+            if signal == "BUY":
+                st.success("🟢 TÍN HIỆU: BUY")
+            elif signal == "WAIT":
+                st.warning("🟡 TÍN HIỆU: WAIT")
+            else:
+                st.error("🔴 TÍN HIỆU: REJECT")
 
-        col1.metric("Giá đóng cửa", f"{latest['Close']:,.2f}")
-        col2.metric("Điểm Scanner", f"{score}/100")
-        col3.metric("RSI", f"{latest['RSI']:.1f}")
+            if "score" in result:
+                st.metric("Điểm kỹ thuật", f"{result['score']}/100")
 
-        st.subheader("📈 Đánh giá tín hiệu")
+            if "reason" in result:
+                st.error(result["reason"])
 
-        if score >= 75:
-            st.success("CỔ PHIẾU ĐÁNG THEO DÕI")
-        elif score >= 60:
-            st.warning("CHỜ TÍN HIỆU XÁC NHẬN")
-        else:
-            st.error("CHƯA ƯU TIÊN")
+            if "message" in result:
+                st.write(result["message"])
 
-        st.line_chart(
-            result.set_index("Date")[["Close", "MA20", "MA50"]]
-            if "Date" in result.columns
-            else result[["Close", "MA20", "MA50"]]
-        )
+            if "price" in result:
+                col1, col2 = st.columns(2)
+                col1.metric(
+                    "Giá phân tích",
+                    f"{result['price']:,.0f} VNĐ"
+                )
+                col2.metric(
+                    "RSI",
+                    result.get("rsi", "N/A")
+                )
 
-        st.subheader("Thông số kỹ thuật")
-        st.dataframe(result.tail(10), use_container_width=True)
+                col3, col4 = st.columns(2)
+                col3.metric(
+                    "Giá cắt lỗ",
+                    f"{result['stop_loss']:,.0f} VNĐ"
+                )
+                col4.metric(
+                    "Giá mục tiêu",
+                    f"{result['target_price']:,.0f} VNĐ"
+                )
 
-    except Exception as e:
-        st.error(f"Không thể phân tích dữ liệu: {e}")
+                col5, col6 = st.columns(2)
+                col5.metric(
+                    "Số lượng cổ phiếu",
+                    f"{result['quantity']:,}"
+                )
+                col6.metric(
+                    "Vốn sử dụng",
+                    f"{result['capital_used']:,.0f} VNĐ"
+                )
+
+                st.write(
+                    "Tỷ lệ lợi nhuận/rủi ro:",
+                    result["reward_risk"]
+                )
+                st.write(
+                    "Rủi ro dự kiến:",
+                    f"{result['risk_money']:,.0f} VNĐ"
+                )
+                st.write(
+                    "Ngày dữ liệu:",
+                    result["data_date"]
+                )
+
+            if result.get("reasons"):
+                st.write("### Lý do phân tích")
+                for reason in result["reasons"]:
+                    st.write(f"✅ {reason}")
+
+    except Exception as error:
+        st.error(f"Lỗi dữ liệu: {error}")
 
 else:
     st.warning(
         "Chưa có dữ liệu cổ phiếu. "
-        "Hệ thống chưa đưa ra khuyến nghị mua bán."
+        "Hệ thống chưa thể đưa ra khuyến nghị mua bán."
     )
-    st.subheader("Các chức năng đang xây dựng")
-    st.write("🔄 Kết nối dữ liệu trực tuyến")
-    st.write("🔍 Quét cổ phiếu toàn thị trường")
-    st.write("🏆 Xếp hạng cổ phiếu theo điểm")
-    st.write("🎯 Xác định vùng mua, chốt lời và cắt lỗ")
-    st.write("📱 Giao diện tối ưu cho điện thoại")
+
+st.divider()
+
+st.caption(
+    "AI STOCK SCANNER | Công cụ hỗ trợ phân tích, "
+    "không tự động đặt lệnh và không đảm bảo lợi nhuận."
+)
