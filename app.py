@@ -1,8 +1,11 @@
+
 import streamlit as st
 import pandas as pd
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from scanner import analyze_stock
-from data_provider import fetch_stock_history
+from data_provider import fetch_stock_history, fetch_stock_quote
 
 
 # =====================================
@@ -23,13 +26,14 @@ st.caption(
 )
 
 st.info(
-    "Dữ liệu sử dụng là dữ liệu giá lịch sử theo phiên "
-    "từ Vnstock, không phải giá realtime."
+    "Dữ liệu phân tích kỹ thuật sử dụng nến ngày. "
+    "Bảng giá trong phiên được lấy riêng từ nguồn KBS "
+    "khi bạn thực hiện phân tích."
 )
 
 
 # =====================================
-# LẤY DỮ LIỆU VÀ LƯU CACHE
+# LẤY DỮ LIỆU LỊCH SỬ
 # =====================================
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -93,6 +97,20 @@ with st.form("stock_analysis_form"):
 
 
 # =====================================
+# HÀM HIỂN THỊ GIÁ
+# =====================================
+
+def show_price(label, value):
+    if value is None:
+        return "—"
+
+    try:
+        return f"{float(value):,.0f} đ"
+    except (ValueError, TypeError):
+        return "—"
+
+
+# =====================================
 # THỰC HIỆN PHÂN TÍCH
 # =====================================
 
@@ -112,6 +130,7 @@ if submitted:
                 f"Đang lấy dữ liệu và phân tích {symbol}..."
             ):
 
+                # Lấy nến ngày để phân tích kỹ thuật
                 df = get_stock_data(symbol)
 
                 result = analyze_stock(
@@ -123,6 +142,106 @@ if submitted:
             st.divider()
 
             st.subheader(f"Kết quả phân tích: {symbol}")
+
+            # =====================================
+            # BẢNG GIÁ TRONG PHIÊN
+            # =====================================
+
+            st.subheader("📡 Bảng giá mới nhất")
+
+            try:
+
+                with st.spinner("Đang lấy bảng giá KBS..."):
+
+                    quote = fetch_stock_quote(symbol)
+
+                current_time = datetime.now(
+                    ZoneInfo("Asia/Ho_Chi_Minh")
+                ).strftime("%H:%M:%S %d/%m/%Y")
+
+                st.caption(
+                    f"Nguồn: {quote['source']} | "
+                    f"Thời điểm truy vấn: {current_time}"
+                )
+
+                q1, q2, q3 = st.columns(3)
+
+                q1.metric(
+                    "Giá khớp gần nhất",
+                    show_price("Giá", quote["last_price"])
+                )
+
+                q2.metric(
+                    "Giá tham chiếu",
+                    show_price("Tham chiếu", quote["reference_price"])
+                )
+
+                q3.metric(
+                    "Giá mở cửa",
+                    show_price("Mở cửa", quote["open_price"])
+                )
+
+                q4, q5, q6 = st.columns(3)
+
+                q4.metric(
+                    "Giá trần",
+                    show_price("Trần", quote["ceiling_price"])
+                )
+
+                q5.metric(
+                    "Giá sàn",
+                    show_price("Sàn", quote["floor_price"])
+                )
+
+                q6.metric(
+                    "Sàn giao dịch",
+                    quote["exchange"] or "Chưa xác định"
+                )
+
+                st.write("**Độ sâu bảng giá cấp 1**")
+
+                bid, ask = st.columns(2)
+
+                bid.metric(
+                    "Giá mua tốt nhất",
+                    show_price("Mua 1", quote["bid_price_1"])
+                )
+
+                bid.caption(
+                    f"Khối lượng mua: "
+                    f"{show_price('KL', quote['bid_vol_1'])}"
+                )
+
+                ask.metric(
+                    "Giá bán tốt nhất",
+                    show_price("Bán 1", quote["ask_price_1"])
+                )
+
+                ask.caption(
+                    f"Khối lượng bán: "
+                    f"{show_price('KL', quote['ask_vol_1'])}"
+                )
+
+                st.caption(
+                    "Đây là dữ liệu bảng giá tại thời điểm truy vấn, "
+                    "không phải luồng giá đẩy liên tục."
+                )
+
+            except Exception as quote_error:
+
+                st.warning(
+                    f"Chưa lấy được bảng giá trong phiên: {quote_error}"
+                )
+
+                st.caption(
+                    "Phần phân tích kỹ thuật vẫn sử dụng dữ liệu lịch sử."
+                )
+
+            # =====================================
+            # TÍN HIỆU
+            # =====================================
+
+            st.divider()
 
             signal = result["signal"]
 
@@ -140,9 +259,9 @@ if submitted:
 
             st.write(result["message"])
 
-            # -----------------------------
+            # =====================================
             # CÁC CHỈ SỐ CHÍNH
-            # -----------------------------
+            # =====================================
 
             col1, col2, col3 = st.columns(3)
 
@@ -178,9 +297,9 @@ if submitted:
                 f'{result["reward_risk"]:.2f}:1'
             )
 
-            # -----------------------------
+            # =====================================
             # QUẢN TRỊ VỐN
-            # -----------------------------
+            # =====================================
 
             st.subheader("💰 Quản trị vốn")
 
@@ -207,9 +326,9 @@ if submitted:
                 "trượt giá và thanh khoản."
             )
 
-            # -----------------------------
+            # =====================================
             # LÝ DO CHẤM ĐIỂM
-            # -----------------------------
+            # =====================================
 
             st.subheader("📊 Các yếu tố kỹ thuật")
 
@@ -231,9 +350,9 @@ if submitted:
                 f'**Ngày dữ liệu cuối:** {result["data_date"]}'
             )
 
-            # -----------------------------
+            # =====================================
             # DỮ LIỆU GỐC
-            # -----------------------------
+            # =====================================
 
             with st.expander("Xem dữ liệu lịch sử"):
 
