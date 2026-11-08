@@ -5,22 +5,49 @@ import pandas as pd
 from vnstock import Market
 
 
-# Giới hạn tốc độ gọi API
-_API_INTERVAL_SECONDS = 7.5
+# =====================================
+# CẤU HÌNH GIỚI HẠN API VÀ CACHE
+# =====================================
+
+API_INTERVAL_SECONDS = 10
+HISTORY_CACHE_SECONDS = 3600
+QUOTE_CACHE_SECONDS = 60
+
 _LAST_API_CALL = 0.0
+_HISTORY_CACHE = {}
+_QUOTE_CACHE = {}
 
 
 def wait_api_slot():
     global _LAST_API_CALL
 
     now = time.monotonic()
-    remaining = _API_INTERVAL_SECONDS - (now - _LAST_API_CALL)
+    remaining = API_INTERVAL_SECONDS - (now - _LAST_API_CALL)
 
     if remaining > 0:
         time.sleep(remaining)
 
     _LAST_API_CALL = time.monotonic()
 
+
+def is_rate_limit_error(exc):
+    message = str(exc).lower()
+
+    keywords = [
+        "hết hạn mức",
+        "rate limit",
+        "too many requests",
+        "10/10",
+        "quota exceeded",
+        "limit exceeded"
+    ]
+
+    return any(word in message for word in keywords)
+
+
+# =====================================
+# CHUẨN HÓA MÃ CỔ PHIẾU
+# =====================================
 
 def normalize_symbol(symbol):
     symbol = str(symbol).strip().upper()
@@ -30,6 +57,10 @@ def normalize_symbol(symbol):
 
     return symbol
 
+
+# =====================================
+# CHUẨN HÓA DỮ LIỆU LỊCH SỬ
+# =====================================
 
 def normalize_history(raw):
     if raw is None or raw.empty:
@@ -56,6 +87,7 @@ def normalize_history(raw):
         raise ValueError(f"Thiếu cột dữ liệu: {missing}")
 
     df = df[required].copy()
+
     df["date"] = pd.to_datetime(
         df["date"], errors="coerce"
     )
@@ -68,7 +100,7 @@ def normalize_history(raw):
     df = df.dropna().sort_values("date")
     df = df.drop_duplicates("date", keep="last")
 
-    # Vnstock thường trả giá OHLC theo nghìn đồng.
+    # Vnstock thường trả giá theo nghìn đồng.
     if not df.empty and df["close"].median() < 1000:
         df[["open", "high", "low", "close"]] *= 1000
 
@@ -99,41 +131,93 @@ def normalize_history(raw):
     return df.reset_index(drop=True)
 
 
+# =====================================
+# LẤY DỮ LIỆU LỊCH SỬ
+# =====================================
+
 def fetch_stock_history(symbol, length=260):
     symbol = normalize_symbol(symbol)
-    errors = []
+    length = int(length)
 
-    for source in ["kbs", "vci"]:
-        try:
-            wait_api_slot()
+    cache_key = (symbol, length)
+    now = time.monotonic()
 
-            raw = Market().equity(symbol).ohlcv(
-                length=int(length),
-                interval="1D",
-                source=source
+    cached = _HISTORY_CACHE.get(cache_key)
+
+    if cached:
+        saved_time, saved_df = cached
+
+        if now - saved_time < HISTORY_CACHE_SECONDS:
+            return saved_df.copy()
+
+        del _HISTORY_CACHE[cache_key]
+
+    try:
+        wait_api_slot()
+
+        raw = Market().equity(symbol).ohlcv(
+            length=length,
+            interval="1D",
+            source="kbs"
+        )
+
+        df = normalize_history(raw)
+
+        if len(df) < 200:
+            raise ValueError(
+                f"Chỉ có {len(df)} phiên dữ liệu."
             )
 
-            df = normalize_history(raw)
+        df.attrs["source"] = "KBS"
 
-            if len(df) < 200:
-                raise ValueError(
-                    f"Chỉ có {len(df)} phiên dữ liệu."
-                )
+        # Chỉ lưu dữ liệu lấy thành công.
+        _HISTORY_CACHE[cache_key] = (
+            time.monotonic(),
+            df.copy()
+        )
 
-            df.attrs["source"] = source.upper()
-            return df
+        # Giới hạn dung lượng cache.
+        if len(_HISTORY_CACHE) > 150:
+            oldest_key = min(
+                _HISTORY_CACHE,
+                key=lambda key: _HISTORY_CACHE[key][0]
+            )
+            del _HISTORY_CACHE[oldest_key]
 
-        except Exception as exc:
-            errors.append(f"{source}: {exc}")
+        return df
 
-    raise RuntimeError(
-        f"Không lấy được lịch sử {symbol}: "
-        + " | ".join(errors)
-    )
+    except Exception as exc:
+        if is_rate_limit_error(exc):
+            raise RuntimeError(
+                "KBS đã hết hạn mức API. "
+                "Ứng dụng tạm dừng gọi nguồn khác để tránh "
+                "tiếp tục vượt hạn mức. Hãy chờ hạn mức được "
+                "khôi phục rồi thử lại."
+            ) from exc
 
+        raise RuntimeError(
+            f"Không lấy được lịch sử {symbol} từ KBS: {exc}"
+        ) from exc
+
+
+# =====================================
+# LẤY BẢNG GIÁ
+# =====================================
 
 def fetch_stock_quote(symbol):
     symbol = normalize_symbol(symbol)
+    now = time.monotonic()
+
+    cached = _QUOTE_CACHE.get(symbol)
+
+    if cached:
+        saved_time, saved_quote = cached
+
+        if now - saved_time < QUOTE_CACHE_SECONDS:
+            return saved_quote.copy()
+
+        del _QUOTE_CACHE[symbol]
+
     errors = []
 
     for source in ["kbs", "vci"]:
@@ -178,7 +262,7 @@ def fetch_stock_quote(symbol):
                     "Không tìm thấy giá gần nhất."
                 )
 
-            return {
+            result = {
                 "symbol": symbol,
                 "last_price": last,
                 "reference_price": number(
@@ -212,8 +296,19 @@ def fetch_stock_quote(symbol):
                 "source": source.upper()
             }
 
+            _QUOTE_CACHE[symbol] = (
+                time.monotonic(),
+                result.copy()
+            )
+
+            return result
+
         except Exception as exc:
             errors.append(f"{source}: {exc}")
+
+            # Không chuyển nguồn nếu đã chạm hạn mức.
+            if is_rate_limit_error(exc):
+                break
 
     raise RuntimeError(
         f"Không lấy được bảng giá {symbol}: "
@@ -221,9 +316,11 @@ def fetch_stock_quote(symbol):
     )
 
 
+# =====================================
+# DANH SÁCH CỔ PHIẾU HOSE VÀ HNX
+# =====================================
+
 def fetch_exchange_symbols():
-    # Danh sách chọn lọc HOSE và HNX.
-    # Không gọi API Listing bị giới hạn quyền tài khoản Khách.
 
     hose_symbols = [
         "FPT", "HPG", "SSI", "VCB", "MBB",
