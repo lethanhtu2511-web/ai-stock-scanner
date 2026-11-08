@@ -1,100 +1,53 @@
+
+import math
 import pandas as pd
 import numpy as np
 
-# ==========================================
-# 1. CẤU HÌNH CHIẾN LƯỢC
-# ==========================================
+# =========================
+# CẤU HÌNH GIAO DỊCH
+# =========================
 
 INITIAL_CAPITAL = 10_000_000
-
 RISK_PERCENT = 0.02
 MIN_SCORE = 85
 MIN_REWARD_RISK = 2.0
 LOT_SIZE = 100
 
-# Chi phí giao dịch ước tính
 BUY_FEE = 0.0015
 SELL_FEE = 0.0015
 SELL_TAX = 0.001
 SLIPPAGE = 0.002
 
 
-# ==========================================
-# 2. TÍNH CHỈ BÁO KỸ THUẬT
-# ==========================================
+# =========================
+# TÍNH CHỈ BÁO KỸ THUẬT
+# =========================
 
 def calculate_indicators(df):
+    data = df.copy()
 
-    required = [
-        "Date", "Open", "High",
-        "Low", "Close", "Volume"
-    ]
+    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
-    if df is None or df.empty:
-        raise ValueError("Không có dữ liệu cổ phiếu.")
+    if not all(col in data.columns for col in required):
+        raise ValueError("Thiếu dữ liệu OHLCV.")
 
-    missing = [
-        col for col in required
-        if col not in df.columns
-    ]
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        data[col] = pd.to_numeric(data[col], errors="coerce")
 
-    if missing:
-        raise ValueError(
-            "Thiếu dữ liệu: " + ", ".join(missing)
-        )
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data = data.dropna(subset=required)
+    data = data.sort_values("Date").reset_index(drop=True)
 
-    df = df[required].copy()
+    if len(data) < 200:
+        raise ValueError("Không đủ dữ liệu để phân tích.")
 
-    df["Date"] = pd.to_datetime(
-        df["Date"],
-        errors="coerce"
-    )
+    close = data["Close"]
 
-    for col in [
-        "Open", "High", "Low",
-        "Close", "Volume"
-    ]:
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
+    data["MA20"] = close.rolling(20).mean()
+    data["MA50"] = close.rolling(50).mean()
+    data["MA200"] = close.rolling(200).mean()
 
-    df = df.dropna()
-    df = df.sort_values("Date")
-    df = df.drop_duplicates(
-        subset=["Date"],
-        keep="last"
-    ).reset_index(drop=True)
-
-    if len(df) < 200:
-        raise ValueError(
-            "Cần tối thiểu 200 phiên dữ liệu."
-        )
-
-    if (df[["Open", "High", "Low", "Close"]] <= 0).any().any():
-        raise ValueError("Giá cổ phiếu không hợp lệ.")
-
-    if (df["Volume"] < 0).any():
-        raise ValueError("Khối lượng giao dịch không hợp lệ.")
-
-    invalid = (
-        (df["High"] < df["Low"]) |
-        (df["High"] < df["Open"]) |
-        (df["High"] < df["Close"]) |
-        (df["Low"] > df["Open"]) |
-        (df["Low"] > df["Close"])
-    )
-
-    if invalid.any():
-        raise ValueError("Dữ liệu giá OHLC bất thường.")
-
-    # Đường trung bình
-    df["MA20"] = df["Close"].rolling(20).mean()
-    df["MA50"] = df["Close"].rolling(50).mean()
-    df["MA200"] = df["Close"].rolling(200).mean()
-
-    # RSI 14
-    delta = df["Close"].diff()
+    delta = close.diff()
 
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -112,373 +65,245 @@ def calculate_indicators(df):
     ).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
+    data["RSI"] = 100 - (100 / (1 + rs))
+    data["RSI"] = data["RSI"].fillna(50)
 
-    df["RSI"] = 100 - (100 / (1 + rs))
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
 
-    df.loc[
-        (avg_loss == 0) & (avg_gain > 0),
-        "RSI"
-    ] = 100
-
-    df.loc[
-        (avg_loss == 0) & (avg_gain == 0),
-        "RSI"
-    ] = 50
-
-    # MACD
-    ema12 = df["Close"].ewm(
-        span=12,
-        adjust=False
-    ).mean()
-
-    ema26 = df["Close"].ewm(
-        span=26,
-        adjust=False
-    ).mean()
-
-    df["MACD"] = ema12 - ema26
-
-    df["MACD_SIGNAL"] = df["MACD"].ewm(
+    data["MACD"] = ema12 - ema26
+    data["MACD_SIGNAL"] = data["MACD"].ewm(
         span=9,
         adjust=False
     ).mean()
 
-    # Khối lượng trung bình
-    df["VOLUME_MA20"] = df["Volume"].rolling(20).mean()
+    data["VOLUME_MA20"] = data["Volume"].rolling(20).mean()
 
-    df["VOLUME_RATIO"] = (
-        df["Volume"] /
-        df["VOLUME_MA20"].replace(0, np.nan)
+    data["VOLUME_RATIO"] = (
+        data["Volume"] /
+        data["VOLUME_MA20"].replace(0, np.nan)
     )
 
-    # ATR 14
-    previous_close = df["Close"].shift(1)
+    previous_close = close.shift(1)
 
-    tr1 = df["High"] - df["Low"]
-    tr2 = (df["High"] - previous_close).abs()
-    tr3 = (df["Low"] - previous_close).abs()
+    tr1 = data["High"] - data["Low"]
+    tr2 = (data["High"] - previous_close).abs()
+    tr3 = (data["Low"] - previous_close).abs()
 
     true_range = pd.concat(
         [tr1, tr2, tr3],
         axis=1
     ).max(axis=1)
 
-    df["ATR"] = true_range.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
-    ).mean()
+    data["ATR14"] = true_range.rolling(14).mean()
 
-    # Đỉnh 20 phiên trước
-    df["HIGH20_PREVIOUS"] = (
-        df["High"]
-        .shift(1)
-        .rolling(20)
-        .max()
+    data["HIGH20_PREVIOUS"] = (
+        data["High"].shift(1).rolling(20).max()
     )
 
-    df = df.replace(
-        [np.inf, -np.inf],
-        np.nan
-    )
-
-    df = df.dropna().reset_index(drop=True)
-
-    if df.empty:
-        raise ValueError(
-            "Không đủ dữ liệu để tính chỉ báo."
-        )
-
-    return df
+    return data.dropna().reset_index(drop=True)
 
 
-# ==========================================
-# 3. CHẤM ĐIỂM CỔ PHIẾU
-# ==========================================
+# =========================
+# CHẤM ĐIỂM KỸ THUẬT
+# =========================
 
 def calculate_score(row):
-
     score = 0
     reasons = []
 
-    # Xu hướng ngắn hạn
-    if row["Close"] > row["MA20"]:
-        score += 10
-        reasons.append("Giá nằm trên MA20.")
+    close = row["Close"]
+    ma20 = row["MA20"]
+    ma50 = row["MA50"]
+    ma200 = row["MA200"]
+    rsi = row["RSI"]
+    macd = row["MACD"]
+    macd_signal = row["MACD_SIGNAL"]
+    volume_ratio = row["VOLUME_RATIO"]
+    high20 = row["HIGH20_PREVIOUS"]
 
-    # Xu hướng trung hạn
-    if row["MA20"] > row["MA50"]:
+    if close > ma20:
         score += 10
-        reasons.append("MA20 nằm trên MA50.")
+        reasons.append("Giá trên MA20")
 
-    if row["MA50"] > row["MA200"]:
+    if ma20 > ma50:
         score += 10
-        reasons.append("MA50 nằm trên MA200.")
+        reasons.append("MA20 trên MA50")
 
-    # RSI
-    if 50 <= row["RSI"] <= 65:
+    if ma50 > ma200:
+        score += 10
+        reasons.append("MA50 trên MA200")
+
+    if 50 <= rsi <= 65:
         score += 15
-        reasons.append("RSI ở vùng tích cực.")
-
-    elif 65 < row["RSI"] <= 70:
+        reasons.append("RSI trong vùng tích cực")
+    elif 65 < rsi <= 70:
         score += 10
-        reasons.append("RSI mạnh, cần thận trọng.")
+        reasons.append("RSI khá tích cực")
 
-    # MACD
-    if row["MACD"] > row["MACD_SIGNAL"]:
+    if macd > macd_signal:
         score += 15
-        reasons.append("MACD tích cực.")
+        reasons.append("MACD cho tín hiệu tăng")
 
-    # Khối lượng
-    if row["VOLUME_RATIO"] >= 1.5:
+    if volume_ratio >= 1.5:
         score += 15
-        reasons.append("Khối lượng tăng mạnh.")
-
-    elif row["VOLUME_RATIO"] >= 1.2:
+        reasons.append("Thanh khoản tăng mạnh")
+    elif volume_ratio >= 1.2:
         score += 10
-        reasons.append("Khối lượng cao hơn trung bình.")
+        reasons.append("Thanh khoản cải thiện")
 
-    # Breakout
-    if row["Close"] > row["HIGH20_PREVIOUS"]:
+    if close > high20:
         score += 15
-        reasons.append("Giá vượt đỉnh 20 phiên.")
+        reasons.append("Vượt đỉnh 20 phiên")
+    elif close >= ma20 * 0.97:
+        score += 10
+        reasons.append("Giá gần đường MA20")
 
-    else:
-        distance = (
-            abs(row["Close"] - row["MA20"])
-            / row["MA20"]
-        )
+    # Điểm gốc tối đa 90, quy đổi về thang 100.
+    score = round(score / 90 * 100)
 
-        if (
-            distance <= 0.03
-            and row["Close"] >= row["MA20"]
-        ):
-            score += 10
-            reasons.append("Giá điều chỉnh gần MA20.")
-
-    return score, reasons
+    return min(score, 100), reasons
 
 
-# ==========================================
-# 4. TÍNH CHI PHÍ VÀ RỦI RO
-# ==========================================
+# =========================
+# TÍNH CHI PHÍ GIAO DỊCH
+# =========================
 
-def calculate_trade_costs(
-    price,
-    stop_loss,
-    target_price
-):
+def calculate_trade_costs(buy_price, sell_price, quantity):
+    buy_value = buy_price * quantity
+    sell_value = sell_price * quantity
 
-    buy_cost = price * (
-        1 + BUY_FEE + SLIPPAGE
+    buy_cost = buy_value * (BUY_FEE + SLIPPAGE)
+
+    sell_cost = sell_value * (
+        SELL_FEE + SELL_TAX + SLIPPAGE
     )
 
-    stop_proceeds = (
-        stop_loss
-        * (1 - SLIPPAGE)
-        * (1 - SELL_FEE - SELL_TAX)
-    )
+    return buy_cost + sell_cost
 
-    target_proceeds = (
-        target_price
-        * (1 - SLIPPAGE)
-        * (1 - SELL_FEE - SELL_TAX)
-    )
 
-    risk_per_share = buy_cost - stop_proceeds
+# =========================
+# TÍNH GIÁ MỤC TIÊU
+# =========================
 
-    reward_per_share = target_proceeds - buy_cost
+def calculate_target_price(price, stop_loss):
+    risk_per_share = price - stop_loss
 
     if risk_per_share <= 0:
-        raise ValueError(
-            "Không tính được rủi ro giao dịch."
+        return None
+
+    # Tìm giá mục tiêu đảm bảo tỷ lệ lợi nhuận/rủi ro
+    # sau khi tính phí, thuế và trượt giá ước tính.
+    low = price
+    high = price + risk_per_share * 10
+
+    for _ in range(100):
+        target = (low + high) / 2
+
+        profit = (
+            target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+            - price * (1 + BUY_FEE + SLIPPAGE)
         )
 
-    reward_risk = (
-        reward_per_share / risk_per_share
-    )
-
-    return (
-        buy_cost,
-        risk_per_share,
-        reward_per_share,
-        reward_risk
-    )
-
-
-# ==========================================
-# 5. TÍNH GIÁ MỤC TIÊU SAU CHI PHÍ
-# ==========================================
-
-def calculate_target_price(
-    price,
-    stop_loss,
-    required_rr=MIN_REWARD_RISK
-):
-
-    buy_cost = price * (
-        1 + BUY_FEE + SLIPPAGE
-    )
-
-    stop_proceeds = (
-        stop_loss
-        * (1 - SLIPPAGE)
-        * (1 - SELL_FEE - SELL_TAX)
-    )
-
-    risk_per_share = (
-        buy_cost - stop_proceeds
-    )
-
-    if risk_per_share <= 0:
-        raise ValueError(
-            "Rủi ro trên mỗi cổ phiếu không hợp lệ."
+        risk = (
+            price * (1 + BUY_FEE + SLIPPAGE)
+            - stop_loss * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
         )
 
-    required_target_proceeds = (
-        buy_cost + required_rr * risk_per_share
-    )
+        if risk <= 0:
+            return None
 
-    sell_factor = (
-        (1 - SLIPPAGE)
-        * (1 - SELL_FEE - SELL_TAX)
-    )
+        if profit / risk >= MIN_REWARD_RISK:
+            high = target
+        else:
+            low = target
 
-    target_price = (
-        required_target_proceeds / sell_factor
-    )
-
-    # Làm tròn lên để không thấp hơn mục tiêu
-    target_price = float(
-        np.ceil(target_price)
-    )
-
-    return target_price
+    return math.ceil(high / 100) * 100
 
 
-# ==========================================
-# 6. PHÂN TÍCH CỔ PHIẾU
-# ==========================================
+# =========================
+# PHÂN TÍCH MỘT CỔ PHIẾU
+# =========================
 
 def analyze_stock(
     df,
     capital=INITIAL_CAPITAL,
     risk_percent=RISK_PERCENT
 ):
-
-    result = {
-        "signal": "REJECT",
-        "score": 0,
-        "price": 0,
-        "stop_loss": 0,
-        "target_price": 0,
-        "quantity": 0,
-        "capital_used": 0,
-        "risk_money": 0,
-        "reward_risk": 0,
-        "rsi": 0,
-        "volume_ratio": 0,
-        "reasons": [],
-        "data_date": None,
-        "message": ""
-    }
-
     try:
+        if df is None or df.empty:
+            return {
+                "signal": "WAIT",
+                "reason": "Không có dữ liệu.",
+                "data_date": None
+            }
 
-        capital = float(capital)
-        risk_percent = float(risk_percent)
-
-        if capital <= 0:
-            raise ValueError(
-                "Vốn đầu tư phải lớn hơn 0."
-            )
-
-        if not 0 < risk_percent <= 0.02:
-            raise ValueError(
-                "Rủi ro phải nằm trong khoảng 0–2%."
-            )
-
-        df = calculate_indicators(df)
-
-        row = df.iloc[-1]
-
-        # Kiểm tra ngày dữ liệu
-        data_date = pd.Timestamp(
-            row["Date"]
-        ).date()
-
-        today = pd.Timestamp.now().date()
-
-        age_days = (today - data_date).days
-
-        result["data_date"] = str(data_date)
-
-        if age_days < 0:
-            raise ValueError(
-                "Ngày dữ liệu không hợp lệ."
-            )
-
-        if age_days > 10:
-            raise ValueError(
-                "Dữ liệu đã quá cũ, không phát tín hiệu."
-            )
-
-        # Chấm điểm
-        score, reasons = calculate_score(row)
+        data = calculate_indicators(df)
+        row = data.iloc[-1]
 
         price = float(row["Close"])
-        atr = float(row["ATR"])
+        atr = float(row["ATR14"])
         rsi = float(row["RSI"])
         volume_ratio = float(row["VOLUME_RATIO"])
 
-        if not all(np.isfinite(x) for x in [
-            price, atr, rsi, volume_ratio
-        ]):
-            raise ValueError(
-                "Chỉ báo có giá trị không hợp lệ."
-            )
+        data_date = row["Date"].strftime("%d/%m/%Y")
 
-        if atr <= 0:
-            raise ValueError("ATR không hợp lệ.")
+        if price <= 0 or atr <= 0:
+            raise ValueError("Giá hoặc ATR không hợp lệ.")
 
-        # Giá cắt lỗ
+        # Không sử dụng dữ liệu quá cũ.
+        if (pd.Timestamp.now().normalize() - row["Date"].normalize()).days > 10:
+            return {
+                "signal": "WAIT",
+                "reason": "Dữ liệu quá cũ.",
+                "data_date": data_date
+            }
+
+        score, reasons = calculate_score(row)
+
         stop_loss = price - 1.5 * atr
 
-        if stop_loss <= 0 or stop_loss >= price:
-            raise ValueError(
-                "Không xác định được giá cắt lỗ."
-            )
+        if stop_loss <= 0:
+            raise ValueError("Giá cắt lỗ không hợp lệ.")
 
-        # Giá mục tiêu đảm bảo RR tối thiểu 2:1
         target_price = calculate_target_price(
             price,
-            stop_loss,
-            MIN_REWARD_RISK
+            stop_loss
         )
 
-        # Tính lại tỷ lệ RR sau chi phí
-        (
-            estimated_buy_cost,
-            risk_per_share,
-            reward_per_share,
-            reward_risk
-        ) = calculate_trade_costs(
-            price,
-            stop_loss,
-            target_price
+        if target_price is None:
+            raise ValueError("Không tính được giá mục tiêu.")
+
+        # Rủi ro dự kiến trên mỗi cổ phiếu.
+        risk_per_share = (
+            price * (1 + BUY_FEE + SLIPPAGE)
+            - stop_loss * (
+                1 - SELL_FEE - SELL_TAX - SLIPPAGE
+            )
         )
 
-        # Ngân sách rủi ro
+        reward_per_share = (
+            target_price * (
+                1 - SELL_FEE - SELL_TAX - SLIPPAGE
+            )
+            - price * (1 + BUY_FEE + SLIPPAGE)
+        )
+
+        if risk_per_share <= 0:
+            raise ValueError("Rủi ro giao dịch không hợp lệ.")
+
+        reward_risk = reward_per_share / risk_per_share
+
         risk_budget = capital * risk_percent
 
-        # Số lượng theo rủi ro
         quantity_by_risk = int(
-            risk_budget // risk_per_share
+            risk_budget / risk_per_share
         )
 
-        # Số lượng theo vốn
         quantity_by_capital = int(
-            capital // estimated_buy_cost
+            capital / (
+                price * (1 + BUY_FEE + SLIPPAGE)
+            )
         )
 
         quantity = min(
@@ -486,98 +311,138 @@ def analyze_stock(
             quantity_by_capital
         )
 
-        # Làm tròn lô 100
         quantity = (
             quantity // LOT_SIZE
         ) * LOT_SIZE
 
-        # Vốn và rủi ro dự kiến
         capital_used = (
-            quantity * estimated_buy_cost
+            quantity * price * (1 + BUY_FEE + SLIPPAGE)
         )
 
-        actual_risk = (
-            quantity * risk_per_share
-        )
+        risk_money = quantity * risk_per_share
 
-        # Cập nhật kết quả
-        result.update({
-            "score": int(score),
-            "price": round(price, 2),
-            "stop_loss": round(stop_loss, 2),
-            "target_price": round(target_price, 2),
-            "quantity": int(quantity),
+        # Điều kiện mua.
+        conditions = [
+            score >= MIN_SCORE,
+            rsi <= 75,
+            quantity >= LOT_SIZE,
+            price > row["MA20"],
+            reward_risk >= MIN_REWARD_RISK,
+            risk_money <= risk_budget
+        ]
+
+        signal = "BUY" if all(conditions) else "WAIT"
+
+        if signal == "BUY":
+            message = "Đạt các điều kiện mua theo bộ lọc."
+        else:
+            message = "Chưa đạt đầy đủ điều kiện mua."
+
+        return {
+            "signal": signal,
+            "score": score,
+            "price": round(price),
+            "stop_loss": round(stop_loss),
+            "target_price": round(target_price),
+            "quantity": quantity,
             "capital_used": round(capital_used),
-            "risk_money": round(actual_risk),
+            "risk_money": round(risk_money),
             "reward_risk": round(reward_risk, 2),
             "rsi": round(rsi, 2),
             "volume_ratio": round(volume_ratio, 2),
-            "reasons": reasons
-        })
-
-        # ==================================
-        # 7. ĐIỀU KIỆN TÍN HIỆU
-        # ==================================
-
-        if rsi > 75:
-            result["signal"] = "WAIT"
-            result["message"] = (
-                "RSI quá cao, cổ phiếu có thể đã tăng nóng."
-            )
-            return result
-
-        if quantity < LOT_SIZE:
-            result["signal"] = "WAIT"
-            result["message"] = (
-                "Vốn hoặc mức rủi ro không đủ để mua một lô."
-            )
-            return result
-
-        if score < MIN_SCORE:
-            result["signal"] = "WAIT"
-            result["message"] = (
-                f"Điểm kỹ thuật {score}/100 chưa đạt "
-                f"ngưỡng BUY {MIN_SCORE}."
-            )
-            return result
-
-        if price <= row["MA20"]:
-            result["signal"] = "WAIT"
-            result["message"] = (
-                "Giá chưa nằm trên MA20."
-            )
-            return result
-
-        if reward_risk < MIN_REWARD_RISK:
-            result["signal"] = "WAIT"
-            result["message"] = (
-                "Tỷ lệ lợi nhuận/rủi ro sau chi phí chưa đạt 2:1."
-            )
-            return result
-
-        if actual_risk > risk_budget:
-            result["signal"] = "WAIT"
-            result["message"] = (
-                "Rủi ro dự kiến vượt ngân sách cho phép."
-            )
-            return result
-
-        # ==================================
-        # 8. KẾT QUẢ BUY
-        # ==================================
-
-        result["signal"] = "BUY"
-
-        result["message"] = (
-            "Đạt các điều kiện kỹ thuật và quản trị rủi ro. "
-            "Đây là tín hiệu tham khảo, không đảm bảo lợi nhuận."
-        )
-
-        return result
+            "reasons": reasons,
+            "data_date": data_date,
+            "message": message,
+            "reason": message
+        }
 
     except Exception as error:
+        return {
+            "signal": "WAIT",
+            "reason": str(error),
+            "data_date": None
+        }
 
-        result["signal"] = "REJECT"
-        result["message"] = str(error)
 
-        return result
+# =========================
+# QUÉT DANH SÁCH CỔ PHIẾU
+# =========================
+
+def scan_market(
+    capital=INITIAL_CAPITAL,
+    risk_percent=RISK_PERCENT,
+    max_symbols=30,
+    progress_callback=None
+):
+    """
+    Quét cổ phiếu HOSE và HNX.
+
+    Mặc định tối đa 30 mã/lượt để hạn chế
+    số lần gọi API.
+
+    progress_callback (nếu có):
+        callback(số_mã_đã_quét, tổng_số_mã)
+    """
+
+    from data_provider import (
+        fetch_exchange_symbols,
+        fetch_stock_history
+    )
+
+    symbols = fetch_exchange_symbols()
+
+    if not symbols:
+        raise RuntimeError("Không tìm thấy danh sách cổ phiếu.")
+
+    if max_symbols is not None:
+        max_symbols = max(1, int(max_symbols))
+        symbols = symbols[:max_symbols]
+
+    results = []
+    errors = []
+
+    total = len(symbols)
+
+    for index, symbol in enumerate(symbols, start=1):
+        try:
+            history = fetch_stock_history(
+                symbol,
+                length=260
+            )
+
+            result = analyze_stock(
+                history,
+                capital=capital,
+                risk_percent=risk_percent
+            )
+
+            result["symbol"] = symbol
+
+            if result.get("signal") == "BUY":
+                results.append(result)
+
+        except Exception as error:
+            errors.append({
+                "symbol": symbol,
+                "error": str(error)
+            })
+
+        if progress_callback is not None:
+            progress_callback(index, total)
+
+    results.sort(
+        key=lambda x: (
+            x.get("score", 0),
+            x.get("reward_risk", 0),
+            x.get("volume_ratio", 0)
+        ),
+        reverse=True
+    )
+
+    return {
+        "results": results,
+        "scanned": total,
+        "buy_count": len(results),
+        "error_count": len(errors),
+        "errors": errors
+    }
