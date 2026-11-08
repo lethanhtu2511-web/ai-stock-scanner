@@ -1,21 +1,14 @@
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from scanner import (
-    analyze_stock,
-    scan_market,
-    INITIAL_CAPITAL,
-    RISK_PERCENT
-)
-
+from scanner import analyze_stock, scan_market, INITIAL_CAPITAL
 from data_provider import (
     fetch_stock_history,
-    fetch_stock_quote
+    fetch_stock_quote,
+    fetch_exchange_symbols
 )
-
 
 st.set_page_config(
     page_title="AI STOCK SCANNER",
@@ -26,8 +19,8 @@ st.set_page_config(
 st.title("📈 AI STOCK SCANNER")
 
 st.caption(
-    "Công cụ sàng lọc cổ phiếu HOSE/HNX "
-    "cho chiến lược giao dịch ngắn hạn 2–5 phiên."
+    "Sàng lọc cổ phiếu HOSE/HNX cho chiến lược ngắn hạn "
+    "2–5 phiên. Dữ liệu nến ngày, không phải realtime."
 )
 
 with st.sidebar:
@@ -49,24 +42,19 @@ with st.sidebar:
     ) / 100
 
     st.caption("Mặc định vốn 10 triệu, rủi ro 2%.")
-
     st.divider()
 
     st.caption(
-        "Dữ liệu phụ thuộc nhà cung cấp. "
-        "Không mặc định là dữ liệu thời gian thực."
+        "Lịch sử nến ngày: DNSE, dự phòng Vietcap. "
+        "Danh sách niêm yết: Vnstock KBS."
     )
 
 
 tab1, tab2 = st.tabs([
     "Phân tích một mã",
-    "Quét thị trường"
+    "Quét toàn thị trường"
 ])
 
-
-# =====================================
-# PHÂN TÍCH MỘT MÃ
-# =====================================
 
 with tab1:
 
@@ -87,7 +75,7 @@ with tab1:
 
         else:
             try:
-                with st.spinner("Đang lấy dữ liệu..."):
+                with st.spinner("Đang lấy dữ liệu lịch sử..."):
 
                     history = fetch_stock_history(
                         symbol,
@@ -105,8 +93,8 @@ with tab1:
                 st.subheader(f"Kết quả: {symbol}")
 
                 st.caption(
-                    f"Dữ liệu lịch sử đến {result.get('data_date')} "
-                    f"| Nguồn bảng giá: {quote.get('source')}"
+                    f"Nến ngày gần nhất: {quote.get('quote_date')} "
+                    f"| Nguồn: {quote.get('source')}"
                 )
 
                 if result.get("signal") == "BUY":
@@ -119,7 +107,7 @@ with tab1:
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
-                    "Giá gần nhất",
+                    "Giá đóng cửa",
                     f"{quote['last_price']:,.0f} đ"
                 )
 
@@ -169,54 +157,34 @@ with tab1:
 
                 st.subheader("Yếu tố kỹ thuật")
 
-                if result.get("reasons"):
-                    for reason in result["reasons"]:
-                        st.write("• " + reason)
-                else:
-                    st.write("Chưa có yếu tố kỹ thuật tích cực.")
+                for reason in result.get("reasons", []):
+                    st.write("• " + reason)
 
-                with st.expander("Chi tiết bảng giá"):
-
-                    st.write({
-                        "Sàn": quote.get("exchange"),
-                        "Giá tham chiếu": quote.get("reference_price"),
-                        "Giá mở cửa": quote.get("open_price"),
-                        "Giá trần": quote.get("ceiling_price"),
-                        "Giá sàn": quote.get("floor_price"),
-                        "Giá mua tốt nhất": quote.get("bid_price_1"),
-                        "Giá bán tốt nhất": quote.get("ask_price_1"),
-                        "Khối lượng mua": quote.get("bid_vol_1"),
-                        "Khối lượng bán": quote.get("ask_vol_1")
-                    })
+                with st.expander("10 phiên gần nhất"):
+                    st.dataframe(
+                        history.tail(10),
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
             except Exception as exc:
-                st.error(f"Không phân tích được {symbol}: {exc}")
+                st.error(
+                    f"Không phân tích được {symbol}: {exc}"
+                )
 
-
-# =====================================
-# QUÉT THỊ TRƯỜNG
-# =====================================
 
 with tab2:
 
-    st.subheader("Quét cổ phiếu HOSE và HNX")
+    st.subheader("Quét toàn bộ mã cổ phiếu HOSE và HNX")
 
-    st.warning(
-        "Mỗi mã cần truy vấn dữ liệu lịch sử. "
-        "Lượt quét mặc định giới hạn số mã để "
-        "hạn chế vượt hạn mức API."
-    )
-
-    max_symbols = st.slider(
-        "Số mã tối đa mỗi lượt",
-        min_value=5,
-        max_value=50,
-        value=30,
-        step=5
+    st.info(
+        "Một lần bấm sẽ lấy danh sách mã theo sàn và quét "
+        "lần lượt toàn bộ. Lần quét đầu có thể lâu do phải "
+        "tải lịch sử từng mã."
     )
 
     if st.button(
-        "BẮT ĐẦU QUÉT",
+        "QUÉT TOÀN BỘ HOSE + HNX",
         type="primary",
         use_container_width=True
     ):
@@ -224,26 +192,32 @@ with tab2:
         progress = st.progress(0)
         status = st.empty()
 
-        def update_progress(done, total):
-            progress.progress(
-                done / total if total else 1.0
-            )
-            status.write(
-                f"Đang quét {done}/{total} mã..."
-            )
-
         try:
-            with st.spinner("Đang quét thị trường..."):
+            with st.spinner("Đang lấy danh sách niêm yết..."):
+                symbols = fetch_exchange_symbols()
 
-                output = scan_market(
-                    capital=capital,
-                    risk_percent=risk_pct,
-                    max_symbols=max_symbols,
-                    progress_callback=update_progress
+            st.write(
+                f"Danh sách hiện có {len(symbols)} mã HOSE + HNX."
+            )
+
+            def update_progress(done, total):
+                progress.progress(
+                    done / total if total else 1.0
                 )
 
+                status.write(
+                    f"Đang quét {done}/{total} mã..."
+                )
+
+            output = scan_market(
+                capital=capital,
+                risk_percent=risk_pct,
+                max_symbols=len(symbols),
+                progress_callback=update_progress
+            )
+
             st.success(
-                f"Đã quét {output['scanned']} mã. "
+                f"Đã xử lý {output['scanned']} mã. "
                 f"Tìm thấy {output['buy_count']} mã BUY."
             )
 
@@ -289,7 +263,7 @@ with tab2:
 
             else:
                 st.info(
-                    "Không có mã nào đạt đầy đủ điều kiện BUY. "
+                    "Không có mã nào đạt đủ điều kiện BUY. "
                     "Không có tín hiệu cũng là kết quả hợp lệ."
                 )
 
@@ -308,7 +282,9 @@ with tab2:
                     )
 
         except Exception as exc:
-            st.error(f"Không thể quét thị trường: {exc}")
+            st.error(
+                f"Không thể quét toàn thị trường: {exc}"
+            )
 
 
 st.divider()
@@ -321,8 +297,7 @@ st.caption(
 )
 
 st.caption(
-    "Giá mục tiêu là mức tính toán theo tỷ lệ lợi nhuận/rủi ro "
-    "sau chi phí, không phải dự báo giá. "
-    "Lệnh thực tế có thể chịu trượt giá, gap và bước giá của sàn. "
-    "Cần kiểm thử trước khi giao dịch bằng tiền thật."
+    "Giá mục tiêu là mức tính theo tỷ lệ lợi nhuận/rủi ro "
+    "sau chi phí, không phải dự báo. Dữ liệu nến ngày có thể "
+    "trễ; kiểm tra lại giá và thanh khoản trước khi đặt lệnh."
 )
