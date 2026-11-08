@@ -1,12 +1,14 @@
-
 import math
 import pandas as pd
 import numpy as np
 
+
 INITIAL_CAPITAL = 10_000_000
 RISK_PERCENT = 0.02
+
 MIN_SCORE = 78
 MIN_REWARD_RISK = 2.0
+
 LOT_SIZE = 100
 
 BUY_FEE = 0.0015
@@ -16,30 +18,45 @@ SLIPPAGE = 0.002
 
 
 def calculate_indicators(df):
+
     data = df.copy()
 
     required = [
-        "Date", "Open", "High",
-        "Low", "Close", "Volume"
+        "Date",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume"
     ]
 
     if any(c not in data.columns for c in required):
-        raise ValueError("Thiếu dữ liệu OHLCV.")
+        raise ValueError(
+            "Thiếu dữ liệu OHLCV."
+        )
 
     data["Date"] = pd.to_datetime(
-        data["Date"], errors="coerce"
+        data["Date"],
+        errors="coerce"
     )
 
     for col in required[1:]:
+
         data[col] = pd.to_numeric(
-            data[col], errors="coerce"
+            data[col],
+            errors="coerce"
         )
 
-    data = data.dropna(subset=required)
-    data = data.sort_values("Date").reset_index(drop=True)
+    data = (
+        data.dropna(subset=required)
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
 
     if len(data) < 200:
-        raise ValueError("Không đủ 200 phiên dữ liệu.")
+        raise ValueError(
+            "Không đủ 200 phiên dữ liệu."
+        )
 
     close = data["Close"]
 
@@ -48,6 +65,7 @@ def calculate_indicators(df):
     data["MA200"] = close.rolling(200).mean()
 
     delta = close.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -70,20 +88,25 @@ def calculate_indicators(df):
     ).fillna(50)
 
     ema12 = close.ewm(
-        span=12, adjust=False
+        span=12,
+        adjust=False
     ).mean()
 
     ema26 = close.ewm(
-        span=26, adjust=False
+        span=26,
+        adjust=False
     ).mean()
 
     data["MACD"] = ema12 - ema26
 
     data["MACD_SIGNAL"] = data["MACD"].ewm(
-        span=9, adjust=False
+        span=9,
+        adjust=False
     ).mean()
 
-    data["VOLUME_MA20"] = data["Volume"].rolling(20).mean()
+    data["VOLUME_MA20"] = (
+        data["Volume"].rolling(20).mean()
+    )
 
     data["VOLUME_RATIO"] = (
         data["Volume"]
@@ -101,21 +124,41 @@ def calculate_indicators(df):
     data["ATR14"] = tr.rolling(14).mean()
 
     data["HIGH20_PREVIOUS"] = (
-        data["High"].shift(1).rolling(20).max()
+        data["High"]
+        .shift(1)
+        .rolling(20)
+        .max()
     )
 
     return data.dropna().reset_index(drop=True)
 
 
 def calculate_score(row):
+
     score = 0
     reasons = []
 
     conditions = [
-        (row.Close > row.MA20, 10, "Giá trên MA20"),
-        (row.MA20 > row.MA50, 10, "MA20 trên MA50"),
-        (row.MA50 > row.MA200, 10, "MA50 trên MA200"),
-        (row.MACD > row.MACD_SIGNAL, 15, "MACD tích cực"),
+        (
+            row.Close > row.MA20,
+            10,
+            "Giá trên MA20"
+        ),
+        (
+            row.MA20 > row.MA50,
+            10,
+            "MA20 trên MA50"
+        ),
+        (
+            row.MA50 > row.MA200,
+            10,
+            "MA50 trên MA200"
+        ),
+        (
+            row.MACD > row.MACD_SIGNAL,
+            15,
+            "MACD tích cực"
+        ),
         (
             row.Close > row.HIGH20_PREVIOUS,
             15,
@@ -123,22 +166,29 @@ def calculate_score(row):
         )
     ]
 
-    for passed, points, reason in conditions:
+    for passed, points, label in conditions:
+
         if passed:
             score += points
-            reasons.append(reason)
+            reasons.append(label)
 
     if 50 <= row.RSI <= 65:
+
         score += 15
         reasons.append("RSI vùng tích cực")
+
     elif 45 <= row.RSI < 50 or 65 < row.RSI <= 70:
+
         score += 8
         reasons.append("RSI chấp nhận được")
 
     if row.VOLUME_RATIO >= 1.5:
+
         score += 15
         reasons.append("Thanh khoản tăng mạnh")
+
     elif row.VOLUME_RATIO >= 1.2:
+
         score += 10
         reasons.append("Thanh khoản cải thiện")
 
@@ -146,6 +196,7 @@ def calculate_score(row):
 
 
 def calculate_target_price(price, stop_loss):
+
     risk = (
         price * (1 + BUY_FEE + SLIPPAGE)
         - stop_loss * (
@@ -159,6 +210,7 @@ def calculate_target_price(price, stop_loss):
     target = price
 
     for _ in range(3000):
+
         reward = (
             target * (
                 1 - SELL_FEE - SELL_TAX - SLIPPAGE
@@ -167,6 +219,7 @@ def calculate_target_price(price, stop_loss):
         )
 
         if reward >= MIN_REWARD_RISK * risk:
+
             return math.ceil(target / 100) * 100
 
         target += 100
@@ -179,8 +232,11 @@ def analyze_stock(
     capital=INITIAL_CAPITAL,
     risk_percent=RISK_PERCENT
 ):
+
     try:
+
         data = calculate_indicators(df)
+
         row = data.iloc[-1]
 
         price = float(row.Close)
@@ -196,6 +252,7 @@ def analyze_stock(
         ).days
 
         if age > 10:
+
             return {
                 "signal": "WAIT",
                 "reason": "Dữ liệu quá cũ.",
@@ -205,12 +262,19 @@ def analyze_stock(
         stop = price - 1.5 * atr
 
         if stop <= 0:
-            raise ValueError("Giá cắt lỗ không hợp lệ.")
+            raise ValueError(
+                "Giá cắt lỗ không hợp lệ."
+            )
 
-        target = calculate_target_price(price, stop)
+        target = calculate_target_price(
+            price,
+            stop
+        )
 
         if target is None:
-            raise ValueError("Không tính được giá mục tiêu.")
+            raise ValueError(
+                "Không tính được giá mục tiêu."
+            )
 
         risk_share = (
             price * (1 + BUY_FEE + SLIPPAGE)
@@ -268,7 +332,11 @@ def analyze_stock(
             risk_money <= risk_budget
         ]
 
-        signal = "BUY" if all(conditions) else "WAIT"
+        signal = (
+            "BUY"
+            if all(conditions)
+            else "WAIT"
+        )
 
         reason = (
             "Đạt các điều kiện kỹ thuật và quản trị rủi ro."
@@ -297,6 +365,7 @@ def analyze_stock(
         }
 
     except Exception as exc:
+
         return {
             "signal": "WAIT",
             "reason": str(exc),
@@ -307,9 +376,10 @@ def analyze_stock(
 def scan_market(
     capital=INITIAL_CAPITAL,
     risk_percent=RISK_PERCENT,
-    max_symbols=30,
+    max_symbols=None,
     progress_callback=None
 ):
+
     from data_provider import (
         fetch_exchange_symbols,
         fetch_stock_history
@@ -317,14 +387,24 @@ def scan_market(
 
     symbols = fetch_exchange_symbols()
 
-    symbols = symbols[:max(1, int(max_symbols))]
+    if max_symbols is not None:
+
+        symbols = symbols[
+            :max(1, int(max_symbols))
+        ]
 
     results = []
     errors = []
+
     total = len(symbols)
 
-    for index, symbol in enumerate(symbols, start=1):
+    for index, symbol in enumerate(
+        symbols,
+        start=1
+    ):
+
         try:
+
             history = fetch_stock_history(
                 symbol,
                 length=260
@@ -339,16 +419,32 @@ def scan_market(
             result["symbol"] = symbol
 
             if result.get("signal") == "BUY":
+
                 results.append(result)
 
+            elif (
+                result.get("reason")
+                and result.get("data_date") is None
+            ):
+
+                errors.append({
+                    "symbol": symbol,
+                    "error": result["reason"]
+                })
+
         except Exception as exc:
+
             errors.append({
                 "symbol": symbol,
                 "error": str(exc)
             })
 
         if progress_callback:
-            progress_callback(index, total)
+
+            progress_callback(
+                index,
+                total
+            )
 
     results.sort(
         key=lambda x: (
