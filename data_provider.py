@@ -40,7 +40,7 @@ def fetch_stock_history(symbol, length=260):
 
             required = ["date", "open", "high", "low", "close", "volume"]
             if not all(c in df.columns for c in required):
-                raise ValueError("Thiếu cột dữ liệu OHLCV.")
+                raise ValueError("Thiếu cột OHLCV.")
 
             df = df[required].copy()
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -68,7 +68,6 @@ def fetch_stock_history(symbol, length=260):
             if invalid.any():
                 raise ValueError("Dữ liệu giá bất thường.")
 
-            # Giá OHLCV cổ phiếu trả về theo nghìn đồng.
             df[price_cols] = df[price_cols] * 1000
 
             df = df.rename(columns={
@@ -151,77 +150,74 @@ def fetch_stock_quote(symbol):
 
 def fetch_exchange_symbols():
     """
-    Lấy danh sách mã cổ phiếu HOSE và HNX.
-    Không đưa UPCoM vào danh sách.
+    Lấy danh sách cổ phiếu HOSE và HNX.
+    Chuẩn hóa HSX thành HOSE và loại UPCoM.
     """
 
-    errors = []
+    listing = Listing(source="kbs")
+    df = listing.symbols_by_exchange()
 
-    for exchange in ["HOSE", "HNX"]:
-        try:
-            df = Listing().symbols_by_exchange()
-            if df is None or df.empty:
-                raise ValueError("Không có danh sách mã.")
+    if df is None or df.empty:
+        raise RuntimeError("Nguồn dữ liệu không trả danh sách mã.")
 
-            df.columns = [str(c).strip().lower() for c in df.columns]
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
-            symbol_col = next(
-                (c for c in ["symbol", "ticker", "stock_code"] if c in df.columns),
-                None
-            )
+    symbol_col = next(
+        (c for c in ["symbol", "ticker", "stock_code"] if c in df.columns),
+        None
+    )
 
-            exchange_col = next(
-                (c for c in ["exchange", "com_group_code", "market"] if c in df.columns),
-                None
-            )
+    exchange_col = next(
+        (c for c in [
+            "exchange", "com_group_code", "comgroupcode",
+            "market", "board"
+        ] if c in df.columns),
+        None
+    )
 
-            if symbol_col is None or exchange_col is None:
-                raise ValueError("Không xác định được cột mã hoặc sàn.")
+    if symbol_col is None or exchange_col is None:
+        raise RuntimeError(
+            "Không xác định được cột mã và sàn. "
+            f"Các cột nhận được: {list(df.columns)}"
+        )
 
-            selected = df[
-                df[exchange_col].astype(str).str.upper().str.strip() == exchange
-            ]
+    exchange_values = (
+        df[exchange_col].astype(str).str.upper().str.strip()
+    )
 
-            errors.extend([])
+    exchange_values = exchange_values.replace({
+        "HSX": "HOSE",
+        "HOSE": "HOSE",
+        "HNX": "HNX"
+    })
 
-            if selected.empty:
-                continue
+    selected = df[exchange_values.isin(["HOSE", "HNX"])].copy()
 
-            symbols = selected[symbol_col].astype(str).str.upper().str.strip()
-            errors.append(("DATA", exchange, symbols.tolist()))
-
-        except Exception as error:
-            errors.append(("ERROR", exchange, str(error)))
-
-    valid = [
-        item[2] for item in errors
-        if isinstance(item, tuple) and item[0] == "DATA"
-    ]
-
-    failures = [
-        f"{item[1]}: {item[2]}" for item in errors
-        if isinstance(item, tuple) and item[0] == "ERROR"
-    ]
+    symbols = (
+        selected[symbol_col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
 
     symbols = sorted(set(
-        symbol
-        for group in valid
-        for symbol in group
+        symbol for symbol in symbols
         if re.fullmatch(r"[A-Z0-9]{3,10}", symbol)
     ))
 
     if not symbols:
         raise RuntimeError(
-            "Không lấy được danh sách HOSE/HNX. " + " | ".join(failures)
+            "Không tìm thấy mã HOSE/HNX. "
+            f"Cột sàn: {exchange_col}; "
+            f"Giá trị mẫu: {exchange_values.unique()[:15].tolist()}"
         )
 
     return symbols
 
 
-def fetch_market_quotes(symbols, source="kbs"):
+def fetch_market_quotes(symbols):
     """
-    Lấy bảng giá nhiều mã nếu nguồn dữ liệu hỗ trợ.
-    Không tự động chia nhỏ thành hàng trăm lượt gọi.
+    Lấy bảng giá nhiều mã qua KBS.
     """
 
     symbols = sorted(set(
@@ -231,32 +227,20 @@ def fetch_market_quotes(symbols, source="kbs"):
     if not symbols:
         return pd.DataFrame()
 
-    errors = []
+    df = Market().quote(symbols)
 
-    for provider in [source, "vci"]:
-        try:
-            df = Market().quote(
-                symbols=symbols,
-                source=provider
-            )
+    if df is None or df.empty:
+        raise RuntimeError("Nguồn KBS không trả bảng giá.")
 
-            if df is None or df.empty:
-                raise ValueError("Nguồn không trả về bảng giá.")
+    df.columns = [str(c).strip().lower() for c in df.columns]
 
-            df.columns = [str(c).strip().lower() for c in df.columns]
+    if "symbol" not in df.columns:
+        raise RuntimeError(
+            f"Bảng giá thiếu cột symbol: {list(df.columns)}"
+        )
 
-            if "symbol" not in df.columns:
-                raise ValueError("Bảng giá thiếu cột symbol.")
+    df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+    df = df.drop_duplicates(subset=["symbol"], keep="last")
+    df.attrs["source"] = "KBS"
 
-            df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
-            df = df.drop_duplicates(subset=["symbol"], keep="last")
-            df.attrs["source"] = provider.upper()
-
-            return df
-
-        except Exception as error:
-            errors.append(f"{provider.upper()}: {error}")
-
-    raise RuntimeError(
-        "Không lấy được bảng giá nhiều mã: " + " | ".join(errors)
-    )
+    return df
