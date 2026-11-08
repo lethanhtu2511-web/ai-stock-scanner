@@ -1,7 +1,7 @@
 
 import re
 import pandas as pd
-from vnstock import Market, Listing
+from vnstock import Market
 
 
 def normalize_symbol(symbol):
@@ -167,76 +167,24 @@ def fetch_stock_quote(symbol):
 
 
 def fetch_exchange_symbols():
-    errors = []
+    # Danh sách chọn lọc HOSE và HNX.
+    # Thứ tự ưu tiên các mã phổ biến, thanh khoản tương đối tốt.
+    # Không sử dụng API Listing bị giới hạn ở tài khoản Khách.
 
-    for source in ["kbs", "vci"]:
-        try:
-            listing = Listing(source=source)
-            raw = listing.symbols_by_exchange()
+    hose_symbols = [
+        "FPT", "HPG", "SSI", "VCB", "MBB",
+        "TCB", "ACB", "CTG", "BID", "VPB",
+        "VHM", "VIC", "VNM", "MWG", "GEX",
+        "HDB", "STB", "TPB", "LPB", "SHB",
+        "VND", "HCM", "VRE", "PNJ", "GMD",
+        "DGC", "DPM", "PDR", "DIG", "DXG",
+        "NKG", "HSG", "KBC", "KDH", "NVL",
+        "POW", "PLX", "VJC", "MSN", "EIB"
+    ]
 
-            if raw is None or raw.empty:
-                raise ValueError("Danh sách mã rỗng.")
+    hnx_symbols = [
+        "PVS", "MBS", "SHS", "CEO", "IDC",
+        "TNG", "VCS", "LAS", "PLC", "PVC"
+    ]
 
-            df = raw.copy()
-            df.columns = [
-                str(c).strip().lower() for c in df.columns
-            ]
-
-            symbol_col = next(
-                (
-                    c for c in ["symbol", "ticker", "stock_code"]
-                    if c in df.columns
-                ),
-                None
-            )
-
-            exchange_col = next(
-                (
-                    c for c in [
-                        "exchange",
-                        "com_group_code",
-                        "comgroupcode",
-                        "market",
-                        "board"
-                    ]
-                    if c in df.columns
-                ),
-                None
-            )
-
-            if symbol_col is None or exchange_col is None:
-                raise ValueError(
-                    "Không xác định được cột mã hoặc sàn. "
-                    f"Các cột: {list(df.columns)}"
-                )
-
-            exchanges = (
-                df[exchange_col]
-                .astype(str)
-                .str.upper()
-                .str.strip()
-                .replace({"HSX": "HOSE"})
-            )
-
-            df = df[exchanges.isin(["HOSE", "HNX"])]
-
-            symbols = sorted({
-                normalize_symbol(x)
-                for x in df[symbol_col].dropna()
-                if str(x).strip().upper() not in [
-                    "", "NAN", "NONE"
-                ]
-            })
-
-            if not symbols:
-                raise ValueError("Không tìm thấy mã HOSE/HNX.")
-
-            return symbols
-
-        except Exception as exc:
-            errors.append(f"{source}: {exc}")
-
-    raise RuntimeError(
-        "Không lấy được danh sách cổ phiếu: "
-        + " | ".join(errors)
-    )
+    return hose_symbols + hnx_symbols
