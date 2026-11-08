@@ -42,6 +42,36 @@ def get_stock_data(symbol):
 
 
 # =====================================
+# HÀM ĐỊNH DẠNG
+# =====================================
+
+def show_price(value):
+    if value is None:
+        return "—"
+
+    try:
+        number = float(value)
+        if pd.isna(number):
+            return "—"
+        return f"{number:,.0f} đ"
+    except (ValueError, TypeError):
+        return "—"
+
+
+def show_volume(value):
+    if value is None:
+        return "—"
+
+    try:
+        number = float(value)
+        if pd.isna(number):
+            return "—"
+        return f"{number:,.0f} cổ phiếu"
+    except (ValueError, TypeError):
+        return "—"
+
+
+# =====================================
 # CẤU HÌNH VỐN VÀ RỦI RO
 # =====================================
 
@@ -97,20 +127,6 @@ with st.form("stock_analysis_form"):
 
 
 # =====================================
-# HÀM HIỂN THỊ GIÁ
-# =====================================
-
-def show_price(label, value):
-    if value is None:
-        return "—"
-
-    try:
-        return f"{float(value):,.0f} đ"
-    except (ValueError, TypeError):
-        return "—"
-
-
-# =====================================
 # THỰC HIỆN PHÂN TÍCH
 # =====================================
 
@@ -130,7 +146,7 @@ if submitted:
                 f"Đang lấy dữ liệu và phân tích {symbol}..."
             ):
 
-                # Lấy nến ngày để phân tích kỹ thuật
+                # Lấy dữ liệu nến ngày
                 df = get_stock_data(symbol)
 
                 result = analyze_stock(
@@ -168,29 +184,29 @@ if submitted:
 
                 q1.metric(
                     "Giá khớp gần nhất",
-                    show_price("Giá", quote["last_price"])
+                    show_price(quote["last_price"])
                 )
 
                 q2.metric(
                     "Giá tham chiếu",
-                    show_price("Tham chiếu", quote["reference_price"])
+                    show_price(quote["reference_price"])
                 )
 
                 q3.metric(
                     "Giá mở cửa",
-                    show_price("Mở cửa", quote["open_price"])
+                    show_price(quote["open_price"])
                 )
 
                 q4, q5, q6 = st.columns(3)
 
                 q4.metric(
                     "Giá trần",
-                    show_price("Trần", quote["ceiling_price"])
+                    show_price(quote["ceiling_price"])
                 )
 
                 q5.metric(
                     "Giá sàn",
-                    show_price("Sàn", quote["floor_price"])
+                    show_price(quote["floor_price"])
                 )
 
                 q6.metric(
@@ -204,22 +220,22 @@ if submitted:
 
                 bid.metric(
                     "Giá mua tốt nhất",
-                    show_price("Mua 1", quote["bid_price_1"])
+                    show_price(quote["bid_price_1"])
                 )
 
                 bid.caption(
-                    f"Khối lượng mua: "
-                    f"{show_price('KL', quote['bid_vol_1'])}"
+                    "Khối lượng mua: "
+                    + show_volume(quote["bid_vol_1"])
                 )
 
                 ask.metric(
                     "Giá bán tốt nhất",
-                    show_price("Bán 1", quote["ask_price_1"])
+                    show_price(quote["ask_price_1"])
                 )
 
                 ask.caption(
-                    f"Khối lượng bán: "
-                    f"{show_price('KL', quote['ask_vol_1'])}"
+                    "Khối lượng bán: "
+                    + show_volume(quote["ask_vol_1"])
                 )
 
                 st.caption(
