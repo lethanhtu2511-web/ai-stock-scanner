@@ -27,12 +27,16 @@ def normalize_symbol(symbol):
 
 def _normalize_history(rows):
     if rows is None:
-        raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
+        raise ValueError(
+            "Nguồn dữ liệu không trả về lịch sử giá."
+        )
 
     df = pd.DataFrame(rows)
 
     if df.empty:
-        raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
+        raise ValueError(
+            "Nguồn dữ liệu không trả về lịch sử giá."
+        )
 
     df.columns = [
         str(c).strip().lower()
@@ -61,7 +65,9 @@ def _normalize_history(rows):
     ]
 
     if missing:
-        raise ValueError(f"Thiếu cột OHLCV: {missing}")
+        raise ValueError(
+            f"Thiếu cột OHLCV: {missing}"
+        )
 
     df = df[required].copy()
 
@@ -116,7 +122,10 @@ def fetch_stock_history(symbol, length=260):
 
     cached = _HISTORY_CACHE.get(key)
 
-    if cached and now - cached[0] < HISTORY_CACHE_SECONDS:
+    if (
+        cached
+        and now - cached[0] < HISTORY_CACHE_SECONDS
+    ):
         return cached[1].copy()
 
     rows = get_ohlcv(
@@ -132,7 +141,8 @@ def fetch_stock_history(symbol, length=260):
 
     if len(df) < 200:
         raise ValueError(
-            f"{symbol}: chỉ có {len(df)} phiên, cần tối thiểu 200 phiên."
+            f"{symbol}: chỉ có {len(df)} phiên, "
+            "cần tối thiểu 200 phiên."
         )
 
     df.attrs["source"] = "DNSE/Vietcap (fallback)"
@@ -172,6 +182,37 @@ def fetch_stock_quote(symbol):
     }
 
 
+def _extract_symbols(result):
+    if result is None:
+        return []
+
+    if isinstance(result, pd.DataFrame):
+        if "symbol" not in result.columns:
+            raise RuntimeError(
+                "Danh sách trả về không có cột symbol."
+            )
+
+        values = result["symbol"].tolist()
+
+    elif isinstance(result, pd.Series):
+        values = result.tolist()
+
+    else:
+        values = list(result)
+
+    symbols = []
+
+    for value in values:
+        try:
+            symbols.append(
+                normalize_symbol(value)
+            )
+        except (ValueError, TypeError):
+            continue
+
+    return symbols
+
+
 def fetch_exchange_symbols():
     global _SYMBOL_CACHE
     global _SYMBOL_CACHE_AT
@@ -184,103 +225,53 @@ def fetch_exchange_symbols():
     ):
         return list(_SYMBOL_CACHE)
 
-    # Dùng VCI thay cho KBS vì VCI hỗ trợ
-    # lấy danh sách cổ phiếu theo sàn ở cấp Cộng đồng.
-    raw = Listing(
-        source="VCI"
-    ).symbols_by_exchange()
+    # Sử dụng KBS và lấy riêng từng sàn.
+    # Không gọi symbols_by_exchange().
+    listing = Listing(source="KBS")
 
-    if raw is None:
-        raise RuntimeError(
-            "Nguồn VCI không trả về danh sách cổ phiếu."
+    try:
+        hose_raw = listing.symbols_by_group(
+            group="HOSE"
         )
 
-    df = pd.DataFrame(raw).copy()
-
-    if df.empty:
-        raise RuntimeError(
-            "Danh sách cổ phiếu từ VCI đang rỗng."
+        hnx_raw = listing.symbols_by_group(
+            group="HNX"
         )
 
-    df.columns = [
-        str(c).strip().lower()
-        for c in df.columns
-    ]
-
-    if "symbol" not in df.columns:
+    except Exception as exc:
         raise RuntimeError(
-            "Không tìm thấy cột symbol. "
-            f"Các cột nhận được: {list(df.columns)}"
+            "Không lấy được danh sách mã HOSE/HNX "
+            "qua symbols_by_group. Chi tiết: "
+            f"{exc}"
+        ) from exc
+
+    hose_symbols = _extract_symbols(hose_raw)
+    hnx_symbols = _extract_symbols(hnx_raw)
+
+    if not hose_symbols:
+        raise RuntimeError(
+            "Danh sách HOSE trả về rỗng. "
+            "Không tiếp tục quét để tránh thiếu dữ liệu."
         )
 
-    exchange_col = next(
-        (
-            c for c in (
-                "exchange",
-                "com_group_code",
-                "floor"
-            )
-            if c in df.columns
-        ),
-        None
+    if not hnx_symbols:
+        raise RuntimeError(
+            "Danh sách HNX trả về rỗng. "
+            "Không tiếp tục quét để tránh thiếu dữ liệu."
+        )
+
+    # Gộp hai sàn, loại mã trùng.
+    # Không truy vấn nhóm UPCOM.
+    symbols = sorted(
+        set(hose_symbols + hnx_symbols)
     )
-
-    if exchange_col is None:
-        raise RuntimeError(
-            "Không tìm thấy cột sàn giao dịch. "
-            f"Các cột nhận được: {list(df.columns)}"
-        )
-
-    exchange = (
-        df[exchange_col]
-        .astype(str)
-        .str.upper()
-        .str.strip()
-    )
-
-    # Chỉ lấy HOSE và HNX, loại UPCoM.
-    df = df[
-        exchange.isin([
-            "HOSE",
-            "HSX",
-            "HNX"
-        ])
-    ].copy()
-
-    # Nếu nguồn có cột loại chứng khoán,
-    # chỉ lấy cổ phiếu, không lấy chứng quyền/quỹ/trái phiếu.
-    if "type" in df.columns:
-        stock_type = (
-            df["type"]
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
-
-        df = df[
-            stock_type.isin([
-                "STOCK",
-                "EQUITY",
-                "CP"
-            ])
-        ]
-
-    symbols = sorted({
-        normalize_symbol(s)
-        for s in df["symbol"].dropna().tolist()
-        if re.fullmatch(
-            r"[A-Z0-9]{3,10}",
-            str(s).strip().upper()
-        )
-    })
 
     if not symbols:
         raise RuntimeError(
-            "Không lọc được mã HOSE/HNX. "
-            "Dừng quét để tránh báo cáo thiếu dữ liệu."
+            "Không tìm thấy mã cổ phiếu HOSE/HNX."
         )
 
     _SYMBOL_CACHE = symbols
-    _SYMBOL_CACHE_AT = now
+    _SYMBOL_CACHE_AT = time.monotonic()
 
     return list(_SYMBOL_CACHE)
