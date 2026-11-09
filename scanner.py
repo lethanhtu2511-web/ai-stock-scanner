@@ -1,4 +1,5 @@
 import math
+
 import pandas as pd
 import numpy as np
 
@@ -50,7 +51,9 @@ def calculate_indicators(df):
     )
 
     if len(data) < 200:
-        raise ValueError("Không đủ 200 phiên dữ liệu.")
+        raise ValueError(
+            "Không đủ 200 phiên dữ liệu."
+        )
 
     close = data["Close"]
 
@@ -174,11 +177,15 @@ def calculate_score(row):
 
     if row.VOLUME_RATIO >= 1.5:
         score += 15
-        reasons.append("Khối lượng nến ngày tăng mạnh")
+        reasons.append(
+            "Khối lượng nến ngày tăng mạnh"
+        )
 
     elif row.VOLUME_RATIO >= 1.2:
         score += 10
-        reasons.append("Khối lượng nến ngày cải thiện")
+        reasons.append(
+            "Khối lượng nến ngày cải thiện"
+        )
 
     return min(round(score / 90 * 100), 100), reasons
 
@@ -223,16 +230,15 @@ def analyze_stock(
         row = data.iloc[-1].copy()
 
         daily_close = float(row.Close)
-
-        # Nếu có bảng giá trong phiên, dùng giá khớp gần nhất.
-        # Các chỉ báo MA, MACD, RSI, ATR vẫn dựa trên nến ngày.
         is_live = live_quote is not None
 
         if is_live:
             price = float(live_quote["last_price"])
 
             if not np.isfinite(price) or price <= 0:
-                raise ValueError("Giá trực tiếp không hợp lệ.")
+                raise ValueError(
+                    "Giá bảng điện không hợp lệ."
+                )
 
             row.Close = price
 
@@ -260,12 +266,19 @@ def analyze_stock(
         stop = price - 1.5 * atr
 
         if stop <= 0:
-            raise ValueError("Giá cắt lỗ không hợp lệ.")
+            raise ValueError(
+                "Giá cắt lỗ không hợp lệ."
+            )
 
-        target = calculate_target_price(price, stop)
+        target = calculate_target_price(
+            price,
+            stop
+        )
 
         if target is None:
-            raise ValueError("Không tính được giá mục tiêu.")
+            raise ValueError(
+                "Không tính được giá mục tiêu."
+            )
 
         risk_share = (
             price * (1 + BUY_FEE + SLIPPAGE)
@@ -304,10 +317,14 @@ def analyze_stock(
             quantity_capital
         )
 
-        quantity = (quantity // LOT_SIZE) * LOT_SIZE
+        quantity = (
+            quantity // LOT_SIZE
+        ) * LOT_SIZE
 
         capital_used = (
-            quantity * price * (1 + BUY_FEE + SLIPPAGE)
+            quantity
+            * price
+            * (1 + BUY_FEE + SLIPPAGE)
         )
 
         risk_money = quantity * risk_share
@@ -321,7 +338,11 @@ def analyze_stock(
             risk_money <= risk_budget
         ]
 
-        signal = "BUY" if all(conditions) else "WAIT"
+        signal = (
+            "BUY"
+            if all(conditions)
+            else "WAIT"
+        )
 
         reason = (
             "Đạt các điều kiện kỹ thuật và quản trị rủi ro."
@@ -394,7 +415,7 @@ def scan_market(
 
     if live_mode and live_quotes is None:
         raise RuntimeError(
-            "Đang ở chế độ trong phiên nhưng chưa có bảng giá trực tiếp."
+            "Đang trong khung giờ giao dịch nhưng chưa có bảng giá."
         )
 
     results = []
@@ -416,8 +437,7 @@ def scan_market(
 
                 if quote is None:
                     raise ValueError(
-                        "Không nhận được giá trực tiếp cho mã này; "
-                        "không dùng giá nến ngày thay thế."
+                        "Không nhận được giá bảng điện cho mã này."
                     )
 
             result = analyze_stock(
@@ -432,13 +452,13 @@ def scan_market(
             if result.get("signal") == "BUY":
                 results.append(result)
 
-            elif (
-                result.get("reason")
-                and result.get("data_date") is None
-            ):
+            elif result.get("data_date") is None:
                 errors.append({
                     "symbol": symbol,
-                    "error": result["reason"]
+                    "error": result.get(
+                        "reason",
+                        "Không phân tích được dữ liệu."
+                    )
                 })
 
         except Exception as exc:
