@@ -12,10 +12,7 @@ from scanner import (
 
 from data_provider import (
     fetch_stock_history,
-    fetch_stock_quote,
-    fetch_exchange_symbols,
-    get_market_status,
-    fetch_market_quotes
+    fetch_exchange_symbols
 )
 
 
@@ -29,7 +26,7 @@ st.set_page_config(
 )
 
 
-# Lưu kết quả trong phiên Streamlit.
+# Lưu kết quả quét trong phiên Streamlit.
 if "market_scan_output" not in st.session_state:
     st.session_state["market_scan_output"] = None
 
@@ -43,6 +40,10 @@ st.caption(
     "Sàng lọc cổ phiếu HOSE/HNX cho chiến lược ngắn hạn 2–5 phiên."
 )
 
+
+# =====================================================
+# QUẢN TRỊ VỐN
+# =====================================================
 
 with st.sidebar:
 
@@ -70,8 +71,13 @@ with st.sidebar:
     st.divider()
 
     st.caption(
-        "Lịch sử nến ngày: DNSE/Vietcap. "
-        "Bảng giá trong phiên: VNStock KBS."
+        "Dữ liệu phân tích: nến ngày OHLCV. "
+        "Không sử dụng bảng giá trực tiếp trong phiên."
+    )
+
+    st.caption(
+        "Lọc thanh khoản: GTGD bình quân 20 phiên "
+        "tối thiểu 5 tỷ/ngày và trung vị tối thiểu 3 tỷ/ngày."
     )
 
 
@@ -110,104 +116,51 @@ with tab1:
             try:
 
                 with st.spinner(
-                    "Đang kiểm tra phiên và lấy dữ liệu..."
+                    "Đang lấy dữ liệu nến ngày..."
                 ):
-
-                    market_status = get_market_status()
 
                     history = fetch_stock_history(
                         symbol,
                         length=260
                     )
 
-                    live_quote = None
+                    result = analyze_stock(
+                        history,
+                        capital=capital,
+                        risk_percent=risk_pct,
+                        symbol=symbol
+                    )
 
-                    if market_status["is_open"]:
-
-                        quotes = fetch_market_quotes(
-                            [symbol]
-                        )
-
-                        live_quote = quotes.get(symbol)
-
-                        if live_quote is None:
-
-                            raise RuntimeError(
-                                "Đang trong khung giờ giao dịch "
-                                "nhưng không lấy được giá bảng điện."
-                            )
-
-                        result = analyze_stock(
-                            history,
-                            capital,
-                            risk_pct,
-                            live_quote=live_quote,
-                            symbol=symbol
-                        )
-
-                        price_label = "Giá bảng điện"
-                        current_price = live_quote["last_price"]
-
-                    else:
-
-                        daily_quote = fetch_stock_quote(
-                            symbol
-                        )
-
-                        result = analyze_stock(
-                            history,
-                            capital,
-                            risk_pct,
-                            symbol=symbol
-                        )
-
-                        price_label = "Giá đóng cửa nến ngày"
-                        current_price = daily_quote["last_price"]
+                last_date = pd.Timestamp(
+                    history.iloc[-1]["Date"]
+                ).strftime("%d/%m/%Y")
 
                 st.subheader(
-                    f"Kết quả: {symbol}"
+                    f"Kết quả phân tích: {symbol}"
                 )
 
-                if market_status["is_open"]:
-
-                    st.success(
-                        "Đã truy vấn bảng giá trong khung giờ giao dịch."
-                    )
-
-                    st.caption(
-                        f"Nguồn: VNStock KBS | "
-                        f"Thời điểm truy vấn: "
-                        f"{market_status['checked_at']}"
-                    )
-
-                    st.warning(
-                        "Bảng giá KBS không cung cấp timestamp riêng "
-                        "cho từng mã. Thời điểm truy vấn không đồng nghĩa "
-                        "với thời điểm khớp lệnh của mã này."
-                    )
-
-                else:
-
-                    st.info(
-                        "Ngoài khung giờ giao dịch. "
-                        "Đang sử dụng nến ngày gần nhất."
-                    )
-
-                    st.caption(
-                        f"Trạng thái: {market_status['status']}"
-                    )
+                st.info(
+                    f"Dữ liệu đóng cửa gần nhất: {last_date}. "
+                    "Chỉ sử dụng nến ngày đã hoàn tất."
+                )
 
                 if result.get("signal") == "BUY":
 
-                    st.success("🟢 TÍN HIỆU BUY")
+                    st.success(
+                        "🟢 TÍN HIỆU BUY"
+                    )
 
                 elif result.get("signal") == "FILTERED":
 
-                    st.warning("⚪ MÃ BỊ LOẠI KHỎI DANH SÁCH")
+                    st.warning(
+                        "⚪ MÃ BỊ LOẠI KHỎI DANH SÁCH"
+                    )
 
                 else:
 
-                    st.warning("🟡 TÍN HIỆU WAIT")
+                    st.warning(
+                        "🟡 TÍN HIỆU WAIT"
+                    )
 
                 st.write(
                     result.get("reason", "")
@@ -216,8 +169,8 @@ with tab1:
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
-                    price_label,
-                    f"{current_price:,.0f} đ"
+                    "Giá đóng cửa",
+                    f"{result.get('price', 0):,.0f} đ"
                 )
 
                 c2.metric(
@@ -264,33 +217,42 @@ with tab1:
                     f"{result.get('risk_money', 0):,.0f} đ"
                 )
 
-                if result.get("avg_turnover_20d") is not None:
+                c1, c2 = st.columns(2)
 
-                    st.metric(
-                        "GTGD bình quân 20 phiên",
-                        f"{result['avg_turnover_20d'] / 1e9:.2f} tỷ đồng/ngày"
+                c1.metric(
+                    "GTGD bình quân 20 phiên",
+                    (
+                        f"{result.get('avg_turnover_20d', 0) / 1e9:.2f} "
+                        "tỷ đồng/ngày"
                     )
+                )
 
-                if result.get("median_turnover_20d") is not None:
-
-                    st.metric(
-                        "GTGD trung vị 20 phiên",
-                        f"{result['median_turnover_20d'] / 1e9:.2f} tỷ đồng/ngày"
+                c2.metric(
+                    "GTGD trung vị 20 phiên",
+                    (
+                        f"{result.get('median_turnover_20d', 0) / 1e9:.2f} "
+                        "tỷ đồng/ngày"
                     )
+                )
 
-                st.subheader("Yếu tố kỹ thuật")
+                st.subheader(
+                    "Các yếu tố kỹ thuật"
+                )
 
                 for reason in result.get("reasons", []):
 
-                    st.write("• " + reason)
+                    st.write(
+                        "• " + reason
+                    )
 
                 st.caption(
-                    "RSI, MACD, MA, ATR và khối lượng trung bình "
-                    "được tính từ nến ngày. Trong khung giờ giao dịch, "
-                    "giá bảng điện được dùng để đánh giá mức giá hiện tại."
+                    "Chỉ báo MA, RSI, MACD, ATR và khối lượng "
+                    "đều được tính từ dữ liệu nến ngày."
                 )
 
-                with st.expander("10 phiên gần nhất"):
+                with st.expander(
+                    "Xem 10 phiên gần nhất"
+                ):
 
                     st.dataframe(
                         history.tail(10),
@@ -316,15 +278,14 @@ with tab2:
     )
 
     st.info(
-        "Bot tự kiểm tra khung giờ và lịch nghỉ đã cấu hình. "
-        "Trong khung giờ giao dịch sẽ truy vấn bảng giá KBS; "
-        "ngoài phiên sẽ sử dụng nến ngày gần nhất."
+        "Bot chỉ sử dụng dữ liệu nến ngày đã hoàn tất. "
+        "Không truy vấn bảng giá KBS trong phiên."
     )
 
     st.warning(
-        "Lịch nghỉ đã cấu hình cho năm 2026. "
-        "Bảng giá KBS không có timestamp riêng từng mã; "
-        "thời điểm truy vấn không phải thời điểm khớp lệnh riêng."
+        "Nếu quét trước 15:30, nến của ngày hiện tại "
+        "sẽ được bỏ qua để tránh sử dụng dữ liệu chưa hoàn tất. "
+        "Sau 15:30, bot sử dụng nến mới nhất nếu nguồn đã cập nhật."
     )
 
     if st.button(
@@ -338,30 +299,7 @@ with tab2:
 
         try:
 
-            # BƯỚC 1: Kiểm tra phiên giao dịch.
-
-            with st.spinner(
-                "Đang kiểm tra phiên giao dịch..."
-            ):
-
-                market_status = get_market_status()
-
-            st.write(
-                f"**Trạng thái:** {market_status['status']}"
-            )
-
-            st.caption(
-                f"Thời điểm kiểm tra: "
-                f"{market_status['checked_at']}"
-            )
-
-            st.caption(
-                market_status.get("calendar_note", "")
-            )
-
-            live_mode = market_status["is_open"]
-
-            # BƯỚC 2: Lấy danh sách mã.
+            # Lấy danh sách mã.
 
             with st.spinner(
                 "Đang lấy danh sách cổ phiếu HOSE và HNX..."
@@ -369,68 +307,17 @@ with tab2:
 
                 symbols = fetch_exchange_symbols()
 
-            st.write(
-                f"**Danh sách cổ phiếu:** {len(symbols)} mã."
-            )
-
             if not symbols:
 
                 raise RuntimeError(
                     "Danh sách cổ phiếu đang rỗng."
                 )
 
-            live_quotes = None
-            quote_errors = []
+            st.write(
+                f"**Danh sách cổ phiếu:** {len(symbols)} mã."
+            )
 
-            # BƯỚC 3: Lấy bảng giá nếu đang trong phiên.
-
-            if live_mode:
-
-                st.info(
-                    "Đang truy vấn bảng giá KBS cho toàn bộ danh sách."
-                )
-
-                with st.spinner(
-                    "Đang lấy bảng giá..."
-                ):
-
-                    live_quotes = fetch_market_quotes(
-                        symbols
-                    )
-
-                missing_symbols = sorted(
-                    set(symbols) - set(live_quotes)
-                )
-
-                st.success(
-                    f"Nhận được giá cho "
-                    f"{len(live_quotes)}/{len(symbols)} mã."
-                )
-
-                for missing_symbol in missing_symbols:
-
-                    quote_errors.append({
-                        "symbol": missing_symbol,
-                        "error": (
-                            "Không nhận được giá bảng điện KBS. "
-                            "Không dùng giá nến ngày thay thế."
-                        )
-                    })
-
-                if missing_symbols:
-
-                    st.warning(
-                        f"Có {len(missing_symbols)} mã không nhận được giá. "
-                        "Các mã này sẽ không được phân tích trong phiên."
-                    )
-
-            else:
-
-                st.info(
-                    "Ngoài khung giờ giao dịch: sử dụng nến ngày gần nhất."
-                )
-
-            # BƯỚC 4: Quét cổ phiếu.
+            # Quét dữ liệu nến ngày.
 
             def update_progress(done, total):
 
@@ -439,62 +326,25 @@ with tab2:
                 )
 
                 status_box.write(
-                    f"Đang quét {done}/{total} mã..."
+                    f"Đang phân tích {done}/{total} mã..."
                 )
 
-            output = scan_market(
-                capital=capital,
-                risk_percent=risk_pct,
-                max_symbols=len(symbols),
-                progress_callback=update_progress,
-                live_mode=live_mode,
-                live_quotes=live_quotes
-            )
+            with st.spinner(
+                "Đang phân tích dữ liệu nến ngày của toàn thị trường..."
+            ):
 
-            # Gộp lỗi giá và lỗi dữ liệu lịch sử.
-
-            all_errors = (
-                quote_errors
-                + output.get("errors", [])
-            )
-
-            unique_errors = []
-            seen_errors = set()
-
-            for item in all_errors:
-
-                key = (
-                    item.get("symbol"),
-                    item.get("error")
+                output = scan_market(
+                    capital=capital,
+                    risk_percent=risk_pct,
+                    max_symbols=len(symbols),
+                    progress_callback=update_progress
                 )
 
-                if key not in seen_errors:
-
-                    seen_errors.add(key)
-                    unique_errors.append(item)
-
-            output["errors"] = unique_errors
-            output["error_count"] = len(unique_errors)
-
-            output["quote_received"] = (
-                len(live_quotes)
-                if live_mode
-                else None
-            )
-
-            output["quote_total"] = (
-                len(symbols)
-                if live_mode
-                else None
-            )
-
-            # LƯU KẾT QUẢ VÀO SESSION STATE.
+            # Lưu kết quả.
 
             st.session_state["market_scan_output"] = output
 
             st.session_state["market_scan_meta"] = {
-                "live_mode": live_mode,
-                "market_status": market_status,
                 "symbols_total": len(symbols),
                 "completed_at": datetime.now(
                     VN_TZ
@@ -507,7 +357,7 @@ with tab2:
                 f"Không thể quét toàn thị trường: {exc}"
             )
 
-    # HIỂN THỊ KẾT QUẢ ĐÃ LƯU.
+    # Hiển thị kết quả đã lưu.
 
     output = st.session_state.get(
         "market_scan_output"
@@ -526,22 +376,6 @@ with tab2:
             f"({meta['symbols_total']} mã)."
         )
 
-        if meta["live_mode"]:
-
-            st.caption(
-                "Giá đánh giá: giá bảng điện KBS tại lúc truy vấn. "
-                "Nguồn không cung cấp timestamp riêng từng mã; "
-                "chỉ báo kỹ thuật vẫn dựa trên nến ngày."
-            )
-
-        else:
-
-            st.caption(
-                "Giá đánh giá: giá đóng cửa nến ngày gần nhất."
-            )
-
-        # Thống kê tổng quan.
-
         c1, c2, c3 = st.columns(3)
 
         c1.metric(
@@ -559,14 +393,12 @@ with tab2:
             output.get("error_count", 0)
         )
 
-        if output.get("filtered_count") is not None:
+        st.caption(
+            "Số mã bị loại do thanh khoản hoặc điều kiện: "
+            f"{output.get('filtered_count', 0)}"
+        )
 
-            st.caption(
-                f"Số mã bị loại do thanh khoản hoặc điều kiện: "
-                f"{output.get('filtered_count', 0)}"
-            )
-
-        # BẢNG BUY.
+        # Bảng BUY.
 
         if output.get("results"):
 
@@ -588,8 +420,7 @@ with tab2:
                 "quantity",
                 "capital_used",
                 "risk_money",
-                "data_date",
-                "price_mode"
+                "data_date"
             ]
 
             display = display[
@@ -602,7 +433,7 @@ with tab2:
             display = display.rename(columns={
                 "symbol": "Mã",
                 "score": "Điểm",
-                "price": "Giá đánh giá",
+                "price": "Giá đóng cửa",
                 "stop_loss": "Cắt lỗ",
                 "target_price": "Mục tiêu",
                 "reward_risk": "LN/RR",
@@ -613,14 +444,25 @@ with tab2:
                 "quantity": "Số lượng",
                 "capital_used": "Vốn sử dụng",
                 "risk_money": "Rủi ro dự kiến",
-                "data_date": "Ngày nến",
-                "price_mode": "Loại giá"
+                "data_date": "Ngày dữ liệu"
             })
 
             st.dataframe(
                 display,
                 use_container_width=True,
                 hide_index=True
+            )
+
+            csv_data = display.to_csv(
+                index=False
+            ).encode("utf-8-sig")
+
+            st.download_button(
+                "TẢI DANH SÁCH TÍN HIỆU BUY",
+                data=csv_data,
+                file_name="co_phieu_tin_hieu_buy.csv",
+                mime="text/csv",
+                use_container_width=True
             )
 
         else:
@@ -630,7 +472,7 @@ with tab2:
                 "Không có tín hiệu cũng là kết quả hợp lệ."
             )
 
-        # CHI TIẾT LỖI DỮ LIỆU.
+        # Lỗi dữ liệu.
 
         errors = output.get("errors", [])
 
@@ -647,7 +489,7 @@ with tab2:
             ):
 
                 st.write(
-                    "Hiển thị tối đa 20 lỗi đầu tiên để giảm tải trang."
+                    "Hiển thị tối đa 20 lỗi đầu tiên."
                 )
 
                 st.dataframe(
@@ -655,13 +497,6 @@ with tab2:
                     use_container_width=True,
                     hide_index=True
                 )
-
-                if len(error_df) > 20:
-
-                    st.caption(
-                        f"Còn {len(error_df) - 20} lỗi khác. "
-                        "Tải CSV để xem toàn bộ."
-                    )
 
                 st.download_button(
                     "TẢI TOÀN BỘ LỖI DỮ LIỆU",
@@ -694,8 +529,7 @@ st.caption(
 )
 
 st.caption(
-    "Trong phiên: bảng giá VNStock KBS. "
-    "Ngoài phiên: nến ngày gần nhất. "
-    "Các chỉ báo kỹ thuật và khối lượng trung bình "
-    "vẫn dựa trên dữ liệu nến ngày."
+    "Nguồn dữ liệu lịch sử nến ngày: DNSE/Vietcap "
+    "thông qua vn-market-data. "
+    "Bot không sử dụng bảng giá trực tiếp."
 )
