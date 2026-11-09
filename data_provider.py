@@ -19,6 +19,30 @@ _SYMBOL_CACHE_AT = 0.0
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
+# Lịch nghỉ giao dịch HOSE/HNX năm 2026 đã công bố.
+TRADING_HOLIDAYS_2026 = {
+    "2026-01-01",
+    "2026-01-02",
+    "2026-02-16",
+    "2026-02-17",
+    "2026-02-18",
+    "2026-02-19",
+    "2026-02-20",
+    "2026-04-27",
+    "2026-04-30",
+    "2026-05-01",
+    "2026-08-31",
+    "2026-09-01",
+    "2026-09-02",
+}
+
+# Ngày làm bù nhưng HOSE/HNX không tổ chức giao dịch.
+NO_TRADING_WORKING_DAYS_2026 = {
+    "2026-01-10",
+    "2026-08-22",
+}
+
+
 def normalize_symbol(symbol):
     symbol = str(symbol).strip().upper()
 
@@ -30,12 +54,16 @@ def normalize_symbol(symbol):
 
 def _normalize_history(rows):
     if rows is None:
-        raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
+        raise ValueError(
+            "Nguồn dữ liệu không trả về lịch sử giá."
+        )
 
     df = pd.DataFrame(rows)
 
     if df.empty:
-        raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
+        raise ValueError(
+            "Nguồn dữ liệu không trả về lịch sử giá."
+        )
 
     df.columns = [
         str(c).strip().lower()
@@ -50,8 +78,12 @@ def _normalize_history(rows):
     })
 
     required = [
-        "date", "open", "high",
-        "low", "close", "volume"
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
     ]
 
     missing = [
@@ -60,7 +92,9 @@ def _normalize_history(rows):
     ]
 
     if missing:
-        raise ValueError(f"Thiếu cột OHLCV: {missing}")
+        raise ValueError(
+            f"Thiếu cột OHLCV: {missing}"
+        )
 
     df = df[required].copy()
 
@@ -115,7 +149,10 @@ def fetch_stock_history(symbol, length=260):
 
     cached = _HISTORY_CACHE.get(key)
 
-    if cached and now - cached[0] < HISTORY_CACHE_SECONDS:
+    if (
+        cached
+        and now - cached[0] < HISTORY_CACHE_SECONDS
+    ):
         return cached[1].copy()
 
     rows = get_ohlcv(
@@ -135,7 +172,9 @@ def fetch_stock_history(symbol, length=260):
             "cần tối thiểu 200 phiên."
         )
 
-    df.attrs["source"] = "DNSE/Vietcap - lịch sử nến ngày"
+    df.attrs["source"] = (
+        "DNSE/Vietcap - lịch sử nến ngày"
+    )
 
     _HISTORY_CACHE[key] = (
         time.monotonic(),
@@ -174,44 +213,92 @@ def fetch_stock_quote(symbol):
 
 def get_market_status():
     """
-    Nhận diện khung giờ giao dịch theo giờ Việt Nam.
+    Kiểm tra giờ Việt Nam, cuối tuần và lịch nghỉ năm 2026.
+
+    Không gọi API reference market status vì tài khoản Khách
+    không có quyền sử dụng chức năng đó.
 
     Lưu ý:
-    - Không gọi Reference().market.status() vì tài khoản Khách
-      không có quyền sử dụng chức năng đó.
-    - Không tự nhận diện ngày nghỉ lễ.
-    - Bảng giá thực tế vẫn phải được truy vấn thành công
-      trước khi bật chế độ giá trong phiên.
+    - Năm 2026 dùng lịch nghỉ đã công bố.
+    - Năm khác chưa tự động có lịch nghỉ chính thức.
+    - checked_at là thời điểm kiểm tra, không phải timestamp
+      riêng của từng mã trên bảng giá.
     """
 
     now = datetime.now(VN_TZ)
+    today = now.date()
+    date_key = today.isoformat()
     current_time = now.time()
 
-    is_weekday = now.weekday() < 5
+    if date_key in TRADING_HOLIDAYS_2026:
+        return {
+            "is_open": False,
+            "status": "Nghỉ giao dịch theo lịch HOSE/HNX năm 2026",
+            "checked_at": now.strftime(
+                "%H:%M:%S %d/%m/%Y"
+            ),
+            "source": "Lịch nghỉ giao dịch HOSE/HNX năm 2026",
+            "holiday_check": True,
+            "calendar_note": (
+                "Ngày nghỉ đã được cấu hình theo thông báo "
+                "của HOSE và HNX."
+            )
+        }
+
+    if date_key in NO_TRADING_WORKING_DAYS_2026:
+        return {
+            "is_open": False,
+            "status": (
+                "Ngày làm bù nhưng không tổ chức giao dịch "
+                "chứng khoán"
+            ),
+            "checked_at": now.strftime(
+                "%H:%M:%S %d/%m/%Y"
+            ),
+            "source": "Lịch HOSE/HNX năm 2026",
+            "holiday_check": True,
+            "calendar_note": (
+                "Ngày làm bù không có giao dịch chứng khoán."
+            )
+        }
+
+    if now.weekday() >= 5:
+        return {
+            "is_open": False,
+            "status": "Ngoài phiên - cuối tuần",
+            "checked_at": now.strftime(
+                "%H:%M:%S %d/%m/%Y"
+            ),
+            "source": "Lịch tuần",
+            "holiday_check": True,
+            "calendar_note": (
+                "Không tổ chức giao dịch vào thứ Bảy, Chủ nhật."
+            )
+        }
 
     morning_session = (
-        dt_time(9, 0) <= current_time <= dt_time(11, 30)
+        dt_time(9, 0) <= current_time < dt_time(11, 30)
     )
 
     afternoon_session = (
-        dt_time(13, 0) <= current_time <= dt_time(15, 0)
+        dt_time(13, 0) <= current_time < dt_time(15, 0)
     )
 
     in_trading_hours = (
-        is_weekday
-        and (morning_session or afternoon_session)
+        morning_session or afternoon_session
     )
 
-    if not is_weekday:
-        status = "Ngoài phiên - cuối tuần"
-
-    elif current_time < dt_time(9, 0):
+    if current_time < dt_time(9, 0):
         status = "Ngoài phiên - chưa mở cửa"
 
-    elif dt_time(11, 30) < current_time < dt_time(13, 0):
+    elif (
+        dt_time(11, 30)
+        <= current_time
+        < dt_time(13, 0)
+    ):
         status = "Ngoài phiên - nghỉ trưa"
 
-    elif current_time > dt_time(15, 0):
+    elif current_time >= dt_time(15, 0):
         status = "Ngoài phiên - đã đóng cửa"
 
     elif in_trading_hours:
@@ -220,19 +307,40 @@ def get_market_status():
     else:
         status = "Ngoài phiên"
 
+    if today.year == 2026:
+        calendar_note = (
+            "Đã cấu hình lịch nghỉ giao dịch năm 2026. "
+            "Nếu có thông báo điều chỉnh mới, cần cập nhật lại."
+        )
+        holiday_check = True
+    else:
+        calendar_note = (
+            "Chưa cấu hình lịch nghỉ chính thức cho năm này. "
+            "Bot chỉ kiểm tra thứ và giờ giao dịch."
+        )
+        holiday_check = False
+
     return {
         "is_open": in_trading_hours,
         "status": status,
-        "checked_at": now.strftime("%H:%M:%S %d/%m/%Y"),
-        "source": "Đồng hồ Việt Nam - khung giờ giao dịch dự kiến",
-        "holiday_check": False
+        "checked_at": now.strftime(
+            "%H:%M:%S %d/%m/%Y"
+        ),
+        "source": (
+            "Đồng hồ Việt Nam và lịch nghỉ đã cấu hình"
+        ),
+        "holiday_check": holiday_check,
+        "calendar_note": calendar_note
     }
 
 
 def fetch_market_quotes(symbols):
     """
     Lấy bảng giá nhiều mã bằng Market().quote().
-    close_price là giá khớp gần nhất do nguồn bảng giá trả về.
+
+    close_price là giá do bảng giá KBS trả về.
+    Nguồn không cung cấp timestamp riêng cho từng mã,
+    vì vậy không coi checked_at là thời điểm khớp của từng mã.
     """
 
     clean_symbols = sorted({
@@ -323,18 +431,24 @@ def fetch_market_quotes(symbols):
         if symbol not in clean_symbols:
             continue
 
-        reference_price = row.get("reference_price")
+        reference_price = row.get(
+            "reference_price"
+        )
 
         quotes[symbol] = {
             "symbol": symbol,
-            "last_price": float(row["close_price"]),
+            "last_price": float(
+                row["close_price"]
+            ),
             "reference_price": (
                 float(reference_price)
                 if pd.notna(reference_price)
                 else None
             ),
             "exchange": row.get("exchange", ""),
-            "source": "VNStock KBS - bảng giá nhiều mã"
+            "source": (
+                "VNStock KBS - bảng giá nhiều mã"
+            )
         }
 
     if not quotes:
