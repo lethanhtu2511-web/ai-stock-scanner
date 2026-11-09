@@ -4,17 +4,11 @@ import pandas as pd
 import numpy as np
 
 
-INITIAL_CAPITAL = 10_000_000
-RISK_PERCENT = 0.02
-
 MIN_SCORE = 78
 MIN_REWARD_RISK = 2.0
 
-# Bộ lọc thanh khoản.
 MIN_AVG_TURNOVER_20D = 5_000_000_000
 MIN_MEDIAN_TURNOVER_20D = 3_000_000_000
-
-LOT_SIZE = 100
 
 BUY_FEE = 0.0015
 SELL_FEE = 0.0015
@@ -30,38 +24,20 @@ MANUALLY_BLOCKED_SYMBOLS = {
 
 
 def calculate_indicators(df):
-
     data = df.copy()
 
     required = [
-        "Date",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume"
+        "Date", "Open", "High", "Low", "Close", "Volume"
     ]
 
-    missing = [
-        c for c in required
-        if c not in data.columns
-    ]
-
+    missing = [c for c in required if c not in data.columns]
     if missing:
-        raise ValueError(
-            f"Thiếu dữ liệu OHLCV: {missing}"
-        )
+        raise ValueError(f"Thiếu dữ liệu OHLCV: {missing}")
 
-    data["Date"] = pd.to_datetime(
-        data["Date"],
-        errors="coerce"
-    )
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
 
     for col in required[1:]:
-        data[col] = pd.to_numeric(
-            data[col],
-            errors="coerce"
-        )
+        data[col] = pd.to_numeric(data[col], errors="coerce")
 
     data = (
         data.dropna(subset=required)
@@ -87,88 +63,48 @@ def calculate_indicators(df):
 
     if len(data) < 200:
         raise ValueError(
-            f"Không đủ 200 phiên dữ liệu "
-            f"(hiện có {len(data)})."
+            f"INSUFFICIENT_HISTORY: Chỉ có {len(data)} phiên, "
+            "yêu cầu tối thiểu 200 phiên."
         )
 
-    # Giá trị giao dịch ước tính = giá đóng cửa x khối lượng.
-    data["TURNOVER"] = (
-        data["Close"] * data["Volume"]
-    )
-
-    data["AVG_TURNOVER_20D"] = (
-        data["TURNOVER"].rolling(20).mean()
-    )
-
-    data["MEDIAN_TURNOVER_20D"] = (
-        data["TURNOVER"].rolling(20).median()
-    )
+    data["TURNOVER"] = data["Close"] * data["Volume"]
+    data["AVG_TURNOVER_20D"] = data["TURNOVER"].rolling(20).mean()
+    data["MEDIAN_TURNOVER_20D"] = data["TURNOVER"].rolling(20).median()
 
     close = data["Close"]
 
-    # Đường trung bình.
     data["MA20"] = close.rolling(20).mean()
     data["MA50"] = close.rolling(50).mean()
     data["MA200"] = close.rolling(200).mean()
 
-    # RSI 14.
     delta = close.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
+        alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
 
     avg_loss = loss.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
+        alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
 
-    rs = (
-        avg_gain
-        / avg_loss.replace(0, np.nan)
-    )
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    data["RSI"] = (100 - 100 / (1 + rs)).fillna(50)
 
-    data["RSI"] = (
-        100 - 100 / (1 + rs)
-    ).fillna(50)
-
-    # MACD.
-    ema12 = close.ewm(
-        span=12,
-        adjust=False
-    ).mean()
-
-    ema26 = close.ewm(
-        span=26,
-        adjust=False
-    ).mean()
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
 
     data["MACD"] = ema12 - ema26
+    data["MACD_SIGNAL"] = data["MACD"].ewm(
+        span=9, adjust=False
+    ).mean()
 
-    data["MACD_SIGNAL"] = (
-        data["MACD"].ewm(
-            span=9,
-            adjust=False
-        ).mean()
-    )
-
-    # Khối lượng.
-    data["VOLUME_MA20"] = (
-        data["Volume"].rolling(20).mean()
-    )
-
+    data["VOLUME_MA20"] = data["Volume"].rolling(20).mean()
     data["VOLUME_RATIO"] = (
-        data["Volume"]
-        / data["VOLUME_MA20"].replace(0, np.nan)
+        data["Volume"] / data["VOLUME_MA20"].replace(0, np.nan)
     )
 
-    # ATR 14.
     previous_close = close.shift(1)
 
     true_range = pd.concat(
@@ -180,31 +116,20 @@ def calculate_indicators(df):
         axis=1
     ).max(axis=1)
 
-    data["ATR14"] = (
-        true_range.rolling(14).mean()
-    )
-
-    # Đỉnh các phiên trước, tránh nhìn trước dữ liệu.
+    data["ATR14"] = true_range.rolling(14).mean()
     data["HIGH20_PREVIOUS"] = (
         data["High"].shift(1).rolling(20).max()
     )
-
     data["HIGH50_PREVIOUS"] = (
         data["High"].shift(1).rolling(50).max()
     )
 
-    return (
-        data.dropna()
-        .reset_index(drop=True)
-    )
+    return data.dropna().reset_index(drop=True)
 
 
 def calculate_score(row):
-
     score = 0
     reasons = []
-
-    # 1. Xu hướng: 20 điểm.
 
     if row.Close > row.MA20:
         score += 7
@@ -218,39 +143,20 @@ def calculate_score(row):
         score += 6
         reasons.append("MA50 trên MA200")
 
-    # 2. Dòng tiền: 25 điểm.
-
     if row.VOLUME_RATIO >= 1.5:
         score += 10
-        reasons.append(
-            "Khối lượng cao hơn TB20 ít nhất 50%"
-        )
-
+        reasons.append("Khối lượng cao hơn TB20 ít nhất 50%")
     elif row.VOLUME_RATIO >= 1.2:
         score += 7
-        reasons.append(
-            "Khối lượng cải thiện so với TB20"
-        )
+        reasons.append("Khối lượng cải thiện so với TB20")
 
-    if (
-        row.TURNOVER
-        > row.AVG_TURNOVER_20D * 1.2
-    ):
+    if row.TURNOVER > row.AVG_TURNOVER_20D * 1.2:
         score += 10
-        reasons.append(
-            "Giá trị giao dịch tăng so với TB20"
-        )
+        reasons.append("Giá trị giao dịch tăng so với TB20")
 
-    if (
-        row.Close > row.Open
-        and row.Volume >= row.VOLUME_MA20
-    ):
+    if row.Close > row.Open and row.Volume >= row.VOLUME_MA20:
         score += 5
-        reasons.append(
-            "Nến tăng có khối lượng xác nhận"
-        )
-
-    # 3. Động lượng: 15 điểm.
+        reasons.append("Nến tăng có khối lượng xác nhận")
 
     if row.MACD > row.MACD_SIGNAL:
         score += 7
@@ -259,132 +165,65 @@ def calculate_score(row):
     if 52 <= row.RSI <= 65:
         score += 8
         reasons.append("RSI trong vùng khỏe")
-
-    elif (
-        48 <= row.RSI < 52
-        or 65 < row.RSI <= 68
-    ):
+    elif 48 <= row.RSI < 52 or 65 < row.RSI <= 68:
         score += 5
         reasons.append("RSI chấp nhận được")
-
-    # 4. Breakout: 15 điểm.
 
     if row.Close > row.HIGH20_PREVIOUS:
         score += 15
         reasons.append("Vượt đỉnh 20 phiên")
-
-    elif (
-        row.Close
-        >= row.HIGH20_PREVIOUS * 0.97
-    ):
+    elif row.Close >= row.HIGH20_PREVIOUS * 0.97:
         score += 8
-        reasons.append(
-            "Áp sát vùng đỉnh 20 phiên"
-        )
+        reasons.append("Áp sát vùng đỉnh 20 phiên")
 
-    # 5. Chất lượng nến: 10 điểm.
+    candle_range = max(float(row.High - row.Low), 1e-9)
+    close_position = (float(row.Close) - float(row.Low)) / candle_range
 
-    candle_range = max(
-        float(row.High - row.Low),
-        1e-9
-    )
-
-    close_position = (
-        float(row.Close) - float(row.Low)
-    ) / candle_range
-
-    if (
-        row.Close > row.Open
-        and close_position >= 0.75
-    ):
+    if row.Close > row.Open and close_position >= 0.75:
         score += 10
-        reasons.append(
-            "Nến tăng, đóng cửa gần mức cao nhất"
-        )
-
-    elif (
-        row.Close > row.Open
-        and close_position >= 0.55
-    ):
+        reasons.append("Nến tăng, đóng cửa gần mức cao nhất")
+    elif row.Close > row.Open and close_position >= 0.55:
         score += 6
-        reasons.append(
-            "Nến tăng tương đối tốt"
-        )
+        reasons.append("Nến tăng tương đối tốt")
 
-    # 6. Biến động: 15 điểm.
-
-    atr_pct = (
-        float(row.ATR14)
-        / max(float(row.Close), 1e-9)
-        * 100
-    )
+    atr_pct = float(row.ATR14) / max(float(row.Close), 1e-9) * 100
 
     if 1.5 <= atr_pct <= 4.0:
         score += 15
-        reasons.append(
-            "Biến động phù hợp lướt sóng"
-        )
-
-    elif (
-        1.0 <= atr_pct < 1.5
-        or 4.0 < atr_pct <= 5.5
-    ):
+        reasons.append("Biến động phù hợp lướt sóng")
+    elif 1.0 <= atr_pct < 1.5 or 4.0 < atr_pct <= 5.5:
         score += 10
-        reasons.append(
-            "Biến động ở mức chấp nhận được"
-        )
-
+        reasons.append("Biến động ở mức chấp nhận được")
     elif atr_pct <= 6.5:
         score += 5
-        reasons.append(
-            "Biến động cần thận trọng"
-        )
+        reasons.append("Biến động cần thận trọng")
 
     return min(int(score), 100), reasons
 
 
-def calculate_target_price(
-    price,
-    stop_loss,
-    resistance=None
-):
-
+def calculate_target_price(price, stop_loss, resistance=None):
     risk_per_share = (
         price * (1 + BUY_FEE + SLIPPAGE)
-        - stop_loss * (
-            1 - SELL_FEE - SELL_TAX - SLIPPAGE
-        )
+        - stop_loss * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
     )
 
     if risk_per_share <= 0:
         return None
 
     target = price
-    min_target = None
 
     for _ in range(5000):
-
         reward = (
-            target * (
-                1 - SELL_FEE - SELL_TAX - SLIPPAGE
-            )
-            - price * (
-                1 + BUY_FEE + SLIPPAGE
-            )
+            target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+            - price * (1 + BUY_FEE + SLIPPAGE)
         )
 
-        if (
-            reward
-            >= MIN_REWARD_RISK * risk_per_share
-        ):
-            min_target = (
-                math.ceil(target / 100) * 100
-            )
+        if reward >= MIN_REWARD_RISK * risk_per_share:
+            min_target = math.ceil(target / 100) * 100
             break
 
         target += 100
-
-    if min_target is None:
+    else:
         return None
 
     if (
@@ -392,11 +231,7 @@ def calculate_target_price(
         and np.isfinite(resistance)
         and resistance > price * 1.01
     ):
-
-        resistance_price = (
-            math.floor(float(resistance) / 100)
-            * 100
-        )
+        resistance_price = math.floor(float(resistance) / 100) * 100
 
         if resistance_price < min_target:
             return None
@@ -407,64 +242,36 @@ def calculate_target_price(
 
 
 def _result_filtered(reason, row=None):
-
     result = {
         "signal": "FILTERED",
         "reason": reason
     }
 
     if row is not None:
-
         try:
-            result["data_date"] = (
-                pd.Timestamp(row.Date).strftime(
-                    "%d/%m/%Y"
-                )
-            )
+            result["data_date"] = pd.Timestamp(row.Date).strftime("%d/%m/%Y")
         except Exception:
             pass
 
     return result
 
 
-def analyze_stock(
-    df,
-    capital=INITIAL_CAPITAL,
-    risk_percent=RISK_PERCENT,
-    symbol=None
-):
-
+def analyze_stock(df, symbol=None):
     try:
-
-        if (
-            symbol
-            and symbol.upper() in MANUALLY_BLOCKED_SYMBOLS
-        ):
-
+        if symbol and symbol.upper() in MANUALLY_BLOCKED_SYMBOLS:
             return _result_filtered(
                 f"{symbol.upper()} bị chặn: "
                 f"{MANUALLY_BLOCKED_SYMBOLS[symbol.upper()]}"
             )
 
         data = calculate_indicators(df)
-
         row = data.iloc[-1].copy()
 
         price = float(row.Close)
+        avg_turnover = float(row.AVG_TURNOVER_20D)
+        median_turnover = float(row.MEDIAN_TURNOVER_20D)
 
-        avg_turnover = float(
-            row.AVG_TURNOVER_20D
-        )
-
-        median_turnover = float(
-            row.MEDIAN_TURNOVER_20D
-        )
-
-        data_date = pd.Timestamp(
-            row.Date
-        ).strftime("%d/%m/%Y")
-
-        # LỌC THANH KHOẢN.
+        data_date = pd.Timestamp(row.Date).strftime("%d/%m/%Y")
 
         if (
             not np.isfinite(avg_turnover)
@@ -472,34 +279,20 @@ def analyze_stock(
             or avg_turnover < MIN_AVG_TURNOVER_20D
             or median_turnover < MIN_MEDIAN_TURNOVER_20D
         ):
-
             return _result_filtered(
                 "Thanh khoản không đạt: "
-                f"GTGD bình quân 20 phiên "
-                f"{avg_turnover / 1e9:.2f} tỷ/ngày "
-                f"(yêu cầu ≥ 5 tỷ), "
-                f"trung vị "
-                f"{median_turnover / 1e9:.2f} tỷ/ngày "
-                f"(yêu cầu ≥ 3 tỷ).",
+                f"GTGD bình quân {avg_turnover / 1e9:.2f} tỷ/ngày "
+                "(yêu cầu ≥ 5 tỷ), "
+                f"trung vị {median_turnover / 1e9:.2f} tỷ/ngày "
+                "(yêu cầu ≥ 3 tỷ).",
                 row
             )
 
-        # Kiểm tra dữ liệu có quá cũ không.
-
-        today = pd.Timestamp.now(
-            tz="Asia/Ho_Chi_Minh"
-        ).date()
-
-        row_date = pd.Timestamp(
-            row.Date
-        ).date()
-
-        age_days = (
-            today - row_date
-        ).days
+        today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").date()
+        row_date = pd.Timestamp(row.Date).date()
+        age_days = (today - row_date).days
 
         if age_days > 7:
-
             return {
                 "signal": "WAIT",
                 "reason": (
@@ -509,72 +302,32 @@ def analyze_stock(
                 "data_date": data_date
             }
 
-        if (
-            not np.isfinite(float(row.ATR14))
-            or float(row.ATR14) <= 0
-        ):
-            raise ValueError(
-                "ATR không hợp lệ."
-            )
-
-        # CHỐNG MUA ĐUỔI.
+        if not np.isfinite(float(row.ATR14)) or float(row.ATR14) <= 0:
+            raise ValueError("ATR không hợp lệ.")
 
         ma20 = float(row.MA20)
-
-        extension_pct = (
-            (price / ma20 - 1) * 100
-            if ma20 > 0
-            else 999
-        )
-
-        previous_close = float(
-            data.iloc[-2].Close
-        )
-
-        day_change_pct = (
-            (price / previous_close - 1) * 100
-            if previous_close > 0
-            else 0
-        )
+        extension_pct = (price / ma20 - 1) * 100 if ma20 > 0 else 999
 
         if extension_pct > 8:
-
             return {
                 "signal": "WAIT",
-                "reason": (
-                    f"Giá cách MA20 {extension_pct:.1f}%, "
-                    "không mua đuổi."
-                ),
+                "reason": f"Giá cách MA20 {extension_pct:.1f}%, không mua đuổi.",
                 "data_date": data_date
             }
 
         if float(row.RSI) > 70:
-
             return {
                 "signal": "WAIT",
-                "reason": (
-                    "RSI trên 70: cổ phiếu đang quá nóng, "
-                    "chờ điều chỉnh."
-                ),
+                "reason": "RSI trên 70: cổ phiếu đang quá nóng, chờ điều chỉnh.",
                 "data_date": data_date
             }
 
-        # CHẤM ĐIỂM.
-
         score, reasons = calculate_score(row)
 
-        # CẮT LỖ THEO ATR.
-
-        stop = (
-            price - 1.5 * float(row.ATR14)
-        )
+        stop = price - 1.5 * float(row.ATR14)
 
         if stop <= 0 or stop >= price:
-            raise ValueError(
-                "Giá cắt lỗ không hợp lệ."
-            )
-
-        # MỤC TIÊU THEO KHÁNG CỰ.
+            raise ValueError("Giá cắt lỗ không hợp lệ.")
 
         target = calculate_target_price(
             price,
@@ -583,169 +336,66 @@ def analyze_stock(
         )
 
         if target is None:
-
             return {
                 "signal": "WAIT",
                 "reason": (
                     "Kháng cự gần không đủ dư địa "
-                    "để đạt tỷ lệ lợi nhuận/rủi ro "
-                    "tối thiểu 2:1."
+                    "để đạt tỷ lệ lợi nhuận/rủi ro tối thiểu 2:1."
                 ),
                 "data_date": data_date
             }
 
-        # TÍNH LỢI NHUẬN/RỦI RO SAU PHÍ.
-
         risk_share = (
             price * (1 + BUY_FEE + SLIPPAGE)
-            - stop * (
-                1 - SELL_FEE - SELL_TAX - SLIPPAGE
-            )
+            - stop * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
         )
 
         reward_share = (
-            target * (
-                1 - SELL_FEE - SELL_TAX - SLIPPAGE
-            )
-            - price * (
-                1 + BUY_FEE + SLIPPAGE
-            )
+            target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+            - price * (1 + BUY_FEE + SLIPPAGE)
         )
 
-        rr = (
-            reward_share / risk_share
-            if risk_share > 0
-            else 0
-        )
-
-        # QUẢN TRỊ VỐN.
-
-        risk_budget = (
-            float(capital) * float(risk_percent)
-        )
-
-        quantity_risk = (
-            int(risk_budget / risk_share)
-            if risk_share > 0
-            else 0
-        )
-
-        quantity_capital = int(
-            capital / (
-                price * (1 + BUY_FEE + SLIPPAGE)
-            )
-        )
-
-        quantity = min(
-            quantity_risk,
-            quantity_capital
-        )
-
-        quantity = (
-            quantity // LOT_SIZE
-        ) * LOT_SIZE
-
-        capital_used = (
-            quantity
-            * price
-            * (1 + BUY_FEE + SLIPPAGE)
-        )
-
-        risk_money = (
-            quantity * risk_share
-        )
-
-        # ĐIỀU KIỆN MUA.
+        rr = reward_share / risk_share if risk_share > 0 else 0
 
         conditions = [
-
             score >= MIN_SCORE,
-
             45 <= float(row.RSI) <= 70,
-
             price > ma20,
-
             rr >= MIN_REWARD_RISK,
-
-            quantity >= LOT_SIZE,
-
-            risk_money <= risk_budget,
-
             avg_turnover >= MIN_AVG_TURNOVER_20D,
-
             median_turnover >= MIN_MEDIAN_TURNOVER_20D,
-
             extension_pct <= 8
-
         ]
 
-        signal = (
-            "BUY"
-            if all(conditions)
-            else "WAIT"
-        )
+        signal = "BUY" if all(conditions) else "WAIT"
 
         reason = (
             "Đạt điều kiện kỹ thuật, thanh khoản "
-            "và quản trị rủi ro."
+            "và tỷ lệ lợi nhuận/rủi ro."
             if signal == "BUY"
-            else (
-                "Chưa đạt đầy đủ điều kiện mua; "
-                "không nên mua chỉ dựa vào điểm số."
-            )
+            else "Chưa đạt đầy đủ điều kiện mua."
         )
 
         return {
-
             "signal": signal,
-
             "score": score,
-
             "price": round(price),
-
             "daily_close": round(price),
-
             "stop_loss": round(stop),
-
             "target_price": round(target),
-
-            "quantity": quantity,
-
-            "capital_used": round(capital_used),
-
-            "risk_money": round(risk_money),
-
             "reward_risk": round(rr, 2),
-
             "rsi": round(float(row.RSI), 2),
-
-            "volume_ratio": round(
-                float(row.VOLUME_RATIO),
-                2
-            ),
-
-            "avg_turnover_20d": round(
-                avg_turnover
-            ),
-
-            "median_turnover_20d": round(
-                median_turnover
-            ),
-
+            "volume_ratio": round(float(row.VOLUME_RATIO), 2),
+            "avg_turnover_20d": round(avg_turnover),
+            "median_turnover_20d": round(median_turnover),
             "reasons": reasons,
-
             "data_date": data_date,
-
             "message": reason,
-
             "reason": reason,
-
             "price_mode": "Giá đóng cửa nến ngày"
-
         }
 
     except Exception as exc:
-
         return {
             "signal": "WAIT",
             "reason": str(exc),
@@ -753,13 +403,7 @@ def analyze_stock(
         }
 
 
-def scan_market(
-    capital=INITIAL_CAPITAL,
-    risk_percent=RISK_PERCENT,
-    max_symbols=None,
-    progress_callback=None
-):
-
+def scan_market(max_symbols=None, progress_callback=None):
     from data_provider import (
         fetch_exchange_symbols,
         fetch_stock_history
@@ -768,67 +412,56 @@ def scan_market(
     symbols = fetch_exchange_symbols()
 
     if max_symbols is not None:
-        symbols = symbols[
-            :max(1, int(max_symbols))
-        ]
+        symbols = symbols[:max(1, int(max_symbols))]
 
     results = []
     errors = []
     filtered_count = 0
+    insufficient_history_count = 0
 
     total = len(symbols)
 
-    for index, symbol in enumerate(
-        symbols,
-        start=1
-    ):
-
+    for index, symbol in enumerate(symbols, start=1):
         try:
-
             if symbol.upper() in MANUALLY_BLOCKED_SYMBOLS:
-
                 filtered_count += 1
-
             else:
-
-                history = fetch_stock_history(
-                    symbol,
-                    length=260
-                )
+                history = fetch_stock_history(symbol, length=260)
 
                 result = analyze_stock(
                     history,
-                    capital=capital,
-                    risk_percent=risk_percent,
                     symbol=symbol
                 )
 
                 result["symbol"] = symbol
 
                 if result.get("signal") == "BUY":
-
                     results.append(result)
 
                 elif result.get("signal") == "FILTERED":
-
                     filtered_count += 1
 
                 elif result.get("data_date") is None:
+                    error_message = result.get("reason", "")
 
-                    errors.append({
-                        "symbol": symbol,
-                        "error": result.get(
-                            "reason",
-                            "Không phân tích được dữ liệu."
-                        )
-                    })
+                    if "INSUFFICIENT_HISTORY" in error_message:
+                        insufficient_history_count += 1
+                    else:
+                        errors.append({
+                            "symbol": symbol,
+                            "error": error_message
+                        })
 
         except Exception as exc:
+            error_message = str(exc)
 
-            errors.append({
-                "symbol": symbol,
-                "error": str(exc)
-            })
+            if "200 phiên" in error_message or "INSUFFICIENT_HISTORY" in error_message:
+                insufficient_history_count += 1
+            else:
+                errors.append({
+                    "symbol": symbol,
+                    "error": error_message
+                })
 
         if progress_callback:
             progress_callback(index, total)
@@ -843,17 +476,11 @@ def scan_market(
     )
 
     return {
-
         "results": results,
-
         "scanned": total,
-
         "buy_count": len(results),
-
         "filtered_count": filtered_count,
-
+        "insufficient_history_count": insufficient_history_count,
         "error_count": len(errors),
-
         "errors": errors
-
     }
