@@ -17,6 +17,10 @@ from data_provider import (
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
+# =====================================================
+# CẤU HÌNH TRANG
+# =====================================================
+
 st.set_page_config(
     page_title="AI STOCK SCANNER",
     page_icon="📈",
@@ -38,7 +42,7 @@ st.caption(
 )
 
 st.info(
-    "Bot chỉ đánh giá tín hiệu cổ phiếu. "
+    "Bot ưu tiên chất lượng tín hiệu hơn số lượng. "
     "Không yêu cầu nhập vốn, không tính số lượng mua "
     "và không tự động đặt lệnh."
 )
@@ -50,8 +54,9 @@ st.caption(
 
 st.caption(
     "Yêu cầu tối thiểu 200 phiên dữ liệu D1. "
-    "Tín hiệu BUY cần thêm xác nhận H1, kháng cự "
-    "và tỷ lệ lợi nhuận/rủi ro sau chi phí tối thiểu 2:1."
+    "Tín hiệu BUY cần đạt điểm kỹ thuật tối thiểu 78, "
+    "RSI trong vùng 45–68, xác nhận H1 và tỷ lệ "
+    "lợi nhuận/rủi ro sau chi phí tối thiểu 2:1."
 )
 
 
@@ -59,6 +64,28 @@ tab1, tab2 = st.tabs([
     "Phân tích một mã",
     "Quét toàn thị trường"
 ])
+
+
+# =====================================================
+# HÀM HIỂN THỊ AN TOÀN
+# =====================================================
+
+def format_price(value):
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):,.0f} đ"
+
+
+def format_number(value, digits=2):
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{float(value):,.{digits}f}"
+
+
+def show_optional_metric(label, value):
+    if value is None or pd.isna(value):
+        return "—"
+    return str(value)
 
 
 # =====================================================
@@ -85,7 +112,7 @@ with tab1:
         else:
             try:
                 with st.spinner(
-                    "Đang lấy dữ liệu D1 và H1..."
+                    "Đang lấy dữ liệu D1, H1 và VN-Index..."
                 ):
 
                     history = fetch_stock_history(
@@ -93,6 +120,12 @@ with tab1:
                         length=260
                     )
 
+                    if history is None or history.empty:
+                        raise RuntimeError(
+                            "Không có dữ liệu D1 của cổ phiếu."
+                        )
+
+                    # Lấy dữ liệu H1
                     hourly = None
                     hourly_error = None
 
@@ -101,10 +134,30 @@ with tab1:
                     except Exception as exc:
                         hourly_error = str(exc)
 
+                    # Lấy dữ liệu VN-Index làm chỉ số tham chiếu
+                    benchmark = None
+                    benchmark_error = None
+
+                    try:
+                        benchmark = fetch_stock_history(
+                            "VNINDEX",
+                            length=260
+                        )
+
+                        if benchmark is None or benchmark.empty:
+                            benchmark = None
+                            benchmark_error = (
+                                "Không có dữ liệu VN-Index."
+                            )
+
+                    except Exception as exc:
+                        benchmark_error = str(exc)
+
                     result = analyze_stock(
                         history,
                         symbol=symbol,
-                        hourly_df=hourly
+                        hourly_df=hourly,
+                        benchmark_df=benchmark
                     )
 
                 last_date = pd.Timestamp(
@@ -120,10 +173,13 @@ with tab1:
                     "Chỉ sử dụng nến đã hoàn tất."
                 )
 
-                if result.get("signal") == "BUY":
+                # Trạng thái tín hiệu
+                signal = result.get("signal")
+
+                if signal == "BUY":
                     st.success("🟢 TÍN HIỆU BUY")
 
-                elif result.get("signal") == "FILTERED":
+                elif signal == "FILTERED":
                     st.warning("⚪ MÃ BỊ LOẠI KHỎI DANH SÁCH")
 
                 else:
@@ -131,11 +187,39 @@ with tab1:
 
                 st.write(result.get("reason", ""))
 
+                # Thông tin thị trường
+                st.subheader("Bối cảnh thị trường")
+
+                c1, c2 = st.columns(2)
+
+                c1.metric(
+                    "Xu hướng VN-Index",
+                    show_optional_metric(
+                        result.get("market_regime")
+                    )
+                )
+
+                c2.metric(
+                    "Sức mạnh tương đối",
+                    show_optional_metric(
+                        result.get("relative_strength")
+                    )
+                )
+
+                if benchmark_error:
+                    st.warning(
+                        "Không lấy được dữ liệu VN-Index: "
+                        + benchmark_error
+                    )
+
+                # Thông tin kỹ thuật chính
+                st.subheader("Chỉ số kỹ thuật")
+
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
                     "Giá đóng cửa",
-                    f"{result.get('price', 0):,.0f} đ"
+                    format_price(result.get("price"))
                 )
 
                 c2.metric(
@@ -145,74 +229,77 @@ with tab1:
 
                 c3.metric(
                     "RSI",
-                    result.get("rsi", "—")
+                    format_number(result.get("rsi"))
                 )
 
+                # Cắt lỗ, mục tiêu, tỷ lệ RR
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
                     "Giá cắt lỗ",
-                    (
-                        f"{result.get('stop_loss'):,.0f} đ"
-                        if result.get("stop_loss") is not None
-                        else "—"
-                    )
+                    format_price(result.get("stop_loss"))
                 )
 
                 c2.metric(
                     "Giá mục tiêu",
-                    (
-                        f"{result.get('target_price'):,.0f} đ"
-                        if result.get("target_price") is not None
-                        else "—"
-                    )
+                    format_price(result.get("target_price"))
                 )
 
                 c3.metric(
                     "Lợi nhuận/rủi ro",
                     (
-                        f"{result.get('reward_risk')}:1"
+                        f"{format_number(result.get('reward_risk'))}:1"
                         if result.get("reward_risk") is not None
                         else "—"
                     )
                 )
 
+                # Thanh khoản
+                st.subheader("Thanh khoản")
+
                 c1, c2 = st.columns(2)
+
+                avg_turnover = result.get(
+                    "avg_turnover_20d"
+                )
+
+                median_turnover = result.get(
+                    "median_turnover_20d"
+                )
 
                 c1.metric(
                     "GTGD bình quân 20 phiên",
                     (
-                        f"{result.get('avg_turnover_20d', 0) / 1e9:.2f} "
-                        "tỷ/ngày"
+                        f"{avg_turnover / 1e9:.2f} tỷ/ngày"
+                        if avg_turnover is not None
+                        else "—"
                     )
                 )
 
                 c2.metric(
                     "GTGD trung vị 20 phiên",
                     (
-                        f"{result.get('median_turnover_20d', 0) / 1e9:.2f} "
-                        "tỷ/ngày"
+                        f"{median_turnover / 1e9:.2f} tỷ/ngày"
+                        if median_turnover is not None
+                        else "—"
                     )
                 )
 
+                # Kháng cự và breakout
                 st.subheader("Kháng cự và điểm mua")
 
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
                     "Kháng cự gần",
-                    (
-                        f"{result.get('resistance'):,.0f} đ"
-                        if result.get('resistance') is not None
-                        else "Chưa xác định"
-                    )
+                    format_price(result.get("resistance"))
                 )
 
                 c2.metric(
                     "Dư địa tới kháng cự",
                     (
-                        f"{result.get('resistance_gap_pct'):.2f}%"
-                        if result.get('resistance_gap_pct') is not None
+                        f"{format_number(result.get('resistance_gap_pct'))}%"
+                        if result.get("resistance_gap_pct") is not None
                         else "—"
                     )
                 )
@@ -221,16 +308,20 @@ with tab1:
                     "Breakout D1",
                     (
                         "Đã xác nhận"
-                        if result.get('breakout_confirmed')
+                        if result.get("breakout_confirmed")
                         else "Chưa xác nhận"
                     )
                 )
 
+                # Xác nhận H1
                 st.subheader("Xác nhận xu hướng H1")
 
                 st.write(
                     "**Trạng thái:**",
-                    result.get("h1_status", "Không có dữ liệu")
+                    result.get(
+                        "h1_status",
+                        "Không có dữ liệu"
+                    )
                 )
 
                 if result.get("h1_last_bar"):
@@ -243,20 +334,12 @@ with tab1:
 
                 c1.metric(
                     "EMA9 H1",
-                    (
-                        f"{result.get('h1_ema9'):,.0f} đ"
-                        if result.get('h1_ema9') is not None
-                        else "—"
-                    )
+                    format_price(result.get("h1_ema9"))
                 )
 
                 c2.metric(
                     "EMA20 H1",
-                    (
-                        f"{result.get('h1_ema20'):,.0f} đ"
-                        if result.get('h1_ema20') is not None
-                        else "—"
-                    )
+                    format_price(result.get("h1_ema20"))
                 )
 
                 if hourly is not None:
@@ -268,22 +351,30 @@ with tab1:
                 if hourly_error:
                     st.warning(
                         "Không lấy được dữ liệu H1. "
-                        "Bot không xác nhận BUY khi thiếu H1. "
+                        "Không nên xem kết quả là tín hiệu BUY "
+                        "khi thiếu xác nhận H1. "
                         f"Chi tiết: {hourly_error}"
                     )
 
+                # Các yếu tố kỹ thuật
                 st.subheader("Các yếu tố kỹ thuật")
 
-                for reason in result.get("reasons", []):
-                    st.write("• " + reason)
+                reasons = result.get("reasons", [])
 
+                if reasons:
+                    for reason in reasons:
+                        st.write("• " + str(reason))
+                else:
+                    st.write("Chưa có thông tin.")
+
+                # Điều kiện chưa đạt
                 blockers = result.get("blockers", [])
 
                 if blockers:
                     st.subheader("Điều kiện chưa đạt")
 
                     for blocker in blockers:
-                        st.write("• " + blocker)
+                        st.write("• " + str(blocker))
 
                 st.caption(
                     "D1: MA20, MA50, MA200, RSI, MACD, ATR, "
@@ -291,6 +382,7 @@ with tab1:
                     "H1: EMA9 và EMA20 trên nến một giờ đã hoàn tất."
                 )
 
+                # Bảng dữ liệu D1
                 with st.expander("Xem 10 phiên D1 gần nhất"):
                     st.dataframe(
                         history.tail(10),
@@ -298,6 +390,7 @@ with tab1:
                         hide_index=True
                     )
 
+                # Bảng dữ liệu H1
                 if hourly is not None:
                     with st.expander("Xem 20 nến H1 gần nhất"):
                         st.dataframe(
@@ -328,8 +421,8 @@ with tab2:
     )
 
     st.warning(
-        "Mã có dưới 200 phiên dữ liệu sẽ bị loại riêng, "
-        "không được tính là lỗi truy vấn."
+        "Mã có dưới 200 phiên dữ liệu sẽ được thống kê riêng, "
+        "không tính chung với lỗi truy vấn dữ liệu."
     )
 
     if st.button(
@@ -366,7 +459,7 @@ with tab2:
                 )
 
             with st.spinner(
-                "Đang phân tích D1, H1 và vùng kháng cự..."
+                "Đang phân tích D1, H1 và các điều kiện kỹ thuật..."
             ):
                 output = scan_market(
                     max_symbols=len(symbols),
@@ -404,6 +497,7 @@ with tab2:
             f"({meta['symbols_total']} mã)."
         )
 
+        # Tổng quan
         c1, c2, c3 = st.columns(3)
 
         c1.metric(
@@ -438,6 +532,7 @@ with tab2:
             output.get("hourly_unavailable_count", 0)
         )
 
+        # Danh sách BUY
         if output.get("results"):
 
             display = pd.DataFrame(
@@ -508,6 +603,7 @@ with tab2:
                 "Không có tín hiệu cũng là kết quả hợp lệ."
             )
 
+        # Danh sách lỗi
         errors = output.get("errors", [])
 
         if errors:
@@ -547,10 +643,9 @@ st.caption(
 )
 
 st.caption(
-    "Giá mục tiêu được tính theo tỷ lệ lợi nhuận/rủi ro "
-    "sau chi phí và có xét vùng kháng cự. "
-    "Đây là mức tham khảo, không bảo đảm lợi nhuận. "
-    "Ứng dụng không tự động đặt lệnh mua/bán."
+    "Bot chỉ đưa ra tín hiệu tham khảo dựa trên dữ liệu lịch sử. "
+    "Tín hiệu không bảo đảm lợi nhuận và không thay thế "
+    "việc kiểm tra thị trường trước khi giao dịch."
 )
 
 st.caption(
