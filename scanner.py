@@ -18,7 +18,6 @@ SLIPPAGE = 0.002
 
 
 def calculate_indicators(df):
-
     data = df.copy()
 
     required = [
@@ -31,9 +30,7 @@ def calculate_indicators(df):
     ]
 
     if any(c not in data.columns for c in required):
-        raise ValueError(
-            "Thiếu dữ liệu OHLCV."
-        )
+        raise ValueError("Thiếu dữ liệu OHLCV.")
 
     data["Date"] = pd.to_datetime(
         data["Date"],
@@ -41,7 +38,6 @@ def calculate_indicators(df):
     )
 
     for col in required[1:]:
-
         data[col] = pd.to_numeric(
             data[col],
             errors="coerce"
@@ -54,9 +50,7 @@ def calculate_indicators(df):
     )
 
     if len(data) < 200:
-        raise ValueError(
-            "Không đủ 200 phiên dữ liệu."
-        )
+        raise ValueError("Không đủ 200 phiên dữ liệu.")
 
     close = data["Close"]
 
@@ -134,7 +128,6 @@ def calculate_indicators(df):
 
 
 def calculate_score(row):
-
     score = 0
     reasons = []
 
@@ -162,41 +155,35 @@ def calculate_score(row):
         (
             row.Close > row.HIGH20_PREVIOUS,
             15,
-            "Breakout đỉnh 20 phiên"
+            "Giá vượt đỉnh 20 phiên"
         )
     ]
 
     for passed, points, label in conditions:
-
         if passed:
             score += points
             reasons.append(label)
 
     if 50 <= row.RSI <= 65:
-
         score += 15
         reasons.append("RSI vùng tích cực")
 
     elif 45 <= row.RSI < 50 or 65 < row.RSI <= 70:
-
         score += 8
         reasons.append("RSI chấp nhận được")
 
     if row.VOLUME_RATIO >= 1.5:
-
         score += 15
-        reasons.append("Thanh khoản tăng mạnh")
+        reasons.append("Khối lượng nến ngày tăng mạnh")
 
     elif row.VOLUME_RATIO >= 1.2:
-
         score += 10
-        reasons.append("Thanh khoản cải thiện")
+        reasons.append("Khối lượng nến ngày cải thiện")
 
     return min(round(score / 90 * 100), 100), reasons
 
 
 def calculate_target_price(price, stop_loss):
-
     risk = (
         price * (1 + BUY_FEE + SLIPPAGE)
         - stop_loss * (
@@ -210,7 +197,6 @@ def calculate_target_price(price, stop_loss):
     target = price
 
     for _ in range(3000):
-
         reward = (
             target * (
                 1 - SELL_FEE - SELL_TAX - SLIPPAGE
@@ -219,7 +205,6 @@ def calculate_target_price(price, stop_loss):
         )
 
         if reward >= MIN_REWARD_RISK * risk:
-
             return math.ceil(target / 100) * 100
 
         target += 100
@@ -230,16 +215,30 @@ def calculate_target_price(price, stop_loss):
 def analyze_stock(
     df,
     capital=INITIAL_CAPITAL,
-    risk_percent=RISK_PERCENT
+    risk_percent=RISK_PERCENT,
+    live_quote=None
 ):
-
     try:
-
         data = calculate_indicators(df)
+        row = data.iloc[-1].copy()
 
-        row = data.iloc[-1]
+        daily_close = float(row.Close)
 
-        price = float(row.Close)
+        # Nếu có bảng giá trong phiên, dùng giá khớp gần nhất.
+        # Các chỉ báo MA, MACD, RSI, ATR vẫn dựa trên nến ngày.
+        is_live = live_quote is not None
+
+        if is_live:
+            price = float(live_quote["last_price"])
+
+            if not np.isfinite(price) or price <= 0:
+                raise ValueError("Giá trực tiếp không hợp lệ.")
+
+            row.Close = price
+
+        else:
+            price = daily_close
+
         atr = float(row.ATR14)
 
         score, reasons = calculate_score(row)
@@ -252,29 +251,21 @@ def analyze_stock(
         ).days
 
         if age > 10:
-
             return {
                 "signal": "WAIT",
-                "reason": "Dữ liệu quá cũ.",
+                "reason": "Dữ liệu nến ngày quá cũ.",
                 "data_date": data_date
             }
 
         stop = price - 1.5 * atr
 
         if stop <= 0:
-            raise ValueError(
-                "Giá cắt lỗ không hợp lệ."
-            )
+            raise ValueError("Giá cắt lỗ không hợp lệ.")
 
-        target = calculate_target_price(
-            price,
-            stop
-        )
+        target = calculate_target_price(price, stop)
 
         if target is None:
-            raise ValueError(
-                "Không tính được giá mục tiêu."
-            )
+            raise ValueError("Không tính được giá mục tiêu.")
 
         risk_share = (
             price * (1 + BUY_FEE + SLIPPAGE)
@@ -313,9 +304,7 @@ def analyze_stock(
             quantity_capital
         )
 
-        quantity = (
-            quantity // LOT_SIZE
-        ) * LOT_SIZE
+        quantity = (quantity // LOT_SIZE) * LOT_SIZE
 
         capital_used = (
             quantity * price * (1 + BUY_FEE + SLIPPAGE)
@@ -332,11 +321,7 @@ def analyze_stock(
             risk_money <= risk_budget
         ]
 
-        signal = (
-            "BUY"
-            if all(conditions)
-            else "WAIT"
-        )
+        signal = "BUY" if all(conditions) else "WAIT"
 
         reason = (
             "Đạt các điều kiện kỹ thuật và quản trị rủi ro."
@@ -344,10 +329,11 @@ def analyze_stock(
             else "Chưa đạt đầy đủ điều kiện mua."
         )
 
-        return {
+        result = {
             "signal": signal,
             "score": score,
             "price": round(price),
+            "daily_close": round(daily_close),
             "stop_loss": round(stop),
             "target_price": round(target),
             "quantity": quantity,
@@ -361,11 +347,26 @@ def analyze_stock(
             "reasons": reasons,
             "data_date": data_date,
             "message": reason,
-            "reason": reason
+            "reason": reason,
+            "price_mode": (
+                "Giá khớp gần nhất từ bảng giá"
+                if is_live
+                else "Giá đóng cửa nến ngày"
+            )
         }
 
-    except Exception as exc:
+        if is_live:
+            result["reference_price"] = live_quote.get(
+                "reference_price"
+            )
 
+            result["exchange"] = live_quote.get(
+                "exchange"
+            )
+
+        return result
+
+    except Exception as exc:
         return {
             "signal": "WAIT",
             "reason": str(exc),
@@ -377,9 +378,10 @@ def scan_market(
     capital=INITIAL_CAPITAL,
     risk_percent=RISK_PERCENT,
     max_symbols=None,
-    progress_callback=None
+    progress_callback=None,
+    live_mode=False,
+    live_quotes=None
 ):
-
     from data_provider import (
         fetch_exchange_symbols,
         fetch_stock_history
@@ -388,63 +390,65 @@ def scan_market(
     symbols = fetch_exchange_symbols()
 
     if max_symbols is not None:
+        symbols = symbols[:max(1, int(max_symbols))]
 
-        symbols = symbols[
-            :max(1, int(max_symbols))
-        ]
+    if live_mode and live_quotes is None:
+        raise RuntimeError(
+            "Đang ở chế độ trong phiên nhưng chưa có bảng giá trực tiếp."
+        )
 
     results = []
     errors = []
 
     total = len(symbols)
 
-    for index, symbol in enumerate(
-        symbols,
-        start=1
-    ):
-
+    for index, symbol in enumerate(symbols, start=1):
         try:
-
             history = fetch_stock_history(
                 symbol,
                 length=260
             )
 
+            quote = None
+
+            if live_mode:
+                quote = live_quotes.get(symbol)
+
+                if quote is None:
+                    raise ValueError(
+                        "Không nhận được giá trực tiếp cho mã này; "
+                        "không dùng giá nến ngày thay thế."
+                    )
+
             result = analyze_stock(
                 history,
                 capital=capital,
-                risk_percent=risk_percent
+                risk_percent=risk_percent,
+                live_quote=quote
             )
 
             result["symbol"] = symbol
 
             if result.get("signal") == "BUY":
-
                 results.append(result)
 
             elif (
                 result.get("reason")
                 and result.get("data_date") is None
             ):
-
                 errors.append({
                     "symbol": symbol,
                     "error": result["reason"]
                 })
 
         except Exception as exc:
-
             errors.append({
                 "symbol": symbol,
                 "error": str(exc)
             })
 
         if progress_callback:
-
-            progress_callback(
-                index,
-                total
-            )
+            progress_callback(index, total)
 
     results.sort(
         key=lambda x: (
