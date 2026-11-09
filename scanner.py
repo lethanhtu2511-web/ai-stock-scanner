@@ -10,6 +10,9 @@ RISK_PERCENT = 0.02
 MIN_SCORE = 78
 MIN_REWARD_RISK = 2.0
 
+# Bộ lọc thanh khoản
+MIN_AVG_TURNOVER_20D = 5_000_000_000
+
 LOT_SIZE = 100
 
 BUY_FEE = 0.0015
@@ -51,9 +54,17 @@ def calculate_indicators(df):
     )
 
     if len(data) < 200:
-        raise ValueError(
-            "Không đủ 200 phiên dữ liệu."
-        )
+        raise ValueError("Không đủ 200 phiên dữ liệu.")
+
+    # Giá trị giao dịch từng phiên
+    data["TURNOVER"] = (
+        data["Close"] * data["Volume"]
+    )
+
+    # Giá trị giao dịch bình quân 20 phiên
+    data["AVG_TURNOVER_20D"] = (
+        data["TURNOVER"].rolling(20).mean()
+    )
 
     close = data["Close"]
 
@@ -177,15 +188,11 @@ def calculate_score(row):
 
     if row.VOLUME_RATIO >= 1.5:
         score += 15
-        reasons.append(
-            "Khối lượng nến ngày tăng mạnh"
-        )
+        reasons.append("Khối lượng nến ngày tăng mạnh")
 
     elif row.VOLUME_RATIO >= 1.2:
         score += 10
-        reasons.append(
-            "Khối lượng nến ngày cải thiện"
-        )
+        reasons.append("Khối lượng nến ngày cải thiện")
 
     return min(round(score / 90 * 100), 100), reasons
 
@@ -232,13 +239,31 @@ def analyze_stock(
         daily_close = float(row.Close)
         is_live = live_quote is not None
 
+        # Lấy giá trị giao dịch bình quân 20 phiên
+        avg_turnover = float(row.AVG_TURNOVER_20D)
+
+        # Loại cổ phiếu có thanh khoản thấp
+        if (
+            not np.isfinite(avg_turnover)
+            or avg_turnover < MIN_AVG_TURNOVER_20D
+        ):
+            return {
+                "signal": "FILTERED",
+                "reason": (
+                    "Thanh khoản thấp: giá trị giao dịch "
+                    f"bình quân 20 phiên chỉ đạt "
+                    f"{avg_turnover / 1_000_000_000:.2f} tỷ đồng/ngày; "
+                    "yêu cầu tối thiểu 5 tỷ đồng/ngày."
+                ),
+                "avg_turnover_20d": round(avg_turnover),
+                "data_date": row.Date.strftime("%d/%m/%Y")
+            }
+
         if is_live:
             price = float(live_quote["last_price"])
 
             if not np.isfinite(price) or price <= 0:
-                raise ValueError(
-                    "Giá bảng điện không hợp lệ."
-                )
+                raise ValueError("Giá bảng điện không hợp lệ.")
 
             row.Close = price
 
@@ -266,9 +291,7 @@ def analyze_stock(
         stop = price - 1.5 * atr
 
         if stop <= 0:
-            raise ValueError(
-                "Giá cắt lỗ không hợp lệ."
-            )
+            raise ValueError("Giá cắt lỗ không hợp lệ.")
 
         target = calculate_target_price(
             price,
@@ -276,9 +299,7 @@ def analyze_stock(
         )
 
         if target is None:
-            raise ValueError(
-                "Không tính được giá mục tiêu."
-            )
+            raise ValueError("Không tính được giá mục tiêu.")
 
         risk_share = (
             price * (1 + BUY_FEE + SLIPPAGE)
@@ -322,9 +343,7 @@ def analyze_stock(
         ) * LOT_SIZE
 
         capital_used = (
-            quantity
-            * price
-            * (1 + BUY_FEE + SLIPPAGE)
+            quantity * price * (1 + BUY_FEE + SLIPPAGE)
         )
 
         risk_money = quantity * risk_share
@@ -335,17 +354,15 @@ def analyze_stock(
             price > float(row.MA20),
             rr >= MIN_REWARD_RISK,
             quantity >= LOT_SIZE,
-            risk_money <= risk_budget
+            risk_money <= risk_budget,
+            avg_turnover >= MIN_AVG_TURNOVER_20D
         ]
 
-        signal = (
-            "BUY"
-            if all(conditions)
-            else "WAIT"
-        )
+        signal = "BUY" if all(conditions) else "WAIT"
 
         reason = (
-            "Đạt các điều kiện kỹ thuật và quản trị rủi ro."
+            "Đạt các điều kiện kỹ thuật, thanh khoản "
+            "và quản trị rủi ro."
             if signal == "BUY"
             else "Chưa đạt đầy đủ điều kiện mua."
         )
@@ -365,6 +382,7 @@ def analyze_stock(
             "volume_ratio": round(
                 float(row.VOLUME_RATIO), 2
             ),
+            "avg_turnover_20d": round(avg_turnover),
             "reasons": reasons,
             "data_date": data_date,
             "message": reason,
@@ -421,6 +439,7 @@ def scan_market(
     results = []
     errors = []
 
+    filtered_count = 0
     total = len(symbols)
 
     for index, symbol in enumerate(symbols, start=1):
@@ -451,6 +470,9 @@ def scan_market(
 
             if result.get("signal") == "BUY":
                 results.append(result)
+
+            elif result.get("signal") == "FILTERED":
+                filtered_count += 1
 
             elif result.get("data_date") is None:
                 errors.append({
@@ -483,6 +505,7 @@ def scan_market(
         "results": results,
         "scanned": total,
         "buy_count": len(results),
+        "filtered_count": filtered_count,
         "error_count": len(errors),
         "errors": errors
     }
