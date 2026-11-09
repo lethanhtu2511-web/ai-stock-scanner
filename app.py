@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 
@@ -202,7 +203,7 @@ with tab1:
                     "Kháng cự gần",
                     (
                         f"{result.get('resistance'):,.0f} đ"
-                        if result.get("resistance") is not None
+                        if result.get('resistance') is not None
                         else "Chưa xác định"
                     )
                 )
@@ -211,7 +212,7 @@ with tab1:
                     "Dư địa tới kháng cự",
                     (
                         f"{result.get('resistance_gap_pct'):.2f}%"
-                        if result.get("resistance_gap_pct") is not None
+                        if result.get('resistance_gap_pct') is not None
                         else "—"
                     )
                 )
@@ -220,7 +221,7 @@ with tab1:
                     "Breakout D1",
                     (
                         "Đã xác nhận"
-                        if result.get("breakout_confirmed")
+                        if result.get('breakout_confirmed')
                         else "Chưa xác nhận"
                     )
                 )
@@ -244,7 +245,7 @@ with tab1:
                     "EMA9 H1",
                     (
                         f"{result.get('h1_ema9'):,.0f} đ"
-                        if result.get("h1_ema9") is not None
+                        if result.get('h1_ema9') is not None
                         else "—"
                     )
                 )
@@ -253,10 +254,16 @@ with tab1:
                     "EMA20 H1",
                     (
                         f"{result.get('h1_ema20'):,.0f} đ"
-                        if result.get("h1_ema20") is not None
+                        if result.get('h1_ema20') is not None
                         else "—"
                     )
                 )
+
+                if hourly is not None:
+                    st.success(
+                        "Đã lấy được dữ liệu H1. "
+                        f"Nguồn: {hourly.attrs.get('source', 'Không xác định')}."
+                    )
 
                 if hourly_error:
                     st.warning(
@@ -548,5 +555,5 @@ st.caption(
 
 st.caption(
     "Nguồn D1: DNSE/Vietcap thông qua vn-market-data. "
-    "Nguồn H1: Vnstock VCI."
+    "Nguồn H1: KBS ưu tiên, VCI dự phòng thông qua Vnstock."
 )
