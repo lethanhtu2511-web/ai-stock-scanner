@@ -1,8 +1,13 @@
+
 import math
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
+
+# =====================================================
+# CẤU HÌNH CHIẾN LƯỢC
+# =====================================================
 
 MIN_SCORE = 78
 MIN_REWARD_RISK = 2.0
@@ -10,16 +15,20 @@ MIN_REWARD_RISK = 2.0
 MIN_AVG_TURNOVER_20D = 5_000_000_000
 MIN_MEDIAN_TURNOVER_20D = 3_000_000_000
 
+MIN_HISTORY_SESSIONS = 200
+
 BUY_FEE = 0.0015
 SELL_FEE = 0.0015
 SELL_TAX = 0.001
 SLIPPAGE = 0.002
 
-# Cổ phiếu phải còn ít nhất 3% dư địa tới kháng cự,
-# trừ trường hợp đã breakout được xác nhận.
 MIN_ROOM_TO_RESISTANCE_PCT = 3.0
 BREAKOUT_BUFFER_PCT = 0.3
 MIN_BREAKOUT_VOLUME_RATIO = 1.5
+
+MAX_EXTENSION_FROM_MA20_PCT = 8.0
+MAX_RSI = 68.0
+MIN_RSI = 45.0
 
 MANUALLY_BLOCKED_SYMBOLS = {
     "NVB": (
@@ -28,6 +37,10 @@ MANUALLY_BLOCKED_SYMBOLS = {
     )
 }
 
+
+# =====================================================
+# TÍNH CHỈ BÁO D1
+# =====================================================
 
 def calculate_indicators(df):
     data = df.copy()
@@ -68,17 +81,17 @@ def calculate_indicators(df):
 
     data = data.loc[valid].reset_index(drop=True)
 
-    if len(data) < 200:
+    if len(data) < MIN_HISTORY_SESSIONS:
         raise ValueError(
             f"INSUFFICIENT_HISTORY: Chỉ có {len(data)} phiên, "
-            "yêu cầu tối thiểu 200 phiên."
+            f"yêu cầu tối thiểu {MIN_HISTORY_SESSIONS} phiên."
         )
 
-    data["TURNOVER"] = data["Close"] * data["Volume"]
+    close = data["Close"]
+
+    data["TURNOVER"] = close * data["Volume"]
     data["AVG_TURNOVER_20D"] = data["TURNOVER"].rolling(20).mean()
     data["MEDIAN_TURNOVER_20D"] = data["TURNOVER"].rolling(20).median()
-
-    close = data["Close"]
 
     data["MA20"] = close.rolling(20).mean()
     data["MA50"] = close.rolling(50).mean()
@@ -113,8 +126,10 @@ def calculate_indicators(df):
     ).mean()
 
     data["VOLUME_MA20"] = data["Volume"].rolling(20).mean()
+
     data["VOLUME_RATIO"] = (
-        data["Volume"] / data["VOLUME_MA20"].replace(0, np.nan)
+        data["Volume"]
+        / data["VOLUME_MA20"].replace(0, np.nan)
     )
 
     previous_close = close.shift(1)
@@ -130,16 +145,19 @@ def calculate_indicators(df):
 
     data["ATR14"] = true_range.rolling(14).mean()
 
-    data["HIGH20_PREVIOUS"] = (
-        data["High"].shift(1).rolling(20).max()
-    )
-
-    data["HIGH50_PREVIOUS"] = (
-        data["High"].shift(1).rolling(50).max()
-    )
+    # Các mức đỉnh chỉ tính đến phiên trước,
+    # tránh dùng dữ liệu của phiên hiện tại để tự xác nhận.
+    for period in (20, 50, 60):
+        data[f"HIGH{period}_PREVIOUS"] = (
+            data["High"].shift(1).rolling(period).max()
+        )
 
     return data.dropna().reset_index(drop=True)
 
+
+# =====================================================
+# ĐIỂM KỸ THUẬT
+# =====================================================
 
 def calculate_score(row):
     score = 0
@@ -217,10 +235,20 @@ def calculate_score(row):
     return min(int(score), 100), reasons
 
 
+# =====================================================
+# CHI PHÍ VÀ TỶ LỆ LỢI NHUẬN/RỦI RO
+# =====================================================
+
 def _net_reward_risk(entry, stop, target):
     cost_buy = entry * (1 + BUY_FEE + SLIPPAGE)
-    net_sell_stop = stop * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
-    net_sell_target = target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+
+    net_sell_stop = (
+        stop * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+    )
+
+    net_sell_target = (
+        target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+    )
 
     risk = cost_buy - net_sell_stop
     reward = net_sell_target - cost_buy
@@ -232,17 +260,10 @@ def _net_reward_risk(entry, stop, target):
 
 
 def _minimum_target_for_rr(price, stop):
-    """
-    Tính mục tiêu tối thiểu để đạt RR sau chi phí 2:1.
-    Làm tròn theo bước giá 100 đồng.
-    """
-
     target = price
 
     for _ in range(10000):
-        rr = _net_reward_risk(price, stop, target)
-
-        if rr >= MIN_REWARD_RISK:
+        if _net_reward_risk(price, stop, target) >= MIN_REWARD_RISK:
             return math.ceil(target / 100) * 100
 
         target += 100
@@ -250,42 +271,49 @@ def _minimum_target_for_rr(price, stop):
     return None
 
 
-def _find_nearest_resistance(data, price):
+# =====================================================
+# XÁC ĐỊNH KHÁNG CỰ VÀ BREAKOUT
+# =====================================================
+
+def _find_resistance_and_breakout(data, price, row):
     """
-    Tìm đỉnh cục bộ trong 60 phiên trước phiên hiện tại.
-    Không dùng đỉnh của nến hiện tại để tránh tự xác nhận breakout.
+    Xác định kháng cự từ các đỉnh 20, 50, 60 phiên
+    và các đỉnh cục bộ trong 60 phiên trước.
+
+    Breakout chỉ được xác nhận khi:
+    - Giá đóng cửa vượt vùng kháng cự.
+    - Vượt tối thiểu BREAKOUT_BUFFER_PCT.
+    - Khối lượng đạt ngưỡng xác nhận.
+    - Nến đóng cửa tích cực.
     """
 
-    history = data.iloc[:-1].tail(60).reset_index(drop=True)
+    candidates = []
 
-    if len(history) < 20:
-        return None
+    for period in (20, 50, 60):
+        value = row.get(f"HIGH{period}_PREVIOUS")
+
+        if value is not None and np.isfinite(value):
+            candidates.append(float(value))
+
+    history = data.iloc[:-1].tail(60)
 
     highs = history["High"].astype(float).to_numpy()
-    pivot_levels = []
 
     for i in range(2, len(highs) - 2):
-        window = highs[i - 2:i + 3]
+        if (
+            highs[i] >= max(highs[i - 2:i + 3])
+            and highs[i] > 0
+        ):
+            candidates.append(float(highs[i]))
 
-        if highs[i] >= max(window):
-            level = float(highs[i])
+    if not candidates:
+        return None, False, None
 
-            if level > price * 1.005:
-                pivot_levels.append(level)
-
-    if not pivot_levels:
-        recent_high = float(history["High"].tail(20).max())
-
-        if recent_high > price * 1.005:
-            return recent_high
-
-        return None
-
-    # Gộp các đỉnh gần nhau thành một vùng kháng cự.
-    pivot_levels.sort()
+    # Gộp các mức giá nằm trong vùng 1%.
+    candidates.sort()
     clusters = []
 
-    for level in pivot_levels:
+    for level in candidates:
         if not clusters:
             clusters.append([level])
             continue
@@ -298,10 +326,35 @@ def _find_nearest_resistance(data, price):
             clusters.append([level])
 
     levels = [float(np.mean(group)) for group in clusters]
-    above_price = [level for level in levels if level > price * 1.005]
 
-    return min(above_price) if above_price else None
+    above = [level for level in levels if level > price * 1.005]
+    below = [level for level in levels if level <= price * 1.005]
 
+    resistance_above = min(above) if above else None
+    nearest_below = max(below) if below else None
+
+    # Breakout: giá vượt đỉnh lịch sử trước phiên hiện tại.
+    breakout_level = max(candidates)
+
+    breakout = bool(
+        price > breakout_level * (
+            1 + BREAKOUT_BUFFER_PCT / 100
+        )
+        and float(row.VOLUME_RATIO) >= MIN_BREAKOUT_VOLUME_RATIO
+        and float(row.Close) > float(row.Open)
+    )
+
+    # Khi đã breakout, vùng vừa vượt là vùng hỗ trợ tiềm năng,
+    # không còn được coi là kháng cự phía trên.
+    if breakout:
+        return resistance_above, True, breakout_level
+
+    return resistance_above, False, nearest_below
+
+
+# =====================================================
+# XÁC NHẬN H1
+# =====================================================
 
 def _hourly_confirmation(hourly_df):
     if hourly_df is None or len(hourly_df) < 20:
@@ -341,54 +394,60 @@ def _hourly_confirmation(hourly_df):
             "reason": "Cần tối thiểu 20 nến H1 hợp lệ."
         }
 
-    h["EMA9"] = h["Close"].ewm(span=9, adjust=False).mean()
-    h["EMA20"] = h["Close"].ewm(span=20, adjust=False).mean()
+    h["EMA9"] = h["Close"].ewm(
+        span=9,
+        adjust=False
+    ).mean()
+
+    h["EMA20"] = h["Close"].ewm(
+        span=20,
+        adjust=False
+    ).mean()
 
     last = h.iloc[-1]
+    previous = h.iloc[-2]
 
+    # Không chỉ kiểm tra EMA9 > EMA20:
+    # yêu cầu giá H1 nằm trên EMA9 và EMA9 không suy yếu.
     ok = bool(
         last["EMA9"] > last["EMA20"]
         and last["Close"] >= last["EMA9"]
+        and last["EMA9"] >= previous["EMA9"]
     )
 
     return {
         "ok": ok,
-        "status": "H1 xác nhận tăng" if ok else "H1 chưa xác nhận tăng",
-        "reason": (
-            "EMA9 trên EMA20 và giá H1 trên EMA9"
-            if ok
-            else "EMA9 chưa vượt EMA20 hoặc giá H1 dưới EMA9"
+        "status": (
+            "H1 xác nhận tăng"
+            if ok else "H1 chưa xác nhận tăng"
         ),
-        "last_hour": pd.Timestamp(last["Date"]).strftime("%d/%m %H:%M"),
+        "reason": (
+            "EMA9 trên EMA20, giá trên EMA9 và EMA9 không suy yếu"
+            if ok
+            else "EMA9 chưa đủ điều kiện xác nhận xu hướng tăng"
+        ),
+        "last_hour": pd.Timestamp(
+            last["Date"]
+        ).strftime("%d/%m %H:%M"),
         "ema9": round(float(last["EMA9"])),
         "ema20": round(float(last["EMA20"]))
     }
 
 
-def _result_filtered(reason, row=None):
-    result = {
-        "signal": "FILTERED",
-        "reason": reason
-    }
-
-    if row is not None:
-        try:
-            result["data_date"] = pd.Timestamp(
-                row.Date
-            ).strftime("%d/%m/%Y")
-        except Exception:
-            pass
-
-    return result
-
+# =====================================================
+# PHÂN TÍCH CỔ PHIẾU
+# =====================================================
 
 def analyze_stock(df, symbol=None, hourly_df=None):
     try:
         if symbol and symbol.upper() in MANUALLY_BLOCKED_SYMBOLS:
-            return _result_filtered(
-                f"{symbol.upper()} bị chặn: "
-                f"{MANUALLY_BLOCKED_SYMBOLS[symbol.upper()]}"
-            )
+            return {
+                "signal": "FILTERED",
+                "reason": (
+                    f"{symbol.upper()} bị chặn: "
+                    f"{MANUALLY_BLOCKED_SYMBOLS[symbol.upper()]}"
+                )
+            }
 
         data = calculate_indicators(df)
         row = data.iloc[-1].copy()
@@ -405,29 +464,28 @@ def analyze_stock(df, symbol=None, hourly_df=None):
             or avg_turnover < MIN_AVG_TURNOVER_20D
             or median_turnover < MIN_MEDIAN_TURNOVER_20D
         ):
-            return _result_filtered(
-                "Thanh khoản không đạt: "
-                f"GTGD bình quân {avg_turnover / 1e9:.2f} tỷ/ngày "
-                "(yêu cầu ≥ 5 tỷ), "
-                f"trung vị {median_turnover / 1e9:.2f} tỷ/ngày "
-                "(yêu cầu ≥ 3 tỷ).",
-                row
-            )
+            return {
+                "signal": "FILTERED",
+                "reason": (
+                    f"Thanh khoản không đạt: bình quân "
+                    f"{avg_turnover / 1e9:.2f} tỷ/ngày, "
+                    f"trung vị {median_turnover / 1e9:.2f} tỷ/ngày."
+                ),
+                "data_date": data_date
+            }
 
         today = pd.Timestamp.now(
             tz="Asia/Ho_Chi_Minh"
         ).date()
 
-        row_date = pd.Timestamp(row.Date).date()
-        age_days = (today - row_date).days
+        age_days = (
+            today - pd.Timestamp(row.Date).date()
+        ).days
 
         if age_days > 7:
             return {
                 "signal": "WAIT",
-                "reason": (
-                    f"Dữ liệu nến ngày đã cũ {age_days} ngày; "
-                    "không phát tín hiệu mua."
-                ),
+                "reason": f"Dữ liệu nến ngày đã cũ {age_days} ngày.",
                 "data_date": data_date
             }
 
@@ -437,6 +495,7 @@ def analyze_stock(df, symbol=None, hourly_df=None):
             raise ValueError("ATR không hợp lệ.")
 
         ma20 = float(row.MA20)
+
         extension_pct = (
             (price / ma20 - 1) * 100
             if ma20 > 0 else 999
@@ -444,18 +503,13 @@ def analyze_stock(df, symbol=None, hourly_df=None):
 
         score, reasons = calculate_score(row)
 
-        resistance = _find_nearest_resistance(data, price)
+        resistance, breakout, breakout_level = (
+            _find_resistance_and_breakout(data, price, row)
+        )
 
         resistance_gap_pct = (
             (resistance / price - 1) * 100
             if resistance is not None else None
-        )
-
-        breakout = bool(
-            resistance is not None
-            and price > resistance * (1 + BREAKOUT_BUFFER_PCT / 100)
-            and float(row.VOLUME_RATIO) >= MIN_BREAKOUT_VOLUME_RATIO
-            and float(row.Close) > float(row.Open)
         )
 
         stop = price - 1.5 * atr
@@ -463,16 +517,16 @@ def analyze_stock(df, symbol=None, hourly_df=None):
         if stop <= 0 or stop >= price:
             raise ValueError("Giá cắt lỗ không hợp lệ.")
 
-        min_target = _minimum_target_for_rr(price, stop)
+        minimum_target = _minimum_target_for_rr(price, stop)
 
-        target = min_target
+        target = minimum_target
 
-        # Nếu còn kháng cự phía trên và chưa breakout,
-        # lấy kháng cự làm mục tiêu thực tế, không đặt mục tiêu xuyên qua.
+        # Nếu có kháng cự phía trên, lấy kháng cự làm mục tiêu.
+        # Không giả định giá sẽ xuyên qua kháng cự.
         if (
             resistance is not None
-            and not breakout
             and resistance > price
+            and not breakout
         ):
             resistance_target = math.floor(resistance / 100) * 100
 
@@ -494,17 +548,19 @@ def analyze_stock(df, symbol=None, hourly_df=None):
                 f"Điểm kỹ thuật {score} dưới ngưỡng {MIN_SCORE}"
             )
 
-        if not (45 <= float(row.RSI) <= 68):
+        if not (MIN_RSI <= float(row.RSI) <= MAX_RSI):
             blockers.append(
-                f"RSI {float(row.RSI):.1f} ngoài vùng mua ưu tiên 45–68"
+                f"RSI {float(row.RSI):.1f} ngoài vùng mua ưu tiên "
+                f"{MIN_RSI:.0f}–{MAX_RSI:.0f}"
             )
 
         if price <= ma20:
             blockers.append("Giá chưa nằm trên MA20")
 
-        if extension_pct > 8:
+        if extension_pct > MAX_EXTENSION_FROM_MA20_PCT:
             blockers.append(
-                f"Giá cách MA20 {extension_pct:.1f}%, có nguy cơ mua đuổi"
+                f"Giá cách MA20 {extension_pct:.1f}%, "
+                "có nguy cơ mua đuổi"
             )
 
         if (
@@ -519,7 +575,7 @@ def analyze_stock(df, symbol=None, hourly_df=None):
 
         if target is None or rr < MIN_REWARD_RISK:
             blockers.append(
-                "Kháng cự gần làm RR sau chi phí thấp hơn 2:1"
+                "Không đủ tỷ lệ lợi nhuận/rủi ro sau chi phí 2:1"
             )
 
         if not h1["ok"]:
@@ -529,8 +585,8 @@ def analyze_stock(df, symbol=None, hourly_df=None):
 
         if breakout:
             reasons.append(
-                "Breakout D1: đóng cửa vượt kháng cự "
-                "với khối lượng xác nhận"
+                f"Breakout D1 được xác nhận tại vùng "
+                f"{breakout_level:,.0f}"
             )
 
         if resistance is not None:
@@ -570,6 +626,10 @@ def analyze_stock(df, symbol=None, hourly_df=None):
                 if resistance_gap_pct is not None else None
             ),
             "breakout_confirmed": breakout,
+            "breakout_level": (
+                round(breakout_level)
+                if breakout_level is not None else None
+            ),
             "h1_status": h1["status"],
             "h1_last_bar": h1.get("last_hour"),
             "h1_ema9": h1.get("ema9"),
@@ -590,6 +650,10 @@ def analyze_stock(df, symbol=None, hourly_df=None):
         }
 
 
+# =====================================================
+# QUÉT TOÀN THỊ TRƯỜNG
+# =====================================================
+
 def scan_market(max_symbols=None, progress_callback=None):
     from data_provider import (
         fetch_exchange_symbols,
@@ -604,6 +668,7 @@ def scan_market(max_symbols=None, progress_callback=None):
 
     results = []
     errors = []
+
     filtered_count = 0
     insufficient_history_count = 0
     hourly_unavailable_count = 0
@@ -614,45 +679,89 @@ def scan_market(max_symbols=None, progress_callback=None):
         try:
             if symbol.upper() in MANUALLY_BLOCKED_SYMBOLS:
                 filtered_count += 1
+
+                if progress_callback:
+                    progress_callback(index, total)
+
+                continue
+
+            # Bước 1: chỉ lấy và phân tích D1 trước.
+            history = fetch_stock_history(
+                symbol,
+                length=260
+            )
+
+            daily_result = analyze_stock(
+                history,
+                symbol=symbol,
+                hourly_df=None
+            )
+
+            # Loại ngay mã không đạt các điều kiện D1 cơ bản.
+            if daily_result.get("signal") in ("FILTERED",):
+                filtered_count += 1
+
+            elif daily_result.get("data_date") is None:
+                message = daily_result.get("reason", "")
+
+                if (
+                    "INSUFFICIENT_HISTORY" in message
+                    or "200 phiên" in message
+                ):
+                    insufficient_history_count += 1
+                else:
+                    errors.append({
+                        "symbol": symbol,
+                        "error": message
+                    })
+
             else:
-                history = fetch_stock_history(symbol, length=260)
+                # Chỉ lấy H1 khi D1 đã đạt các điều kiện sơ bộ.
+                d1_blockers = daily_result.get("blockers", [])
 
-                hourly = None
+                hard_d1_blockers = [
+                    item for item in d1_blockers
+                    if (
+                        "Điểm kỹ thuật" in item
+                        or "RSI" in item
+                        or "MA20" in item
+                        or "mua đuổi" in item
+                        or "kháng cự" in item
+                        or "lợi nhuận/rủi ro" in item
+                    )
+                ]
 
-                try:
-                    hourly = fetch_stock_hourly(symbol)
-                except Exception as exc:
-                    hourly_unavailable_count += 1
-                    hourly_error = str(exc)
-
-                result = analyze_stock(
-                    history,
-                    symbol=symbol,
-                    hourly_df=hourly
-                )
-
-                result["symbol"] = symbol
-
-                if hourly is None:
-                    result["h1_status"] = "Không lấy được dữ liệu H1"
-                    result["h1_error"] = hourly_error
-
-                if result.get("signal") == "BUY":
-                    results.append(result)
-
-                elif result.get("signal") == "FILTERED":
+                if hard_d1_blockers:
                     filtered_count += 1
 
-                elif result.get("data_date") is None:
-                    error_message = result.get("reason", "")
+                else:
+                    hourly = None
+                    hourly_error = None
 
-                    if "INSUFFICIENT_HISTORY" in error_message:
-                        insufficient_history_count += 1
+                    try:
+                        hourly = fetch_stock_hourly(symbol)
+                    except Exception as exc:
+                        hourly_error = str(exc)
+                        hourly_unavailable_count += 1
+
+                    result = analyze_stock(
+                        history,
+                        symbol=symbol,
+                        hourly_df=hourly
+                    )
+
+                    result["symbol"] = symbol
+
+                    if hourly is None:
+                        result["h1_status"] = (
+                            "Không lấy được dữ liệu H1"
+                        )
+                        result["h1_error"] = hourly_error
+
+                    if result.get("signal") == "BUY":
+                        results.append(result)
                     else:
-                        errors.append({
-                            "symbol": symbol,
-                            "error": error_message
-                        })
+                        filtered_count += 1
 
         except Exception as exc:
             error_message = str(exc)
