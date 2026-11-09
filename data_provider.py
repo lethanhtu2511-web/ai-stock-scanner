@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from vn_market_data import get_ohlcv
-from vnstock import Listing, Market
+from vnstock import Listing
 
 
 HISTORY_CACHE_SECONDS = 900
@@ -18,29 +18,8 @@ _SYMBOL_CACHE_AT = 0.0
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-
-# Lịch nghỉ giao dịch HOSE/HNX năm 2026 đã công bố.
-TRADING_HOLIDAYS_2026 = {
-    "2026-01-01",
-    "2026-01-02",
-    "2026-02-16",
-    "2026-02-17",
-    "2026-02-18",
-    "2026-02-19",
-    "2026-02-20",
-    "2026-04-27",
-    "2026-04-30",
-    "2026-05-01",
-    "2026-08-31",
-    "2026-09-01",
-    "2026-09-02",
-}
-
-# Ngày làm bù nhưng HOSE/HNX không tổ chức giao dịch.
-NO_TRADING_WORKING_DAYS_2026 = {
-    "2026-01-10",
-    "2026-08-22",
-}
+# Chỉ sử dụng nến ngày sau khi đã qua thời điểm này.
+DAILY_CANDLE_READY_TIME = dt_time(15, 30)
 
 
 def normalize_symbol(symbol):
@@ -140,10 +119,37 @@ def _normalize_history(rows):
     }).reset_index(drop=True)
 
 
+def _remove_incomplete_today_candle(df):
+    """
+    Trước 15:30, loại nến có ngày bằng ngày hiện tại.
+    Sau 15:30, giữ lại nếu nguồn dữ liệu đã trả về.
+    """
+
+    if df.empty:
+        return df
+
+    now = datetime.now(VN_TZ)
+    today = pd.Timestamp(now.date())
+
+    if now.time() < DAILY_CANDLE_READY_TIME:
+
+        dates = pd.to_datetime(
+            df["Date"],
+            errors="coerce"
+        ).dt.normalize()
+
+        df = df.loc[
+            dates < today
+        ].copy()
+
+    return df.reset_index(drop=True)
+
+
 def fetch_stock_history(symbol, length=260):
     symbol = normalize_symbol(symbol)
     length = max(220, int(length))
 
+    # Cache ngắn để hạn chế dữ liệu cũ.
     key = (symbol, length)
     now = time.monotonic()
 
@@ -155,25 +161,39 @@ def fetch_stock_history(symbol, length=260):
     ):
         return cached[1].copy()
 
-    rows = get_ohlcv(
-        symbol,
-        lookback_days=600
-    )
+    try:
+        rows = get_ohlcv(
+            symbol,
+            lookback_days=600
+        )
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"{symbol}: không lấy được dữ liệu nến ngày: {exc}"
+        ) from exc
+
+    df = _normalize_history(rows)
+
+    # Không dùng nến đang hình thành trong phiên.
+    df = _remove_incomplete_today_candle(df)
 
     df = (
-        _normalize_history(rows)
-        .tail(length)
+        df.tail(length)
         .reset_index(drop=True)
     )
 
     if len(df) < 200:
         raise ValueError(
-            f"{symbol}: chỉ có {len(df)} phiên, "
+            f"{symbol}: chỉ có {len(df)} phiên hoàn tất, "
             "cần tối thiểu 200 phiên."
         )
 
     df.attrs["source"] = (
-        "DNSE/Vietcap - lịch sử nến ngày"
+        "DNSE/Vietcap - dữ liệu lịch sử nến ngày"
+    )
+
+    df.attrs["last_date"] = (
+        pd.Timestamp(df.iloc[-1]["Date"]).strftime("%d/%m/%Y")
     )
 
     _HISTORY_CACHE[key] = (
@@ -186,6 +206,7 @@ def fetch_stock_history(symbol, length=260):
             _HISTORY_CACHE,
             key=lambda k: _HISTORY_CACHE[k][0]
         )
+
         del _HISTORY_CACHE[oldest]
 
     return df
@@ -211,259 +232,12 @@ def fetch_stock_quote(symbol):
     }
 
 
-def get_market_status():
-    """
-    Kiểm tra giờ Việt Nam, cuối tuần và lịch nghỉ năm 2026.
-
-    Không gọi API reference market status vì tài khoản Khách
-    không có quyền sử dụng chức năng đó.
-
-    Lưu ý:
-    - Năm 2026 dùng lịch nghỉ đã công bố.
-    - Năm khác chưa tự động có lịch nghỉ chính thức.
-    - checked_at là thời điểm kiểm tra, không phải timestamp
-      riêng của từng mã trên bảng giá.
-    """
-
-    now = datetime.now(VN_TZ)
-    today = now.date()
-    date_key = today.isoformat()
-    current_time = now.time()
-
-    if date_key in TRADING_HOLIDAYS_2026:
-        return {
-            "is_open": False,
-            "status": "Nghỉ giao dịch theo lịch HOSE/HNX năm 2026",
-            "checked_at": now.strftime(
-                "%H:%M:%S %d/%m/%Y"
-            ),
-            "source": "Lịch nghỉ giao dịch HOSE/HNX năm 2026",
-            "holiday_check": True,
-            "calendar_note": (
-                "Ngày nghỉ đã được cấu hình theo thông báo "
-                "của HOSE và HNX."
-            )
-        }
-
-    if date_key in NO_TRADING_WORKING_DAYS_2026:
-        return {
-            "is_open": False,
-            "status": (
-                "Ngày làm bù nhưng không tổ chức giao dịch "
-                "chứng khoán"
-            ),
-            "checked_at": now.strftime(
-                "%H:%M:%S %d/%m/%Y"
-            ),
-            "source": "Lịch HOSE/HNX năm 2026",
-            "holiday_check": True,
-            "calendar_note": (
-                "Ngày làm bù không có giao dịch chứng khoán."
-            )
-        }
-
-    if now.weekday() >= 5:
-        return {
-            "is_open": False,
-            "status": "Ngoài phiên - cuối tuần",
-            "checked_at": now.strftime(
-                "%H:%M:%S %d/%m/%Y"
-            ),
-            "source": "Lịch tuần",
-            "holiday_check": True,
-            "calendar_note": (
-                "Không tổ chức giao dịch vào thứ Bảy, Chủ nhật."
-            )
-        }
-
-    morning_session = (
-        dt_time(9, 0) <= current_time < dt_time(11, 30)
-    )
-
-    afternoon_session = (
-        dt_time(13, 0) <= current_time < dt_time(15, 0)
-    )
-
-    in_trading_hours = (
-        morning_session or afternoon_session
-    )
-
-    if current_time < dt_time(9, 0):
-        status = "Ngoài phiên - chưa mở cửa"
-
-    elif (
-        dt_time(11, 30)
-        <= current_time
-        < dt_time(13, 0)
-    ):
-        status = "Ngoài phiên - nghỉ trưa"
-
-    elif current_time >= dt_time(15, 0):
-        status = "Ngoài phiên - đã đóng cửa"
-
-    elif in_trading_hours:
-        status = "Trong khung giờ giao dịch dự kiến"
-
-    else:
-        status = "Ngoài phiên"
-
-    if today.year == 2026:
-        calendar_note = (
-            "Đã cấu hình lịch nghỉ giao dịch năm 2026. "
-            "Nếu có thông báo điều chỉnh mới, cần cập nhật lại."
-        )
-        holiday_check = True
-    else:
-        calendar_note = (
-            "Chưa cấu hình lịch nghỉ chính thức cho năm này. "
-            "Bot chỉ kiểm tra thứ và giờ giao dịch."
-        )
-        holiday_check = False
-
-    return {
-        "is_open": in_trading_hours,
-        "status": status,
-        "checked_at": now.strftime(
-            "%H:%M:%S %d/%m/%Y"
-        ),
-        "source": (
-            "Đồng hồ Việt Nam và lịch nghỉ đã cấu hình"
-        ),
-        "holiday_check": holiday_check,
-        "calendar_note": calendar_note
-    }
-
-
-def fetch_market_quotes(symbols):
-    """
-    Lấy bảng giá nhiều mã bằng Market().quote().
-
-    close_price là giá do bảng giá KBS trả về.
-    Nguồn không cung cấp timestamp riêng cho từng mã,
-    vì vậy không coi checked_at là thời điểm khớp của từng mã.
-    """
-
-    clean_symbols = sorted({
-        normalize_symbol(s)
-        for s in symbols
-    })
-
-    if not clean_symbols:
-        raise ValueError(
-            "Danh sách mã cần lấy bảng giá đang rỗng."
-        )
-
-    try:
-        raw = Market().quote(
-            clean_symbols,
-            source="kbs"
-        )
-
-    except Exception as exc:
-        raise RuntimeError(
-            "Không lấy được bảng giá VNStock KBS: "
-            f"{exc}"
-        ) from exc
-
-    if raw is None:
-        raise RuntimeError(
-            "VNStock không trả về bảng giá."
-        )
-
-    quotes_df = pd.DataFrame(raw)
-
-    if quotes_df.empty:
-        raise RuntimeError(
-            "Bảng giá VNStock trả về rỗng."
-        )
-
-    quotes_df.columns = [
-        str(c).strip().lower()
-        for c in quotes_df.columns
-    ]
-
-    required = [
-        "symbol",
-        "close_price"
-    ]
-
-    missing = [
-        c for c in required
-        if c not in quotes_df.columns
-    ]
-
-    if missing:
-        raise RuntimeError(
-            f"Bảng giá thiếu cột bắt buộc: {missing}"
-        )
-
-    quotes_df["symbol"] = (
-        quotes_df["symbol"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
-    )
-
-    quotes_df["close_price"] = pd.to_numeric(
-        quotes_df["close_price"],
-        errors="coerce"
-    )
-
-    if "reference_price" in quotes_df.columns:
-        quotes_df["reference_price"] = pd.to_numeric(
-            quotes_df["reference_price"],
-            errors="coerce"
-        )
-
-    quotes_df = quotes_df.dropna(
-        subset=["close_price"]
-    )
-
-    quotes_df = quotes_df[
-        quotes_df["close_price"] > 0
-    ]
-
-    quotes = {}
-
-    for row in quotes_df.to_dict("records"):
-        symbol = row["symbol"]
-
-        if symbol not in clean_symbols:
-            continue
-
-        reference_price = row.get(
-            "reference_price"
-        )
-
-        quotes[symbol] = {
-            "symbol": symbol,
-            "last_price": float(
-                row["close_price"]
-            ),
-            "reference_price": (
-                float(reference_price)
-                if pd.notna(reference_price)
-                else None
-            ),
-            "exchange": row.get("exchange", ""),
-            "source": (
-                "VNStock KBS - bảng giá nhiều mã"
-            )
-        }
-
-    if not quotes:
-        raise RuntimeError(
-            "Không có mã nào nhận được giá hợp lệ."
-        )
-
-    return quotes
-
-
 def _extract_symbols(result):
     if result is None:
         return []
 
     if isinstance(result, pd.DataFrame):
+
         columns = {
             str(c).strip().lower(): c
             for c in result.columns
@@ -479,18 +253,22 @@ def _extract_symbols(result):
         ].tolist()
 
     elif isinstance(result, pd.Series):
+
         values = result.tolist()
 
     else:
+
         values = list(result)
 
     symbols = []
 
     for value in values:
+
         try:
             symbols.append(
                 normalize_symbol(value)
             )
+
         except (ValueError, TypeError):
             continue
 
@@ -509,9 +287,11 @@ def fetch_exchange_symbols():
     ):
         return list(_SYMBOL_CACHE)
 
+    # Lấy riêng HOSE và HNX.
     listing = Listing(source="KBS")
 
     try:
+
         hose_raw = listing.symbols_by_group(
             group="HOSE"
         )
@@ -521,6 +301,7 @@ def fetch_exchange_symbols():
         )
 
     except Exception as exc:
+
         raise RuntimeError(
             "Không lấy được danh sách mã HOSE/HNX: "
             f"{exc}"
