@@ -1,12 +1,12 @@
 import re
 import time
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from vn_market_data import get_ohlcv
-from vnstock import Listing, Market, Reference
+from vnstock import Listing, Market
 
 
 HISTORY_CACHE_SECONDS = 900
@@ -37,7 +37,10 @@ def _normalize_history(rows):
     if df.empty:
         raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
 
-    df.columns = [str(c).strip().lower() for c in df.columns]
+    df.columns = [
+        str(c).strip().lower()
+        for c in df.columns
+    ]
 
     df = df.rename(columns={
         "time": "date",
@@ -46,19 +49,31 @@ def _normalize_history(rows):
         "vol": "volume"
     })
 
-    required = ["date", "open", "high", "low", "close", "volume"]
+    required = [
+        "date", "open", "high",
+        "low", "close", "volume"
+    ]
 
-    missing = [c for c in required if c not in df.columns]
+    missing = [
+        c for c in required
+        if c not in df.columns
+    ]
 
     if missing:
         raise ValueError(f"Thiếu cột OHLCV: {missing}")
 
     df = df[required].copy()
 
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = pd.to_datetime(
+        df["date"],
+        errors="coerce"
+    )
 
     for col in required[1:]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce"
+        )
 
     df = (
         df.dropna()
@@ -103,7 +118,10 @@ def fetch_stock_history(symbol, length=260):
     if cached and now - cached[0] < HISTORY_CACHE_SECONDS:
         return cached[1].copy()
 
-    rows = get_ohlcv(symbol, lookback_days=600)
+    rows = get_ohlcv(
+        symbol,
+        lookback_days=600
+    )
 
     df = (
         _normalize_history(rows)
@@ -113,12 +131,16 @@ def fetch_stock_history(symbol, length=260):
 
     if len(df) < 200:
         raise ValueError(
-            f"{symbol}: chỉ có {len(df)} phiên, cần tối thiểu 200 phiên."
+            f"{symbol}: chỉ có {len(df)} phiên, "
+            "cần tối thiểu 200 phiên."
         )
 
-    df.attrs["source"] = "DNSE/Vietcap (lịch sử nến ngày)"
+    df.attrs["source"] = "DNSE/Vietcap - lịch sử nến ngày"
 
-    _HISTORY_CACHE[key] = (time.monotonic(), df.copy())
+    _HISTORY_CACHE[key] = (
+        time.monotonic(),
+        df.copy()
+    )
 
     if len(_HISTORY_CACHE) > 500:
         oldest = min(
@@ -132,118 +154,135 @@ def fetch_stock_history(symbol, length=260):
 
 def fetch_stock_quote(symbol):
     symbol = normalize_symbol(symbol)
-    df = fetch_stock_history(symbol, length=260)
+
+    df = fetch_stock_history(
+        symbol,
+        length=260
+    )
+
     row = df.iloc[-1]
 
     return {
         "symbol": symbol,
         "last_price": float(row["Close"]),
-        "quote_date": pd.Timestamp(row["Date"]).strftime("%d/%m/%Y"),
+        "quote_date": pd.Timestamp(
+            row["Date"]
+        ).strftime("%d/%m/%Y"),
         "source": "Giá đóng cửa nến ngày"
     }
 
 
 def get_market_status():
     """
-    Đọc trạng thái phiên từ lịch giao dịch tích hợp trong VNStock.
-    Không tự suy đoán chỉ dựa vào giờ trên điện thoại.
+    Nhận diện khung giờ giao dịch theo giờ Việt Nam.
+
+    Lưu ý:
+    - Không gọi Reference().market.status() vì tài khoản Khách
+      không có quyền sử dụng chức năng đó.
+    - Không tự nhận diện ngày nghỉ lễ.
+    - Bảng giá thực tế vẫn phải được truy vấn thành công
+      trước khi bật chế độ giá trong phiên.
     """
+
     now = datetime.now(VN_TZ)
+    current_time = now.time()
 
-    try:
-        status_df = Reference().market.status()
+    is_weekday = now.weekday() < 5
 
-        if status_df is None or status_df.empty:
-            raise RuntimeError("VNStock không trả về trạng thái thị trường.")
+    morning_session = (
+        dt_time(9, 0) <= current_time <= dt_time(11, 30)
+    )
 
-        status_df = status_df.copy()
-        status_df.columns = [
-            str(c).strip().lower()
-            for c in status_df.columns
-        ]
+    afternoon_session = (
+        dt_time(13, 0) <= current_time <= dt_time(15, 0)
+    )
 
-        if "exchange" not in status_df.columns or "status" not in status_df.columns:
-            raise RuntimeError("Thiếu cột exchange/status trong trạng thái thị trường.")
+    in_trading_hours = (
+        is_weekday
+        and (morning_session or afternoon_session)
+    )
 
-        status_df["exchange"] = (
-            status_df["exchange"].astype(str).str.upper().str.strip()
-        )
+    if not is_weekday:
+        status = "Ngoài phiên - cuối tuần"
 
-        status_df["status"] = (
-            status_df["status"].astype(str).str.upper().str.strip()
-        )
+    elif current_time < dt_time(9, 0):
+        status = "Ngoài phiên - chưa mở cửa"
 
-        relevant = status_df[
-            status_df["exchange"].isin(["HOSE", "HNX"])
-        ].copy()
+    elif dt_time(11, 30) < current_time < dt_time(13, 0):
+        status = "Ngoài phiên - nghỉ trưa"
 
-        if relevant.empty:
-            raise RuntimeError("Không có trạng thái HOSE/HNX.")
+    elif current_time > dt_time(15, 0):
+        status = "Ngoài phiên - đã đóng cửa"
 
-        status_values = set(relevant["status"].tolist())
+    elif in_trading_hours:
+        status = "Trong khung giờ giao dịch dự kiến"
 
-        is_open = any(
-            ("OPEN" in value)
-            or ("TRADING" in value)
-            for value in status_values
-        )
+    else:
+        status = "Ngoài phiên"
 
-        return {
-            "is_open": is_open,
-            "status": ", ".join(
-                f"{row.exchange}: {row.status}"
-                for row in relevant.itertuples()
-            ),
-            "checked_at": now.strftime("%H:%M:%S %d/%m/%Y"),
-            "source": "VNStock Reference().market.status()"
-        }
-
-    except Exception as exc:
-        raise RuntimeError(
-            "Không xác định được trạng thái phiên HOSE/HNX. "
-            "Không tự chuyển sang chế độ realtime. Chi tiết: "
-            f"{exc}"
-        ) from exc
+    return {
+        "is_open": in_trading_hours,
+        "status": status,
+        "checked_at": now.strftime("%H:%M:%S %d/%m/%Y"),
+        "source": "Đồng hồ Việt Nam - khung giờ giao dịch dự kiến",
+        "holiday_check": False
+    }
 
 
 def fetch_market_quotes(symbols):
     """
-    Lấy bảng giá nhiều mã bằng một truy vấn Market().quote().
-    close_price là giá khớp gần nhất được nguồn công bố.
+    Lấy bảng giá nhiều mã bằng Market().quote().
+    close_price là giá khớp gần nhất do nguồn bảng giá trả về.
     """
+
     clean_symbols = sorted({
         normalize_symbol(s)
         for s in symbols
     })
 
     if not clean_symbols:
-        raise ValueError("Danh sách mã cần lấy bảng giá đang rỗng.")
+        raise ValueError(
+            "Danh sách mã cần lấy bảng giá đang rỗng."
+        )
 
     try:
-        raw = Market().quote(clean_symbols, source="kbs")
+        raw = Market().quote(
+            clean_symbols,
+            source="kbs"
+        )
 
     except Exception as exc:
         raise RuntimeError(
-            "Không lấy được bảng giá trực tiếp từ VNStock KBS: "
+            "Không lấy được bảng giá VNStock KBS: "
             f"{exc}"
         ) from exc
 
     if raw is None:
-        raise RuntimeError("VNStock không trả về bảng giá.")
+        raise RuntimeError(
+            "VNStock không trả về bảng giá."
+        )
 
     quotes_df = pd.DataFrame(raw)
 
     if quotes_df.empty:
-        raise RuntimeError("Bảng giá VNStock trả về rỗng.")
+        raise RuntimeError(
+            "Bảng giá VNStock trả về rỗng."
+        )
 
     quotes_df.columns = [
         str(c).strip().lower()
         for c in quotes_df.columns
     ]
 
-    required = ["symbol", "close_price"]
+    required = [
+        "symbol",
+        "close_price"
+    ]
 
-    missing = [c for c in required if c not in quotes_df.columns]
+    missing = [
+        c for c in required
+        if c not in quotes_df.columns
+    ]
 
     if missing:
         raise RuntimeError(
@@ -251,7 +290,10 @@ def fetch_market_quotes(symbols):
         )
 
     quotes_df["symbol"] = (
-        quotes_df["symbol"].astype(str).str.upper().str.strip()
+        quotes_df["symbol"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
     )
 
     quotes_df["close_price"] = pd.to_numeric(
@@ -265,20 +307,13 @@ def fetch_market_quotes(symbols):
             errors="coerce"
         )
 
-    if "total_volume" in quotes_df.columns:
-        quotes_df["total_volume"] = pd.to_numeric(
-            quotes_df["total_volume"],
-            errors="coerce"
-        )
+    quotes_df = quotes_df.dropna(
+        subset=["close_price"]
+    )
 
-    if "match_vol" in quotes_df.columns:
-        quotes_df["match_vol"] = pd.to_numeric(
-            quotes_df["match_vol"],
-            errors="coerce"
-        )
-
-    quotes_df = quotes_df.dropna(subset=["close_price"])
-    quotes_df = quotes_df[quotes_df["close_price"] > 0]
+    quotes_df = quotes_df[
+        quotes_df["close_price"] > 0
+    ]
 
     quotes = {}
 
@@ -288,22 +323,14 @@ def fetch_market_quotes(symbols):
         if symbol not in clean_symbols:
             continue
 
+        reference_price = row.get("reference_price")
+
         quotes[symbol] = {
             "symbol": symbol,
             "last_price": float(row["close_price"]),
             "reference_price": (
-                float(row["reference_price"])
-                if pd.notna(row.get("reference_price"))
-                else None
-            ),
-            "total_volume": (
-                float(row["total_volume"])
-                if pd.notna(row.get("total_volume"))
-                else None
-            ),
-            "match_vol": (
-                float(row["match_vol"])
-                if pd.notna(row.get("match_vol"))
+                float(reference_price)
+                if pd.notna(reference_price)
                 else None
             ),
             "exchange": row.get("exchange", ""),
@@ -311,7 +338,9 @@ def fetch_market_quotes(symbols):
         }
 
     if not quotes:
-        raise RuntimeError("Không có mã nào nhận được giá hợp lệ.")
+        raise RuntimeError(
+            "Không có mã nào nhận được giá hợp lệ."
+        )
 
     return quotes
 
@@ -331,7 +360,9 @@ def _extract_symbols(result):
                 "Danh sách trả về không có cột symbol."
             )
 
-        values = result[columns["symbol"]].tolist()
+        values = result[
+            columns["symbol"]
+        ].tolist()
 
     elif isinstance(result, pd.Series):
         values = result.tolist()
@@ -343,7 +374,9 @@ def _extract_symbols(result):
 
     for value in values:
         try:
-            symbols.append(normalize_symbol(value))
+            symbols.append(
+                normalize_symbol(value)
+            )
         except (ValueError, TypeError):
             continue
 
@@ -365,28 +398,41 @@ def fetch_exchange_symbols():
     listing = Listing(source="KBS")
 
     try:
-        hose_raw = listing.symbols_by_group(group="HOSE")
-        hnx_raw = listing.symbols_by_group(group="HNX")
+        hose_raw = listing.symbols_by_group(
+            group="HOSE"
+        )
+
+        hnx_raw = listing.symbols_by_group(
+            group="HNX"
+        )
 
     except Exception as exc:
         raise RuntimeError(
-            "Không lấy được danh sách mã HOSE/HNX qua VNStock. "
-            f"Chi tiết: {exc}"
+            "Không lấy được danh sách mã HOSE/HNX: "
+            f"{exc}"
         ) from exc
 
     hose_symbols = _extract_symbols(hose_raw)
     hnx_symbols = _extract_symbols(hnx_raw)
 
     if not hose_symbols:
-        raise RuntimeError("Danh sách HOSE trả về rỗng.")
+        raise RuntimeError(
+            "Danh sách HOSE trả về rỗng."
+        )
 
     if not hnx_symbols:
-        raise RuntimeError("Danh sách HNX trả về rỗng.")
+        raise RuntimeError(
+            "Danh sách HNX trả về rỗng."
+        )
 
-    symbols = sorted(set(hose_symbols + hnx_symbols))
+    symbols = sorted(
+        set(hose_symbols + hnx_symbols)
+    )
 
     if not symbols:
-        raise RuntimeError("Không tìm thấy mã cổ phiếu HOSE/HNX.")
+        raise RuntimeError(
+            "Không tìm thấy mã cổ phiếu HOSE/HNX."
+        )
 
     _SYMBOL_CACHE = symbols
     _SYMBOL_CACHE_AT = time.monotonic()
