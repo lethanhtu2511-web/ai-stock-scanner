@@ -20,8 +20,11 @@ _SYMBOL_CACHE_AT = 0.0
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Chỉ sử dụng nến ngày sau khi thị trường đã đóng cửa.
 DAILY_CANDLE_READY_TIME = dt_time(15, 30)
+
+# Chỉ dùng các nguồn được hỗ trợ ở cấp Cộng đồng.
+# KBS thử trước; nếu lỗi thì mới thử VCI.
+HOURLY_SOURCES = ("kbs", "vci")
 
 
 def normalize_symbol(symbol):
@@ -95,11 +98,6 @@ def _normalize_history(rows):
 
 
 def _remove_incomplete_today_candle(df):
-    """
-    Trước 15:30, loại nến có ngày bằng ngày hiện tại.
-    Sau 15:30, giữ nến ngày hiện tại nếu nguồn đã trả về.
-    """
-
     if df.empty:
         return df
 
@@ -152,48 +150,24 @@ def fetch_stock_history(symbol, length=260):
     _HISTORY_CACHE[key] = (time.monotonic(), df.copy())
 
     if len(_HISTORY_CACHE) > 500:
-        oldest = min(_HISTORY_CACHE, key=lambda k: _HISTORY_CACHE[k][0])
+        oldest = min(
+            _HISTORY_CACHE,
+            key=lambda k: _HISTORY_CACHE[k][0]
+        )
         del _HISTORY_CACHE[oldest]
 
     return df
 
 
-def fetch_stock_hourly(symbol, lookback="7d"):
-    """
-    Lấy nến H1 từ Vnstock nguồn VCI.
-
-    Theo chuẩn dữ liệu Vnstock thế hệ 5, giá cổ phiếu
-    trong OHLCV được tính bằng nghìn đồng. Hàm chuyển
-    sang đồng để thống nhất với dữ liệu nến ngày.
-
-    Không sử dụng nến thuộc phiên hiện tại vì nến đó
-    có thể chưa hoàn tất.
-    """
-
-    symbol = normalize_symbol(symbol)
-
-    key = (symbol, str(lookback))
-    now_mono = time.monotonic()
-    cached = _HOURLY_CACHE.get(key)
-
-    if cached and now_mono - cached[0] < HOURLY_CACHE_SECONDS:
-        return cached[1].copy()
-
-    try:
-        raw = Market().equity(symbol).ohlcv(
-            length=lookback,
-            interval="1H",
-            source="vci"
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"{symbol}: không lấy được dữ liệu nến H1 từ VCI: {exc}"
-        ) from exc
-
-    if raw is None or len(raw) == 0:
-        raise ValueError(f"{symbol}: nguồn VCI không trả về nến H1.")
+def _normalize_hourly(raw, symbol, source):
+    if raw is None:
+        raise ValueError("Nguồn không trả về dữ liệu.")
 
     df = pd.DataFrame(raw).copy()
+
+    if df.empty:
+        raise ValueError("Nguồn không trả về nến H1.")
+
     df.columns = [str(c).strip().lower() for c in df.columns]
 
     df = df.rename(columns={
@@ -206,12 +180,23 @@ def fetch_stock_hourly(symbol, lookback="7d"):
     missing = [c for c in required if c not in df.columns]
 
     if missing:
-        raise ValueError(
-            f"{symbol}: dữ liệu H1 thiếu cột {missing}."
-        )
+        raise ValueError(f"Thiếu cột H1: {missing}")
 
     df = df[required].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    # Chuẩn hóa thời gian về múi giờ Việt Nam.
+    parsed_dates = pd.to_datetime(df["date"], errors="coerce")
+
+    if parsed_dates.dt.tz is None:
+        parsed_dates = parsed_dates.dt.tz_localize(
+            "Asia/Ho_Chi_Minh"
+        )
+    else:
+        parsed_dates = parsed_dates.dt.tz_convert(
+            "Asia/Ho_Chi_Minh"
+        )
+
+    df["date"] = parsed_dates
 
     for col in required[1:]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -222,15 +207,31 @@ def fetch_stock_hourly(symbol, lookback="7d"):
         .drop_duplicates("date", keep="last")
     )
 
-    # Vnstock OHLCV cổ phiếu trả giá theo nghìn đồng.
+    # OHLCV cổ phiếu Vnstock trả giá theo nghìn đồng.
     for col in ["open", "high", "low", "close"]:
         df[col] = df[col] * 1000
 
-    # Chỉ dùng nến của các phiên đã kết thúc.
-    now = datetime.now(VN_TZ)
-    dates = pd.to_datetime(df["date"], errors="coerce")
+    # Loại nến H1 chưa hoàn tất.
+    # Giữ các nến đã hoàn tất trong chính phiên hôm nay.
+    now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
+    current_hour = now.floor("h")
 
-    df = df.loc[dates.dt.date < now.date()].copy()
+    df = df.loc[df["date"] < current_hour].copy()
+
+    valid = (
+        (df["open"] > 0)
+        & (df["high"] > 0)
+        & (df["low"] > 0)
+        & (df["close"] > 0)
+        & (df["volume"] >= 0)
+        & (df["high"] >= df["low"])
+        & (df["high"] >= df["open"])
+        & (df["high"] >= df["close"])
+        & (df["low"] <= df["open"])
+        & (df["low"] <= df["close"])
+    )
+
+    df = df.loc[valid].copy()
 
     df = df.rename(columns={
         "date": "Date",
@@ -243,38 +244,91 @@ def fetch_stock_hourly(symbol, lookback="7d"):
 
     if len(df) < 20:
         raise ValueError(
-            f"{symbol}: chỉ có {len(df)} nến H1 hoàn tất, "
-            "cần tối thiểu 20 nến."
+            f"Chỉ có {len(df)} nến H1 hoàn tất, cần tối thiểu 20."
         )
 
-    # Kiểm tra đơn vị và tính hợp lệ so với giá đóng cửa ngày.
+    # Kiểm tra đơn vị và mức giá so với D1.
     daily = fetch_stock_history(symbol, length=220)
+
     daily_close = float(daily.iloc[-1]["Close"])
     hourly_close = float(df.iloc[-1]["Close"])
 
     if daily_close <= 0 or hourly_close <= 0:
-        raise ValueError(f"{symbol}: giá H1 hoặc D1 không hợp lệ.")
+        raise ValueError("Giá H1 hoặc D1 không hợp lệ.")
 
     difference = abs(hourly_close / daily_close - 1)
 
     if difference > 0.15:
         raise ValueError(
-            f"{symbol}: giá H1 lệch quá 15% so với D1; "
-            "không dùng dữ liệu này để xác nhận."
+            "Giá H1 lệch quá 15% so với D1; "
+            "không sử dụng dữ liệu này."
         )
 
-    df.attrs["source"] = "Vnstock VCI - nến 1 giờ"
+    df.attrs["source"] = source.upper()
     df.attrs["last_date"] = pd.Timestamp(
         df.iloc[-1]["Date"]
     ).strftime("%d/%m/%Y %H:%M")
 
-    _HOURLY_CACHE[key] = (time.monotonic(), df.copy())
-
-    if len(_HOURLY_CACHE) > 500:
-        oldest = min(_HOURLY_CACHE, key=lambda k: _HOURLY_CACHE[k][0])
-        del _HOURLY_CACHE[oldest]
-
     return df
+
+
+def fetch_stock_hourly(symbol, lookback="14d"):
+    """
+    Lấy tối thiểu 20 nến H1 hoàn tất.
+
+    Thử KBS trước, VCI sau.
+    Không thử MAS/VND vì các nguồn đó không thuộc
+    nhóm nguồn được phép ở cấp Cộng đồng.
+    """
+
+    symbol = normalize_symbol(symbol)
+
+    key = (symbol, str(lookback))
+    now_mono = time.monotonic()
+    cached = _HOURLY_CACHE.get(key)
+
+    if cached and now_mono - cached[0] < HOURLY_CACHE_SECONDS:
+        return cached[1].copy()
+
+    errors = []
+
+    for source in HOURLY_SOURCES:
+        try:
+            raw = Market().equity(symbol).ohlcv(
+                length=lookback,
+                interval="1H",
+                source=source
+            )
+
+            df = _normalize_hourly(
+                raw=raw,
+                symbol=symbol,
+                source=source
+            )
+
+            _HOURLY_CACHE[key] = (
+                time.monotonic(),
+                df.copy()
+            )
+
+            if len(_HOURLY_CACHE) > 500:
+                oldest = min(
+                    _HOURLY_CACHE,
+                    key=lambda k: _HOURLY_CACHE[k][0]
+                )
+                del _HOURLY_CACHE[oldest]
+
+            return df
+
+        except Exception as exc:
+            errors.append(
+                f"{source.upper()}: {str(exc)}"
+            )
+
+    raise RuntimeError(
+        f"{symbol}: không lấy được dữ liệu H1 từ các nguồn dự phòng. "
+        + " | ".join(errors)
+    )
 
 
 def fetch_stock_quote(symbol):
@@ -285,7 +339,9 @@ def fetch_stock_quote(symbol):
     return {
         "symbol": symbol,
         "last_price": float(row["Close"]),
-        "quote_date": pd.Timestamp(row["Date"]).strftime("%d/%m/%Y"),
+        "quote_date": pd.Timestamp(
+            row["Date"]
+        ).strftime("%d/%m/%Y"),
         "source": "Giá đóng cửa nến ngày"
     }
 
@@ -359,7 +415,9 @@ def fetch_exchange_symbols():
     symbols = sorted(set(hose_symbols + hnx_symbols))
 
     if not symbols:
-        raise RuntimeError("Không tìm thấy mã cổ phiếu HOSE/HNX.")
+        raise RuntimeError(
+            "Không tìm thấy mã cổ phiếu HOSE/HNX."
+        )
 
     _SYMBOL_CACHE = symbols
     _SYMBOL_CACHE_AT = time.monotonic()
