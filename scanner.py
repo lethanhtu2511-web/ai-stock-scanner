@@ -31,13 +31,18 @@ MANUALLY_BLOCKED_SYMBOLS = {
 }
 
 
+# =========================================================
+# 1. CHUẨN HÓA VÀ TÍNH CHỈ BÁO
+# =========================================================
+
 def calculate_indicators(df):
     data = df.copy()
-    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
+    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
     missing = [c for c in required if c not in data.columns]
+
     if missing:
-        raise ValueError(f"Thiếu dữ liệu OHLCV: {missing}")
+        raise ValueError(f"Thiếu cột dữ liệu: {missing}")
 
     data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
 
@@ -63,14 +68,17 @@ def calculate_indicators(df):
         & (data["Low"] <= data["Open"])
         & (data["Low"] <= data["Close"])
     )
+
     data = data.loc[valid].reset_index(drop=True)
 
+    # Không thay đổi tiêu chuẩn 200 phiên.
     if len(data) < 200:
         raise ValueError(
-            f"Không đủ 200 phiên dữ liệu (hiện có {len(data)})."
+            f"Chỉ có {len(data)} phiên hoạt động; cần tối thiểu 200."
         )
 
     close = data["Close"]
+
     data["TURNOVER"] = close * data["Volume"]
     data["AVG_TURNOVER_20D"] = data["TURNOVER"].rolling(20).mean()
     data["MEDIAN_TURNOVER_20D"] = data["TURNOVER"].rolling(20).median()
@@ -87,6 +95,7 @@ def calculate_indicators(df):
     avg_gain = gain.ewm(
         alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
+
     avg_loss = loss.ewm(
         alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
@@ -96,23 +105,28 @@ def calculate_indicators(df):
 
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
+
     data["MACD"] = ema12 - ema26
     data["MACD_SIGNAL"] = data["MACD"].ewm(
         span=9, adjust=False
     ).mean()
+
     data["MACD_HIST"] = data["MACD"] - data["MACD_SIGNAL"]
     data["MACD_HIST_PREVIOUS"] = data["MACD_HIST"].shift(1)
 
     data["VOLUME_MA5"] = data["Volume"].rolling(5).mean()
     data["VOLUME_MA20"] = data["Volume"].rolling(20).mean()
+
     data["VOLUME_RATIO"] = (
         data["Volume"] / data["VOLUME_MA20"].replace(0, np.nan)
     )
+
     data["VOLUME_DRYUP_RATIO"] = (
         data["VOLUME_MA5"] / data["VOLUME_MA20"].replace(0, np.nan)
     )
 
     previous_close = close.shift(1)
+
     true_range = pd.concat(
         [
             data["High"] - data["Low"],
@@ -126,7 +140,7 @@ def calculate_indicators(df):
     data["ATR14_PCT"] = data["ATR14"] / close * 100
     data["ATR14_PREVIOUS_5D"] = data["ATR14"].shift(5)
 
-    # Chỉ lấy đỉnh các phiên trước, không dùng dữ liệu tương lai.
+    # Chỉ dùng dữ liệu các phiên trước, không dùng đỉnh của chính phiên hiện tại.
     data["HIGH20_PREVIOUS"] = data["High"].shift(1).rolling(20).max()
     data["HIGH50_PREVIOUS"] = data["High"].shift(1).rolling(50).max()
 
@@ -137,12 +151,18 @@ def calculate_indicators(df):
 
     data["RANGE20_PREVIOUS_5D"] = data["RANGE20"].shift(5)
 
-    return (
-        data.replace([np.inf, -np.inf], np.nan)
-        .dropna()
-        .reset_index(drop=True)
-    )
+    data = data.replace([np.inf, -np.inf], np.nan)
+    data = data.dropna().reset_index(drop=True)
 
+    if len(data) == 0:
+        raise ValueError("Không còn dữ liệu hợp lệ sau khi tính chỉ báo.")
+
+    return data
+
+
+# =========================================================
+# 2. CHẤM ĐIỂM
+# =========================================================
 
 def calculate_score(row):
     score = 0
@@ -165,11 +185,11 @@ def calculate_score(row):
         reasons.append("Khối lượng cao hơn TB20 ít nhất 50%")
     elif row.VOLUME_RATIO >= 1.2:
         score += 7
-        reasons.append("Khối lượng cải thiện so với TB20")
+        reasons.append("Khối lượng cải thiện")
 
     if row.TURNOVER > row.AVG_TURNOVER_20D * 1.2:
         score += 10
-        reasons.append("Giá trị giao dịch tăng so với TB20")
+        reasons.append("Giá trị giao dịch tăng")
 
     if row.Close > row.Open and row.Volume >= row.VOLUME_MA20:
         score += 5
@@ -191,7 +211,7 @@ def calculate_score(row):
         reasons.append("Vượt đỉnh 20 phiên")
     elif row.Close >= row.HIGH20_PREVIOUS * 0.97:
         score += 8
-        reasons.append("Áp sát vùng đỉnh 20 phiên")
+        reasons.append("Áp sát đỉnh 20 phiên")
 
     candle_range = max(float(row.High - row.Low), 1e-9)
     close_position = (float(row.Close) - float(row.Low)) / candle_range
@@ -210,7 +230,7 @@ def calculate_score(row):
         reasons.append("Biến động phù hợp lướt sóng")
     elif 1.0 <= atr_pct < 1.5 or 4.0 < atr_pct <= 5.5:
         score += 10
-        reasons.append("Biến động ở mức chấp nhận được")
+        reasons.append("Biến động chấp nhận được")
     elif atr_pct <= 6.5:
         score += 5
         reasons.append("Biến động cần thận trọng")
@@ -226,6 +246,7 @@ def calculate_early_score(row):
     proximity = float(row.Close) / high20 if high20 > 0 else 0
 
     ma20_previous = float(row.MA20_PREVIOUS_5D)
+
     ma20_slope = (
         (float(row.MA20) / ma20_previous - 1) * 100
         if ma20_previous > 0 else -99
@@ -237,29 +258,29 @@ def calculate_early_score(row):
 
     if row.MA20 >= row.MA50 * 0.99:
         score += 8
-        reasons.append("MA20 áp sát hoặc nằm trên MA50")
+        reasons.append("MA20 áp sát hoặc trên MA50")
 
     if ma20_slope >= 0:
         score += 8
-        reasons.append("MA20 đi ngang/tăng")
+        reasons.append("MA20 đi ngang hoặc tăng")
 
-    if EARLY_HIGH20_MIN_DISTANCE <= proximity <= EARLY_HIGH20_MAX_DISTANCE:
+    if 0.96 <= proximity <= 1.015:
         score += 18
-        reasons.append("Giá nằm sát vùng đỉnh 20 phiên")
-    elif 0.93 <= proximity < EARLY_HIGH20_MIN_DISTANCE:
+        reasons.append("Giá sát vùng đỉnh 20 phiên")
+    elif 0.93 <= proximity < 0.96:
         score += 10
-        reasons.append("Giá đang tiến gần vùng đỉnh 20 phiên")
+        reasons.append("Giá đang tiến gần vùng đỉnh")
 
     if row.VOLUME_DRYUP_RATIO <= 0.85:
         score += 12
         reasons.append("Khối lượng 5 phiên co lại")
     elif row.VOLUME_DRYUP_RATIO <= 1.0:
         score += 8
-        reasons.append("Khối lượng tích lũy không tăng nóng")
+        reasons.append("Khối lượng tích lũy ổn định")
 
     if 0.75 <= row.VOLUME_RATIO <= 1.8:
         score += 8
-        reasons.append("Khối lượng ở vùng có thể chấp nhận")
+        reasons.append("Khối lượng có thể chấp nhận")
 
     if row.ATR14_PCT <= 4.5:
         score += 8
@@ -267,23 +288,20 @@ def calculate_early_score(row):
 
     if row.RANGE20 <= row.RANGE20_PREVIOUS_5D * 1.05:
         score += 8
-        reasons.append("Biên độ 20 phiên thu hẹp/ổn định")
+        reasons.append("Biên độ thu hẹp hoặc ổn định")
 
     if 48 <= row.RSI <= 65:
         score += 10
-        reasons.append("RSI khỏe nhưng chưa quá nóng")
+        reasons.append("RSI khỏe, chưa quá nóng")
     elif 45 <= row.RSI < 48 or 65 < row.RSI <= 68:
         score += 5
         reasons.append("RSI trong vùng theo dõi")
 
-    # Sửa lỗi MACD âm: không so sánh MACD với 98% giá trị signal.
-    # Chỉ ghi nhận khi MACD trên signal hoặc histogram đang cải thiện.
-    macd_above_signal = row.MACD > row.MACD_SIGNAL
-    histogram_improving = (
-        row.MACD_HIST > row.MACD_HIST_PREVIOUS
-    )
-
-    if macd_above_signal or histogram_improving:
+    # Không dùng phép so sánh MACD với 98% signal vì sai khi MACD âm.
+    if (
+        row.MACD > row.MACD_SIGNAL
+        or row.MACD_HIST > row.MACD_HIST_PREVIOUS
+    ):
         score += 8
         reasons.append("MACD/histogram có dấu hiệu cải thiện")
 
@@ -296,6 +314,10 @@ def calculate_early_score(row):
 
     return min(int(score), 100), reasons
 
+
+# =========================================================
+# 3. QUẢN TRỊ RỦI RO
+# =========================================================
 
 def calculate_target_price(price, stop_loss, resistance=None):
     risk_share = (
@@ -328,8 +350,10 @@ def calculate_target_price(price, stop_loss, resistance=None):
         and resistance > price * 1.01
     ):
         resistance_price = math.floor(float(resistance) / 100) * 100
+
         if resistance_price < min_target:
             return None
+
         return resistance_price
 
     return min_target
@@ -342,7 +366,9 @@ def _risk_plan(price, row, capital, risk_percent):
         return None
 
     target = calculate_target_price(
-        price, stop, resistance=float(row.HIGH50_PREVIOUS)
+        price,
+        stop,
+        resistance=float(row.HIGH50_PREVIOUS),
     )
 
     if target is None:
@@ -362,6 +388,7 @@ def _risk_plan(price, row, capital, risk_percent):
     risk_budget = float(capital) * float(risk_percent)
 
     quantity_risk = int(risk_budget / risk_share) if risk_share > 0 else 0
+
     quantity_capital = int(
         capital / (price * (1 + BUY_FEE + SLIPPAGE))
     )
@@ -385,6 +412,7 @@ def _risk_plan(price, row, capital, risk_percent):
 
 def _early_staged_plan(price, row, plan):
     total_quantity = int(plan["quantity"])
+
     initial_quantity = (
         int(total_quantity * EARLY_INITIAL_FRACTION) // LOT_SIZE
     ) * LOT_SIZE
@@ -393,6 +421,7 @@ def _early_staged_plan(price, row, plan):
         return None
 
     high20 = float(row.HIGH20_PREVIOUS)
+
     trigger = math.ceil(
         high20 * (1 + BREAKOUT_BUFFER) / 100
     ) * 100
@@ -414,12 +443,10 @@ def _early_staged_plan(price, row, plan):
         - plan["stop_loss"] * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
     )
 
-    if trigger_risk_per_share > 0:
-        add_by_risk = int(
-            remaining_risk_budget / trigger_risk_per_share
-        )
-    else:
-        add_by_risk = 0
+    add_by_risk = (
+        int(remaining_risk_budget / trigger_risk_per_share)
+        if trigger_risk_per_share > 0 else 0
+    )
 
     add_by_risk = (add_by_risk // LOT_SIZE) * LOT_SIZE
 
@@ -435,12 +462,16 @@ def _early_staged_plan(price, row, plan):
         "add_volume_ratio_required": BREAKOUT_VOLUME_RATIO,
         "add_condition": (
             "Chỉ xem xét mua thêm khi nến ngày hoàn tất đóng trên "
-            "giá kích hoạt, khối lượng đạt tối thiểu 1,2 lần TB20 "
-            "và H1 xác nhận EMA9 > EMA20. Phải tính lại RR và rủi ro "
-            "theo giá thực tế trước khi mua."
+            "giá kích hoạt, khối lượng tối thiểu 1,2 lần TB20 và H1 "
+            "xác nhận EMA9 > EMA20. Phải tính lại RR và rủi ro theo "
+            "giá thực tế trước khi mua."
         ),
     }
 
+
+# =========================================================
+# 4. KIỂM TRA H1
+# =========================================================
 
 def _hourly_trend(hourly_df):
     if hourly_df is None or len(hourly_df) < 25:
@@ -480,6 +511,10 @@ def _hourly_trend(hourly_df):
     )
 
 
+# =========================================================
+# 5. PHÂN TÍCH MỘT MÃ
+# =========================================================
+
 def analyze_stock(
     df,
     capital=INITIAL_CAPITAL,
@@ -504,13 +539,16 @@ def analyze_stock(
 
         if is_live:
             price = float(live_quote.get("last_price", 0))
+
             if not np.isfinite(price) or price <= 0:
                 raise ValueError("Giá bảng điện không hợp lệ.")
+
             row.Close = price
         else:
             price = daily_close
 
         data_date = pd.Timestamp(row.Date).strftime("%d/%m/%Y")
+
         age_days = (
             pd.Timestamp.now().normalize()
             - pd.Timestamp(row.Date).normalize()
@@ -539,6 +577,8 @@ def analyze_stock(
                     f"trung vị {median_turnover / 1e9:.2f} tỷ/ngày."
                 ),
                 "data_date": data_date,
+                "avg_turnover_20d": avg_turnover,
+                "median_turnover_20d": median_turnover,
             }
 
         if not np.isfinite(float(row.ATR14)) or row.ATR14 <= 0:
@@ -548,6 +588,7 @@ def analyze_stock(
         extension_pct = (price / ma20 - 1) * 100 if ma20 > 0 else 999
 
         previous_close = float(data.iloc[-2].Close)
+
         day_change_pct = (
             (price / previous_close - 1) * 100
             if previous_close > 0 else 0
@@ -674,16 +715,20 @@ def analyze_stock(
             blockers.append(
                 f"Điểm EARLY BUY {early_score}/{EARLY_MIN_SCORE}"
             )
+
         if extension_pct > EARLY_MAX_EXTENSION_PCT:
             blockers.append(f"Giá cách MA20 {extension_pct:.1f}%")
+
         if not (
             EARLY_HIGH20_MIN_DISTANCE
             <= proximity
             <= EARLY_HIGH20_MAX_DISTANCE
         ):
             blockers.append("Chưa ở vùng giá trước breakout")
+
         if not h1_early:
             blockers.append(f"H1 chưa xác nhận: {h1_status}")
+
         if early_plan is None or early_plan["reward_risk"] < MIN_REWARD_RISK:
             blockers.append("Chưa đạt RR tối thiểu 2:1")
 
@@ -720,6 +765,10 @@ def analyze_stock(
         }
 
 
+# =========================================================
+# 6. QUÉT THỊ TRƯỜNG
+# =========================================================
+
 def scan_market(
     capital=INITIAL_CAPITAL,
     risk_percent=RISK_PERCENT,
@@ -738,7 +787,11 @@ def scan_market(
     if symbols is None:
         symbols = fetch_exchange_symbols()
 
-    symbols = sorted(set(str(s).strip().upper() for s in symbols if s))
+    symbols = sorted(set(
+        str(s).strip().upper()
+        for s in symbols
+        if s
+    ))
 
     if max_symbols is not None:
         symbols = symbols[:max(0, int(max_symbols))]
@@ -750,10 +803,20 @@ def scan_market(
 
     results = []
     errors = []
+
     filtered_count = 0
+    wait_count = 0
+
+    d1_error_count = 0
+    d1_insufficient_count = 0
+
+    liquidity_filtered_count = 0
+
+    h1_attempted_count = 0
     h1_available_count = 0
     h1_unavailable_count = 0
-    wait_count = 0
+    h1_kbs_error_count = 0
+    h1_vci_fallback_count = 0
 
     total = len(symbols)
 
@@ -763,23 +826,102 @@ def scan_market(
                 filtered_count += 1
                 continue
 
-            history = fetch_stock_history(symbol, length=260)
+            # -------------------------------------------------
+            # BƯỚC 1: LẤY D1
+            # -------------------------------------------------
+            try:
+                history = fetch_stock_history(symbol, length=260)
+            except Exception as exc:
+                d1_error_count += 1
+                message = str(exc)
+
+                if "chỉ có" in message.lower() and "phiên" in message.lower():
+                    d1_insufficient_count += 1
+
+                errors.append({
+                    "symbol": symbol,
+                    "stage": "D1",
+                    "error": message,
+                })
+                continue
+
+            # -------------------------------------------------
+            # BƯỚC 2: KIỂM TRA 200 PHIÊN VÀ THANH KHOẢN
+            # -------------------------------------------------
+            try:
+                data = calculate_indicators(history)
+                row = data.iloc[-1]
+
+            except Exception as exc:
+                d1_error_count += 1
+                errors.append({
+                    "symbol": symbol,
+                    "stage": "D1_PROCESS",
+                    "error": str(exc),
+                })
+                continue
+
+            avg_turnover = float(row.AVG_TURNOVER_20D)
+            median_turnover = float(row.MEDIAN_TURNOVER_20D)
+
+            if (
+                avg_turnover < MIN_AVG_TURNOVER_20D
+                or median_turnover < MIN_MEDIAN_TURNOVER_20D
+            ):
+                filtered_count += 1
+                liquidity_filtered_count += 1
+                continue
+
+            # -------------------------------------------------
+            # BƯỚC 3: CHỈ LẤY H1 SAU KHI ĐẠT THANH KHOẢN
+            # -------------------------------------------------
+            h1_attempted_count += 1
 
             hourly = None
             hourly_error = None
 
             try:
-                hourly = fetch_stock_hourly(symbol, lookback="14d")
+                hourly = fetch_stock_hourly(
+                    symbol,
+                    lookback="14d",
+                )
                 h1_available_count += 1
+
+                source = str(hourly.attrs.get("source", "")).upper()
+
+                if source == "VCI":
+                    h1_vci_fallback_count += 1
+
             except Exception as exc:
                 hourly_error = str(exc)
                 h1_unavailable_count += 1
 
+                error_text = hourly_error.upper()
+
+                if "KBS" in error_text:
+                    h1_kbs_error_count += 1
+
+                errors.append({
+                    "symbol": symbol,
+                    "stage": "H1",
+                    "error": hourly_error,
+                })
+
+            # -------------------------------------------------
+            # BƯỚC 4: PHÂN TÍCH
+            # -------------------------------------------------
             quote = None
+
             if live_mode:
                 quote = live_quotes.get(symbol)
+
                 if quote is None:
-                    raise ValueError("Không có giá trực tiếp cho mã này.")
+                    errors.append({
+                        "symbol": symbol,
+                        "stage": "QUOTE",
+                        "error": "Không có giá trực tiếp cho mã này.",
+                    })
+                    continue
 
             result = analyze_stock(
                 history,
@@ -795,21 +937,33 @@ def scan_market(
 
             if result.get("signal") in ("BUY", "EARLY_BUY"):
                 results.append(result)
+
             elif result.get("signal") == "FILTERED":
                 filtered_count += 1
+
             elif result.get("signal") == "WAIT":
                 wait_count += 1
+
                 if result.get("data_date") is None:
                     errors.append({
                         "symbol": symbol,
-                        "error": result.get("reason", "Không phân tích được."),
+                        "stage": "ANALYSIS",
+                        "error": result.get(
+                            "reason",
+                            "Không phân tích được.",
+                        ),
                     })
 
         except Exception as exc:
-            errors.append({"symbol": symbol, "error": str(exc)})
+            errors.append({
+                "symbol": symbol,
+                "stage": "UNKNOWN",
+                "error": str(exc),
+            })
 
-        if progress_callback:
-            progress_callback(index, total)
+        finally:
+            if progress_callback:
+                progress_callback(index, total)
 
     results.sort(
         key=lambda x: (
@@ -824,20 +978,33 @@ def scan_market(
     confirmed_count = sum(
         1 for x in results if x.get("signal") == "BUY"
     )
+
     early_count = sum(
         1 for x in results if x.get("signal") == "EARLY_BUY"
     )
 
     return {
         "results": results,
+
         "scanned": total,
+
         "buy_count": len(results),
         "confirmed_buy_count": confirmed_count,
         "early_buy_count": early_count,
+
         "filtered_count": filtered_count,
+        "liquidity_filtered_count": liquidity_filtered_count,
         "wait_count": wait_count,
+
+        "d1_error_count": d1_error_count,
+        "d1_insufficient_count": d1_insufficient_count,
+
+        "h1_attempted_count": h1_attempted_count,
         "h1_available_count": h1_available_count,
         "h1_unavailable_count": h1_unavailable_count,
+        "h1_kbs_error_count": h1_kbs_error_count,
+        "h1_vci_fallback_count": h1_vci_fallback_count,
+
         "error_count": len(errors),
         "errors": errors,
     }
