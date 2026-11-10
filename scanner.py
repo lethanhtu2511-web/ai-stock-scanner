@@ -823,13 +823,14 @@ def scan_market(
 
     # -----------------------------------------------------
     # XẾP HẠNG ỨNG VIÊN
+    # ƯU TIÊN ĐIỂM TÍN HIỆU CAO NHẤT: BUY HOẶC EARLY BUY
     # -----------------------------------------------------
 
     candidates.sort(
         key=lambda item: (
-            item["score"] >= MIN_SCORE,
-            item["score"],
+            max(item["score"], item["early_score"]),
             item["early_score"],
+            item["score"],
         ),
         reverse=True,
     )
