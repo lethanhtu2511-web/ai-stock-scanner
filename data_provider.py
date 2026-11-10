@@ -19,59 +19,60 @@ _SYMBOL_CACHE = None
 _SYMBOL_CACHE_AT = 0.0
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-
 DAILY_CANDLE_READY_TIME = dt_time(15, 30)
-
-# Chỉ dùng các nguồn được hỗ trợ ở cấp Cộng đồng.
-# KBS thử trước; nếu lỗi thì mới thử VCI.
 HOURLY_SOURCES = ("kbs", "vci")
 
 
 def normalize_symbol(symbol):
     symbol = str(symbol).strip().upper()
-
     if not re.fullmatch(r"[A-Z0-9]{3,10}", symbol):
-        raise ValueError("Mã cổ phiếu không hợp lệ.")
-
+        raise ValueError(f"Mã cổ phiếu không hợp lệ: {symbol}")
     return symbol
 
 
-def _normalize_history(rows):
-    if rows is None:
-        raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
-
-    df = pd.DataFrame(rows)
-
-    if df.empty:
-        raise ValueError("Nguồn dữ liệu không trả về lịch sử giá.")
-
+def _flatten_columns(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [
+            "_".join(str(x) for x in col if str(x) != "").strip("_")
+            for col in df.columns
+        ]
     df.columns = [str(c).strip().lower() for c in df.columns]
+    return df
 
-    df = df.rename(columns={
+
+def _standardize_ohlcv(raw, label="OHLCV"):
+    if raw is None:
+        raise ValueError(f"Nguồn không trả dữ liệu {label}.")
+
+    df = pd.DataFrame(raw).copy()
+    if df.empty:
+        raise ValueError(f"Nguồn không trả dữ liệu {label}.")
+
+    df = _flatten_columns(df)
+
+    rename = {
         "time": "date",
         "trading_date": "date",
         "tradingdate": "date",
-        "vol": "volume"
-    })
+        "timestamp": "date",
+        "vol": "volume",
+        "total_volume": "volume",
+        "closing_price": "close",
+        "open_price": "open",
+        "high_price": "high",
+        "low_price": "low",
+    }
+    df = df.rename(columns=rename)
 
     required = ["date", "open", "high", "low", "close", "volume"]
     missing = [c for c in required if c not in df.columns]
-
     if missing:
-        raise ValueError(f"Thiếu cột OHLCV: {missing}")
+        raise ValueError(f"{label} thiếu cột: {missing}")
 
-    df = df[required].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    return df[required].copy()
 
-    for col in required[1:]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = (
-        df.dropna()
-        .sort_values("date")
-        .drop_duplicates("date", keep="last")
-    )
-
+def _valid_ohlcv(df):
     valid = (
         (df["open"] > 0)
         & (df["high"] > 0)
@@ -84,8 +85,19 @@ def _normalize_history(rows):
         & (df["low"] <= df["open"])
         & (df["low"] <= df["close"])
     )
+    return df.loc[valid].copy()
 
-    df = df.loc[valid]
+
+def _normalize_history(rows):
+    df = _standardize_ohlcv(rows, "nến ngày")
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna().sort_values("date")
+    df = df.drop_duplicates("date", keep="last")
+    df = _valid_ohlcv(df)
 
     return df.rename(columns={
         "date": "Date",
@@ -93,7 +105,7 @@ def _normalize_history(rows):
         "high": "High",
         "low": "Low",
         "close": "Close",
-        "volume": "Volume"
+        "volume": "Volume",
     }).reset_index(drop=True)
 
 
@@ -102,13 +114,9 @@ def _remove_incomplete_today_candle(df):
         return df
 
     now = datetime.now(VN_TZ)
-    today = pd.Timestamp(now.date())
-
     if now.time() < DAILY_CANDLE_READY_TIME:
-        dates = pd.to_datetime(
-            df["Date"], errors="coerce"
-        ).dt.normalize()
-
+        dates = pd.to_datetime(df["Date"], errors="coerce").dt.normalize()
+        today = pd.Timestamp(now.date())
         df = df.loc[dates < today].copy()
 
     return df.reset_index(drop=True)
@@ -126,112 +134,96 @@ def fetch_stock_history(symbol, length=260):
         return cached[1].copy()
 
     try:
-        rows = get_ohlcv(symbol, lookback_days=600)
+        raw = get_ohlcv(symbol, lookback_days=600)
+        df = _normalize_history(raw)
+        df = _remove_incomplete_today_candle(df)
+        df = df.tail(length).reset_index(drop=True)
+
+        if len(df) < 200:
+            raise ValueError(
+                f"Chỉ có {len(df)} phiên hoàn tất; cần tối thiểu 200."
+            )
+
+        df.attrs["source"] = "DNSE/Vietcap - lịch sử nến ngày"
+        df.attrs["last_date"] = pd.Timestamp(
+            df.iloc[-1]["Date"]
+        ).strftime("%d/%m/%Y")
+
+        _HISTORY_CACHE[key] = (time.monotonic(), df.copy())
+
+        if len(_HISTORY_CACHE) > 500:
+            oldest = min(_HISTORY_CACHE, key=lambda k: _HISTORY_CACHE[k][0])
+            del _HISTORY_CACHE[oldest]
+
+        return df
+
     except Exception as exc:
         raise RuntimeError(
-            f"{symbol}: không lấy được dữ liệu nến ngày: {exc}"
+            f"{symbol}: không lấy được dữ liệu D1: {exc}"
         ) from exc
 
-    df = _normalize_history(rows)
-    df = _remove_incomplete_today_candle(df)
-    df = df.tail(length).reset_index(drop=True)
 
-    if len(df) < 200:
-        raise ValueError(
-            f"{symbol}: chỉ có {len(df)} phiên hoàn tất, "
-            "cần tối thiểu 200 phiên."
-        )
+def _parse_vietnam_datetime(series):
+    parsed = []
 
-    df.attrs["source"] = "DNSE/Vietcap - dữ liệu lịch sử nến ngày"
-    df.attrs["last_date"] = pd.Timestamp(
-        df.iloc[-1]["Date"]
-    ).strftime("%d/%m/%Y")
+    for value in series:
+        try:
+            ts = pd.Timestamp(value)
+            if pd.isna(ts):
+                parsed.append(pd.NaT)
+            elif ts.tzinfo is None:
+                parsed.append(ts.tz_localize(VN_TZ))
+            else:
+                parsed.append(ts.tz_convert(VN_TZ))
+        except Exception:
+            parsed.append(pd.NaT)
 
-    _HISTORY_CACHE[key] = (time.monotonic(), df.copy())
-
-    if len(_HISTORY_CACHE) > 500:
-        oldest = min(
-            _HISTORY_CACHE,
-            key=lambda k: _HISTORY_CACHE[k][0]
-        )
-        del _HISTORY_CACHE[oldest]
-
-    return df
+    return pd.Series(
+        pd.to_datetime(parsed, errors="coerce"),
+        index=series.index,
+    )
 
 
 def _normalize_hourly(raw, symbol, source):
-    if raw is None:
-        raise ValueError("Nguồn không trả về dữ liệu.")
+    df = _standardize_ohlcv(raw, "nến H1")
 
-    df = pd.DataFrame(raw).copy()
+    df["date"] = _parse_vietnam_datetime(df["date"])
 
-    if df.empty:
-        raise ValueError("Nguồn không trả về nến H1.")
-
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    df = df.rename(columns={
-        "time": "date",
-        "trading_date": "date",
-        "vol": "volume"
-    })
-
-    required = ["date", "open", "high", "low", "close", "volume"]
-    missing = [c for c in required if c not in df.columns]
-
-    if missing:
-        raise ValueError(f"Thiếu cột H1: {missing}")
-
-    df = df[required].copy()
-
-    # Chuẩn hóa thời gian về múi giờ Việt Nam.
-    parsed_dates = pd.to_datetime(df["date"], errors="coerce")
-
-    if parsed_dates.dt.tz is None:
-        parsed_dates = parsed_dates.dt.tz_localize(
-            "Asia/Ho_Chi_Minh"
-        )
-    else:
-        parsed_dates = parsed_dates.dt.tz_convert(
-            "Asia/Ho_Chi_Minh"
-        )
-
-    df["date"] = parsed_dates
-
-    for col in required[1:]:
+    for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = (
-        df.dropna()
-        .sort_values("date")
-        .drop_duplicates("date", keep="last")
-    )
+    df = df.dropna().sort_values("date")
+    df = df.drop_duplicates("date", keep="last")
 
-    # OHLCV cổ phiếu Vnstock trả giá theo nghìn đồng.
+    # Xác định đơn vị giá dựa trên tương quan với giá D1.
+    daily = fetch_stock_history(symbol, length=220)
+    daily_close = float(daily.iloc[-1]["Close"])
+
+    raw_hourly_close = float(df.iloc[-1]["close"])
+    if daily_close <= 0 or raw_hourly_close <= 0:
+        raise ValueError("Giá H1 hoặc D1 không hợp lệ.")
+
+    ratio = raw_hourly_close / daily_close
+
+    if 0.0005 <= ratio <= 0.005:
+        multiplier = 1000.0
+    elif 0.80 <= ratio <= 1.20:
+        multiplier = 1.0
+    else:
+        raise ValueError(
+            "Không xác định được đơn vị giá H1 so với D1 "
+            f"(tỷ lệ hiện tại: {ratio:.5f})."
+        )
+
     for col in ["open", "high", "low", "close"]:
-        df[col] = df[col] * 1000
+        df[col] = df[col] * multiplier
 
-    # Loại nến H1 chưa hoàn tất.
-    # Giữ các nến đã hoàn tất trong chính phiên hôm nay.
-    now = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh")
+    # Chỉ giữ nến đã hoàn tất.
+    now = pd.Timestamp.now(tz=VN_TZ)
     current_hour = now.floor("h")
-
     df = df.loc[df["date"] < current_hour].copy()
 
-    valid = (
-        (df["open"] > 0)
-        & (df["high"] > 0)
-        & (df["low"] > 0)
-        & (df["close"] > 0)
-        & (df["volume"] >= 0)
-        & (df["high"] >= df["low"])
-        & (df["high"] >= df["open"])
-        & (df["high"] >= df["close"])
-        & (df["low"] <= df["open"])
-        & (df["low"] <= df["close"])
-    )
-
-    df = df.loc[valid].copy()
+    df = _valid_ohlcv(df)
 
     df = df.rename(columns={
         "date": "Date",
@@ -239,55 +231,47 @@ def _normalize_hourly(raw, symbol, source):
         "high": "High",
         "low": "Low",
         "close": "Close",
-        "volume": "Volume"
+        "volume": "Volume",
     }).reset_index(drop=True)
 
-    if len(df) < 20:
+    if len(df) < 25:
         raise ValueError(
-            f"Chỉ có {len(df)} nến H1 hoàn tất, cần tối thiểu 20."
+            f"Chỉ có {len(df)} nến H1 hoàn tất; cần tối thiểu 25."
         )
 
-    # Kiểm tra đơn vị và mức giá so với D1.
-    daily = fetch_stock_history(symbol, length=220)
-
-    daily_close = float(daily.iloc[-1]["Close"])
     hourly_close = float(df.iloc[-1]["Close"])
-
-    if daily_close <= 0 or hourly_close <= 0:
-        raise ValueError("Giá H1 hoặc D1 không hợp lệ.")
-
     difference = abs(hourly_close / daily_close - 1)
 
     if difference > 0.15:
         raise ValueError(
-            "Giá H1 lệch quá 15% so với D1; "
-            "không sử dụng dữ liệu này."
+            f"Giá H1 lệch {difference * 100:.1f}% so với D1."
+        )
+
+    last_time = pd.Timestamp(df.iloc[-1]["Date"])
+    age_hours = (
+        pd.Timestamp.now(tz=VN_TZ) - last_time
+    ).total_seconds() / 3600
+
+    if age_hours > 72:
+        raise ValueError(
+            f"Nến H1 gần nhất đã cũ {age_hours:.1f} giờ."
         )
 
     df.attrs["source"] = source.upper()
-    df.attrs["last_date"] = pd.Timestamp(
-        df.iloc[-1]["Date"]
-    ).strftime("%d/%m/%Y %H:%M")
+    df.attrs["price_multiplier"] = multiplier
+    df.attrs["last_date"] = last_time.strftime("%d/%m/%Y %H:%M")
 
     return df
 
 
 def fetch_stock_hourly(symbol, lookback="14d"):
-    """
-    Lấy tối thiểu 20 nến H1 hoàn tất.
-
-    Thử KBS trước, VCI sau.
-    Không thử MAS/VND vì các nguồn đó không thuộc
-    nhóm nguồn được phép ở cấp Cộng đồng.
-    """
-
     symbol = normalize_symbol(symbol)
-
     key = (symbol, str(lookback))
-    now_mono = time.monotonic()
+
+    now = time.monotonic()
     cached = _HOURLY_CACHE.get(key)
 
-    if cached and now_mono - cached[0] < HOURLY_CACHE_SECONDS:
+    if cached and now - cached[0] < HOURLY_CACHE_SECONDS:
         return cached[1].copy()
 
     errors = []
@@ -297,37 +281,27 @@ def fetch_stock_hourly(symbol, lookback="14d"):
             raw = Market().equity(symbol).ohlcv(
                 length=lookback,
                 interval="1H",
-                source=source
+                source=source,
             )
 
-            df = _normalize_hourly(
-                raw=raw,
-                symbol=symbol,
-                source=source
-            )
+            df = _normalize_hourly(raw, symbol, source)
 
-            _HOURLY_CACHE[key] = (
-                time.monotonic(),
-                df.copy()
-            )
+            _HOURLY_CACHE[key] = (time.monotonic(), df.copy())
 
             if len(_HOURLY_CACHE) > 500:
                 oldest = min(
                     _HOURLY_CACHE,
-                    key=lambda k: _HOURLY_CACHE[k][0]
+                    key=lambda k: _HOURLY_CACHE[k][0],
                 )
                 del _HOURLY_CACHE[oldest]
 
             return df
 
         except Exception as exc:
-            errors.append(
-                f"{source.upper()}: {str(exc)}"
-            )
+            errors.append(f"{source.upper()}: {exc}")
 
     raise RuntimeError(
-        f"{symbol}: không lấy được dữ liệu H1 từ các nguồn dự phòng. "
-        + " | ".join(errors)
+        f"{symbol}: không lấy được H1. " + " | ".join(errors)
     )
 
 
@@ -339,10 +313,8 @@ def fetch_stock_quote(symbol):
     return {
         "symbol": symbol,
         "last_price": float(row["Close"]),
-        "quote_date": pd.Timestamp(
-            row["Date"]
-        ).strftime("%d/%m/%Y"),
-        "source": "Giá đóng cửa nến ngày"
+        "quote_date": pd.Timestamp(row["Date"]).strftime("%d/%m/%Y"),
+        "source": "Giá đóng cửa nến ngày",
     }
 
 
@@ -352,15 +324,10 @@ def _extract_symbols(result):
 
     if isinstance(result, pd.DataFrame):
         columns = {
-            str(c).strip().lower(): c
-            for c in result.columns
+            str(c).strip().lower(): c for c in result.columns
         }
-
         if "symbol" not in columns:
-            raise RuntimeError(
-                "Danh sách trả về không có cột symbol."
-            )
-
+            raise RuntimeError("Danh sách không có cột symbol.")
         values = result[columns["symbol"]].tolist()
 
     elif isinstance(result, pd.Series):
@@ -370,24 +337,23 @@ def _extract_symbols(result):
         values = list(result)
 
     symbols = []
-
     for value in values:
         try:
             symbols.append(normalize_symbol(value))
         except (ValueError, TypeError):
             continue
 
-    return symbols
+    return sorted(set(symbols))
 
 
-def fetch_exchange_symbols():
-    global _SYMBOL_CACHE
-    global _SYMBOL_CACHE_AT
+def fetch_exchange_symbols(force_refresh=False):
+    global _SYMBOL_CACHE, _SYMBOL_CACHE_AT
 
     now = time.monotonic()
 
     if (
-        _SYMBOL_CACHE is not None
+        not force_refresh
+        and _SYMBOL_CACHE is not None
         and now - _SYMBOL_CACHE_AT < SYMBOL_CACHE_SECONDS
     ):
         return list(_SYMBOL_CACHE)
@@ -399,27 +365,35 @@ def fetch_exchange_symbols():
         hnx_raw = listing.symbols_by_group(group="HNX")
     except Exception as exc:
         raise RuntimeError(
-            "Không lấy được danh sách mã HOSE/HNX: "
-            f"{exc}"
+            f"Không lấy được danh sách HOSE/HNX từ KBS: {exc}"
         ) from exc
 
-    hose_symbols = _extract_symbols(hose_raw)
-    hnx_symbols = _extract_symbols(hnx_raw)
+    hose = _extract_symbols(hose_raw)
+    hnx = _extract_symbols(hnx_raw)
 
-    if not hose_symbols:
-        raise RuntimeError("Danh sách HOSE trả về rỗng.")
+    if not hose:
+        raise RuntimeError("Danh sách HOSE rỗng.")
+    if not hnx:
+        raise RuntimeError("Danh sách HNX rỗng.")
 
-    if not hnx_symbols:
-        raise RuntimeError("Danh sách HNX trả về rỗng.")
-
-    symbols = sorted(set(hose_symbols + hnx_symbols))
+    symbols = sorted(set(hose + hnx))
 
     if not symbols:
-        raise RuntimeError(
-            "Không tìm thấy mã cổ phiếu HOSE/HNX."
-        )
+        raise RuntimeError("Không có mã cổ phiếu hợp lệ.")
 
     _SYMBOL_CACHE = symbols
     _SYMBOL_CACHE_AT = time.monotonic()
 
-    return list(_SYMBOL_CACHE)
+    # Lưu thông tin thống kê để app hiển thị.
+    fetch_exchange_symbols.last_stats = {
+        "hose_count": len(hose),
+        "hnx_count": len(hnx),
+        "unique_count": len(symbols),
+        "duplicate_count": len(hose) + len(hnx) - len(symbols),
+        "source": "KBS Listing",
+    }
+
+    return list(symbols)
+
+
+fetch_exchange_symbols.last_stats = {}
