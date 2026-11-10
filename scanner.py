@@ -1,63 +1,43 @@
-
 import math
-
-import numpy as np
 import pandas as pd
+import numpy as np
 
+INITIAL_CAPITAL = 10_000_000
+RISK_PERCENT = 0.02
 
-# =====================================================
-# CẤU HÌNH CHIẾN LƯỢC - QUALITY MODE
-# =====================================================
-
+# BUY xác nhận
 MIN_SCORE = 78
 MIN_REWARD_RISK = 2.0
 
+# EARLY BUY
+EARLY_MIN_SCORE = 70
+EARLY_MAX_EXTENSION_PCT = 5.0
+EARLY_HIGH20_MIN_DISTANCE = 0.96
+EARLY_HIGH20_MAX_DISTANCE = 1.015
+
+# Thanh khoản tối thiểu
 MIN_AVG_TURNOVER_20D = 5_000_000_000
 MIN_MEDIAN_TURNOVER_20D = 3_000_000_000
 
-MIN_HISTORY_SESSIONS = 200
-
+LOT_SIZE = 100
 BUY_FEE = 0.0015
 SELL_FEE = 0.0015
 SELL_TAX = 0.001
 SLIPPAGE = 0.002
 
-MIN_ROOM_TO_RESISTANCE_PCT = 3.0
-BREAKOUT_BUFFER_PCT = 0.3
-MIN_BREAKOUT_VOLUME_RATIO = 1.5
-
-MAX_EXTENSION_FROM_MA20_PCT = 8.0
-MAX_RSI = 68.0
-MIN_RSI = 45.0
-
-MARKET_SYMBOL = "VNINDEX"
-
 MANUALLY_BLOCKED_SYMBOLS = {
-    "NVB": (
-        "Ứng dụng giao dịch hiển thị thuộc diện cảnh báo "
-        "(09/11/2026)"
-    )
+    "NVB": "Ứng dụng giao dịch hiển thị thuộc diện cảnh báo (09/11/2026)"
 }
 
 
-# =====================================================
-# CHUẨN HÓA VÀ TÍNH CHỈ BÁO
-# =====================================================
-
 def calculate_indicators(df):
     data = df.copy()
-
-    required = [
-        "Date", "Open", "High", "Low", "Close", "Volume"
-    ]
-
+    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
     missing = [c for c in required if c not in data.columns]
-
     if missing:
         raise ValueError(f"Thiếu dữ liệu OHLCV: {missing}")
 
     data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
-
     for col in required[1:]:
         data[col] = pd.to_numeric(data[col], errors="coerce")
 
@@ -80,17 +60,14 @@ def calculate_indicators(df):
         & (data["Low"] <= data["Open"])
         & (data["Low"] <= data["Close"])
     )
-
     data = data.loc[valid].reset_index(drop=True)
 
-    if len(data) < MIN_HISTORY_SESSIONS:
+    if len(data) < 200:
         raise ValueError(
-            f"INSUFFICIENT_HISTORY: Chỉ có {len(data)} phiên, "
-            f"yêu cầu tối thiểu {MIN_HISTORY_SESSIONS} phiên."
+            f"Không đủ 200 phiên dữ liệu (hiện có {len(data)})."
         )
 
     close = data["Close"]
-
     data["TURNOVER"] = close * data["Volume"]
     data["AVG_TURNOVER_20D"] = data["TURNOVER"].rolling(20).mean()
     data["MEDIAN_TURNOVER_20D"] = data["TURNOVER"].rolling(20).median()
@@ -98,40 +75,44 @@ def calculate_indicators(df):
     data["MA20"] = close.rolling(20).mean()
     data["MA50"] = close.rolling(50).mean()
     data["MA200"] = close.rolling(200).mean()
+    data["MA20_PREVIOUS_5D"] = data["MA20"].shift(5)
 
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
+        alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
 
     avg_loss = loss.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
+        alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    data["RSI"] = (100 - 100 / (1 + rs)).fillna(50)
+    data["RSI"] = (
+        100 - 100 / (1 + rs)
+    ).fillna(50)
 
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
 
     data["MACD"] = ema12 - ema26
     data["MACD_SIGNAL"] = data["MACD"].ewm(
-        span=9,
-        adjust=False
+        span=9, adjust=False
     ).mean()
 
+    data["VOLUME_MA5"] = data["Volume"].rolling(5).mean()
     data["VOLUME_MA20"] = data["Volume"].rolling(20).mean()
 
     data["VOLUME_RATIO"] = (
-        data["Volume"]
-        / data["VOLUME_MA20"].replace(0, np.nan)
+        data["Volume"] /
+        data["VOLUME_MA20"].replace(0, np.nan)
+    )
+
+    data["VOLUME_DRYUP_RATIO"] = (
+        data["VOLUME_MA5"] /
+        data["VOLUME_MA20"].replace(0, np.nan)
     )
 
     previous_close = close.shift(1)
@@ -140,29 +121,46 @@ def calculate_indicators(df):
         [
             data["High"] - data["Low"],
             (data["High"] - previous_close).abs(),
-            (data["Low"] - previous_close).abs()
+            (data["Low"] - previous_close).abs(),
         ],
-        axis=1
+        axis=1,
     ).max(axis=1)
 
     data["ATR14"] = true_range.rolling(14).mean()
+    data["ATR14_PCT"] = data["ATR14"] / close * 100
+    data["ATR14_PREVIOUS_5D"] = data["ATR14"].shift(5)
 
-    for period in (20, 50, 60):
-        data[f"HIGH{period}_PREVIOUS"] = (
-            data["High"].shift(1).rolling(period).max()
-        )
+    # Chỉ sử dụng đỉnh các phiên trước
+    data["HIGH20_PREVIOUS"] = (
+        data["High"].shift(1).rolling(20).max()
+    )
 
-    return data.dropna().reset_index(drop=True)
+    data["HIGH50_PREVIOUS"] = (
+        data["High"].shift(1).rolling(50).max()
+    )
 
+    data["RANGE20"] = (
+        data["High"].rolling(20).max()
+        - data["Low"].rolling(20).min()
+    ) / close * 100
 
-# =====================================================
-# CHẤM ĐIỂM KỸ THUẬT
-# =====================================================
+    data["RANGE20_PREVIOUS_5D"] = (
+        data["RANGE20"].shift(5)
+    )
+
+    return (
+        data.replace([np.inf, -np.inf], np.nan)
+        .dropna()
+        .reset_index(drop=True)
+    )
+
 
 def calculate_score(row):
+    """Điểm kỹ thuật BUY xác nhận 0-100."""
     score = 0
     reasons = []
 
+    # Xu hướng
     if row.Close > row.MA20:
         score += 7
         reasons.append("Giá trên MA20")
@@ -175,21 +173,24 @@ def calculate_score(row):
         score += 6
         reasons.append("MA50 trên MA200")
 
+    # Dòng tiền
     if row.VOLUME_RATIO >= 1.5:
         score += 10
         reasons.append("Khối lượng cao hơn TB20 ít nhất 50%")
+
     elif row.VOLUME_RATIO >= 1.2:
         score += 7
         reasons.append("Khối lượng cải thiện so với TB20")
 
     if row.TURNOVER > row.AVG_TURNOVER_20D * 1.2:
         score += 10
-        reasons.append("Giá trị giao dịch tăng so với TB20")
+        reasons.append("Giá trị giao dịch tăng")
 
     if row.Close > row.Open and row.Volume >= row.VOLUME_MA20:
         score += 5
         reasons.append("Nến tăng có khối lượng xác nhận")
 
+    # Động lượng
     if row.MACD > row.MACD_SIGNAL:
         score += 7
         reasons.append("MACD tích cực")
@@ -197,35 +198,51 @@ def calculate_score(row):
     if 52 <= row.RSI <= 65:
         score += 8
         reasons.append("RSI trong vùng khỏe")
+
     elif 48 <= row.RSI < 52 or 65 < row.RSI <= 68:
         score += 5
         reasons.append("RSI chấp nhận được")
 
+    # Breakout
     if row.Close > row.HIGH20_PREVIOUS:
         score += 15
         reasons.append("Vượt đỉnh 20 phiên")
+
     elif row.Close >= row.HIGH20_PREVIOUS * 0.97:
         score += 8
-        reasons.append("Áp sát vùng đỉnh 20 phiên")
+        reasons.append("Áp sát đỉnh 20 phiên")
 
-    candle_range = max(float(row.High - row.Low), 1e-9)
-    close_position = (float(row.Close) - float(row.Low)) / candle_range
+    # Chất lượng nến
+    candle_range = max(
+        float(row.High - row.Low), 1e-9
+    )
+
+    close_position = (
+        float(row.Close) - float(row.Low)
+    ) / candle_range
 
     if row.Close > row.Open and close_position >= 0.75:
         score += 10
-        reasons.append("Nến tăng, đóng cửa gần mức cao nhất")
+        reasons.append("Nến tăng đóng cửa gần mức cao nhất")
+
     elif row.Close > row.Open and close_position >= 0.55:
         score += 6
         reasons.append("Nến tăng tương đối tốt")
 
-    atr_pct = float(row.ATR14) / max(float(row.Close), 1e-9) * 100
+    # Biến động
+    atr_pct = (
+        float(row.ATR14) /
+        max(float(row.Close), 1e-9) * 100
+    )
 
     if 1.5 <= atr_pct <= 4.0:
         score += 15
         reasons.append("Biến động phù hợp lướt sóng")
+
     elif 1.0 <= atr_pct < 1.5 or 4.0 < atr_pct <= 5.5:
         score += 10
-        reasons.append("Biến động ở mức chấp nhận được")
+        reasons.append("Biến động chấp nhận được")
+
     elif atr_pct <= 6.5:
         score += 5
         reasons.append("Biến động cần thận trọng")
@@ -233,262 +250,296 @@ def calculate_score(row):
     return min(int(score), 100), reasons
 
 
-# =====================================================
-# CHI PHÍ VÀ TỶ LỆ LỢI NHUẬN/RỦI RO
-# =====================================================
+def calculate_early_score(row):
+    """Chấm điểm tích lũy và chuẩn bị breakout."""
+    score = 0
+    reasons = []
 
-def _net_reward_risk(entry, stop, target):
-    cost_buy = entry * (1 + BUY_FEE + SLIPPAGE)
+    high20 = float(row.HIGH20_PREVIOUS)
 
-    net_sell_stop = stop * (
-        1 - SELL_FEE - SELL_TAX - SLIPPAGE
+    proximity = (
+        float(row.Close) / high20
+        if high20 > 0 else 0
     )
 
-    net_sell_target = target * (
-        1 - SELL_FEE - SELL_TAX - SLIPPAGE
+    ma20_slope = (
+        (float(row.MA20) / float(row.MA20_PREVIOUS_5D) - 1) * 100
+        if float(row.MA20_PREVIOUS_5D) > 0 else -99
     )
 
-    risk = cost_buy - net_sell_stop
-    reward = net_sell_target - cost_buy
+    if row.Close >= row.MA20:
+        score += 12
+        reasons.append("Giá giữ trên MA20")
 
-    if risk <= 0:
-        return 0.0
+    if row.MA20 >= row.MA50 * 0.99:
+        score += 8
+        reasons.append("MA20 áp sát hoặc nằm trên MA50")
 
-    return reward / risk
+    if ma20_slope >= 0:
+        score += 8
+        reasons.append("MA20 đi ngang hoặc tăng")
+
+    if EARLY_HIGH20_MIN_DISTANCE <= proximity <= EARLY_HIGH20_MAX_DISTANCE:
+        score += 18
+        reasons.append("Giá sát đỉnh 20 phiên, chưa bứt quá xa")
+
+    elif 0.93 <= proximity < EARLY_HIGH20_MIN_DISTANCE:
+        score += 10
+        reasons.append("Giá đang tiến gần đỉnh 20 phiên")
+
+    if row.VOLUME_DRYUP_RATIO <= 0.85:
+        score += 12
+        reasons.append("Khối lượng 5 phiên co lại")
+
+    elif row.VOLUME_DRYUP_RATIO <= 1.0:
+        score += 8
+        reasons.append("Khối lượng tích lũy không tăng nóng")
+
+    if 0.75 <= row.VOLUME_RATIO <= 1.8:
+        score += 8
+        reasons.append("Khối lượng hiện tại ở vùng chấp nhận")
+
+    if row.ATR14_PCT <= 4.5:
+        score += 8
+        reasons.append("Biến động ATR không quá lớn")
+
+    if row.RANGE20 <= row.RANGE20_PREVIOUS_5D * 1.05:
+        score += 8
+        reasons.append("Biên độ 20 phiên thu hẹp hoặc ổn định")
+
+    if 48 <= row.RSI <= 65:
+        score += 10
+        reasons.append("RSI khỏe nhưng chưa quá nóng")
+
+    elif 45 <= row.RSI < 48 or 65 < row.RSI <= 68:
+        score += 5
+        reasons.append("RSI trong vùng theo dõi")
+
+    if row.MACD >= row.MACD_SIGNAL * 0.98:
+        score += 8
+        reasons.append("MACD cải thiện")
+
+    candle_range = max(
+        float(row.High - row.Low), 1e-9
+    )
+
+    close_position = (
+        float(row.Close) - float(row.Low)
+    ) / candle_range
+
+    if row.Close >= row.Open and close_position >= 0.60:
+        score += 8
+        reasons.append("Nến giữ giá tốt")
+
+    return min(int(score), 100), reasons
 
 
-def _minimum_target_for_rr(price, stop):
+def calculate_target_price(price, stop_loss, resistance=None):
+    """Tính mục tiêu tối thiểu 2R sau phí."""
+    risk_per_share = (
+        price * (1 + BUY_FEE + SLIPPAGE)
+        - stop_loss * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+    )
+
+    if risk_per_share <= 0:
+        return None
+
     target = price
+    min_target = None
 
-    for _ in range(10000):
-        if _net_reward_risk(price, stop, target) >= MIN_REWARD_RISK:
-            return math.ceil(target / 100) * 100
+    for _ in range(5000):
+        reward = (
+            target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+            - price * (1 + BUY_FEE + SLIPPAGE)
+        )
+
+        if reward >= MIN_REWARD_RISK * risk_per_share:
+            min_target = math.ceil(target / 100) * 100
+            break
 
         target += 100
 
-    return None
-
-
-# =====================================================
-# KHÁNG CỰ VÀ BREAKOUT
-# =====================================================
-
-def _find_resistance_and_breakout(data, price, row):
-    candidates = []
-
-    for period in (20, 50, 60):
-        value = row.get(f"HIGH{period}_PREVIOUS")
-
-        if value is not None and np.isfinite(value):
-            candidates.append(float(value))
-
-    history = data.iloc[:-1].tail(60)
-    highs = history["High"].astype(float).to_numpy()
-
-    for i in range(2, len(highs) - 2):
-        if highs[i] >= max(highs[i - 2:i + 3]) and highs[i] > 0:
-            candidates.append(float(highs[i]))
-
-    if not candidates:
-        return None, False, None
-
-    candidates.sort()
-    clusters = []
-
-    for level in candidates:
-        if not clusters:
-            clusters.append([level])
-            continue
-
-        center = float(np.mean(clusters[-1]))
-
-        if abs(level / center - 1) <= 0.01:
-            clusters[-1].append(level)
-        else:
-            clusters.append([level])
-
-    levels = [float(np.mean(group)) for group in clusters]
-
-    above = [level for level in levels if level > price * 1.005]
-    below = [level for level in levels if level <= price * 1.005]
-
-    resistance_above = min(above) if above else None
-    nearest_below = max(below) if below else None
-
-    # Chỉ xác nhận breakout khi vượt đỉnh 60 phiên trước.
-    breakout_level = max(candidates)
-
-    breakout = bool(
-        price > breakout_level * (1 + BREAKOUT_BUFFER_PCT / 100)
-        and float(row.VOLUME_RATIO) >= MIN_BREAKOUT_VOLUME_RATIO
-        and float(row.Close) > float(row.Open)
-    )
-
-    if breakout:
-        return resistance_above, True, breakout_level
-
-    return resistance_above, False, nearest_below
-
-
-# =====================================================
-# XÁC NHẬN H1
-# =====================================================
-
-def _hourly_confirmation(hourly_df):
-    if hourly_df is None or len(hourly_df) < 20:
-        return {
-            "ok": False,
-            "status": "Không đủ dữ liệu H1",
-            "reason": "Cần tối thiểu 20 nến H1 hoàn tất."
-        }
-
-    h = hourly_df.copy()
-    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
-
-    if any(c not in h.columns for c in required):
-        return {
-            "ok": False,
-            "status": "Dữ liệu H1 không hợp lệ",
-            "reason": "Thiếu cột OHLCV."
-        }
-
-    h["Date"] = pd.to_datetime(h["Date"], errors="coerce")
-
-    for col in required[1:]:
-        h[col] = pd.to_numeric(h[col], errors="coerce")
-
-    h = (
-        h.dropna(subset=required)
-        .sort_values("Date")
-        .drop_duplicates("Date", keep="last")
-        .reset_index(drop=True)
-    )
-
-    if len(h) < 20:
-        return {
-            "ok": False,
-            "status": "Không đủ dữ liệu H1",
-            "reason": "Cần tối thiểu 20 nến H1 hợp lệ."
-        }
-
-    h["EMA9"] = h["Close"].ewm(span=9, adjust=False).mean()
-    h["EMA20"] = h["Close"].ewm(span=20, adjust=False).mean()
-
-    last = h.iloc[-1]
-    previous = h.iloc[-2]
-
-    ok = bool(
-        last["EMA9"] > last["EMA20"]
-        and last["Close"] >= last["EMA9"]
-        and last["EMA9"] >= previous["EMA9"]
-    )
-
-    return {
-        "ok": ok,
-        "status": "H1 xác nhận tăng" if ok else "H1 chưa xác nhận tăng",
-        "reason": (
-            "EMA9 trên EMA20, giá trên EMA9 và EMA9 không suy yếu"
-            if ok else "EMA9 chưa đủ điều kiện xác nhận xu hướng tăng"
-        ),
-        "last_hour": pd.Timestamp(last["Date"]).strftime("%d/%m %H:%M"),
-        "ema9": round(float(last["EMA9"])),
-        "ema20": round(float(last["EMA20"]))
-    }
-
-
-# =====================================================
-# BỐI CẢNH VN-INDEX VÀ SỨC MẠNH TƯƠNG ĐỐI
-# =====================================================
-
-def analyze_market_regime(benchmark_df):
-    if benchmark_df is None:
-        return {
-            "ok": False,
-            "reason": "Không có dữ liệu VN-Index."
-        }
-
-    benchmark = calculate_indicators(benchmark_df)
-
-    if len(benchmark) < 21:
-        return {
-            "ok": False,
-            "reason": "VN-Index không đủ dữ liệu để đánh giá."
-        }
-
-    last = benchmark.iloc[-1]
-
-    ok = bool(
-        float(last.Close) > float(last.MA20)
-        and float(last.MA20) >= float(last.MA50)
-    )
-
-    return {
-        "ok": ok,
-        "reason": (
-            "VN-Index đang ở xu hướng thuận lợi"
-            if ok else
-            "VN-Index chưa thuận lợi: giá phải trên MA20 và MA20 không dưới MA50"
-        ),
-        "market_return_20d": round(
-            (float(last.Close) / float(benchmark.iloc[-21].Close) - 1) * 100,
-            2
-        ),
-        "market_close": round(float(last.Close)),
-        "market_ma20": round(float(last.MA20)),
-        "market_ma50": round(float(last.MA50)),
-        "market_date": pd.Timestamp(last.Date).strftime("%d/%m/%Y")
-    }
-
-
-def _relative_strength(stock_data, benchmark_df):
-    if benchmark_df is None:
+    if min_target is None:
         return None
 
-    benchmark = calculate_indicators(benchmark_df)
+    if (
+        resistance is not None
+        and np.isfinite(resistance)
+        and resistance > price * 1.01
+    ):
+        resistance_price = (
+            math.floor(float(resistance) / 100) * 100
+        )
 
-    if len(benchmark) < 21 or len(stock_data) < 21:
+        if resistance_price < min_target:
+            return None
+
+        return resistance_price
+
+    return min_target
+
+
+def _result_filtered(reason, row=None):
+    result = {
+        "signal": "FILTERED",
+        "reason": reason,
+    }
+
+    if row is not None:
+        try:
+            result["data_date"] = pd.Timestamp(
+                row.Date
+            ).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+
+    return result
+
+
+def _risk_plan(price, row, capital, risk_percent):
+    stop = price - 1.5 * float(row.ATR14)
+
+    if stop <= 0 or stop >= price:
         return None
 
-    stock_return = (
-        float(stock_data.iloc[-1].Close)
-        / float(stock_data.iloc[-21].Close) - 1
-    ) * 100
+    target = calculate_target_price(
+        price,
+        stop,
+        resistance=float(row.HIGH50_PREVIOUS),
+    )
 
-    market_return = (
-        float(benchmark.iloc[-1].Close)
-        / float(benchmark.iloc[-21].Close) - 1
-    ) * 100
+    if target is None:
+        return None
+
+    risk_share = (
+        price * (1 + BUY_FEE + SLIPPAGE)
+        - stop * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+    )
+
+    reward_share = (
+        target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+        - price * (1 + BUY_FEE + SLIPPAGE)
+    )
+
+    rr = reward_share / risk_share if risk_share > 0 else 0
+
+    risk_budget = float(capital) * float(risk_percent)
+
+    quantity_risk = (
+        int(risk_budget / risk_share)
+        if risk_share > 0 else 0
+    )
+
+    quantity_capital = int(
+        capital / (price * (1 + BUY_FEE + SLIPPAGE))
+    )
+
+    quantity = min(quantity_risk, quantity_capital)
+    quantity = (quantity // LOT_SIZE) * LOT_SIZE
+
+    capital_used = (
+        quantity * price * (1 + BUY_FEE + SLIPPAGE)
+    )
+
+    risk_money = quantity * risk_share
 
     return {
-        "stock_return_20d": round(stock_return, 2),
-        "market_return_20d": round(market_return, 2),
-        "relative_strength": round(stock_return - market_return, 2),
-        "ok": stock_return > market_return
+        "stop_loss": round(stop),
+        "target_price": round(target),
+        "reward_risk": round(rr, 2),
+        "quantity": quantity,
+        "capital_used": round(capital_used),
+        "risk_money": round(risk_money),
+        "risk_budget": round(risk_budget),
     }
 
 
-# =====================================================
-# PHÂN TÍCH MỘT CỔ PHIẾU
-# =====================================================
+def _hourly_trend(hourly_df):
+    """Kiểm tra xu hướng EMA9/EMA20 H1."""
+    if hourly_df is None or len(hourly_df) < 25:
+        return None, None, False, False
 
-def analyze_stock(df, symbol=None, hourly_df=None, benchmark_df=None):
+    frame = hourly_df.copy()
+
+    close_col = next(
+        (
+            c for c in frame.columns
+            if str(c).lower() in (
+                "close", "closing_price", "price"
+            )
+        ),
+        None,
+    )
+
+    if close_col is None:
+        return None, None, False, False
+
+    close = pd.to_numeric(
+        frame[close_col], errors="coerce"
+    ).dropna()
+
+    if len(close) < 25:
+        return None, None, False, False
+
+    ema9 = float(
+        close.ewm(span=9, adjust=False).mean().iloc[-1]
+    )
+
+    ema20 = float(
+        close.ewm(span=20, adjust=False).mean().iloc[-1]
+    )
+
+    if (
+        not np.isfinite(ema9)
+        or not np.isfinite(ema20)
+        or ema20 <= 0
+    ):
+        return None, None, False, False
+
+    return (
+        ema9,
+        ema20,
+        ema9 > ema20,
+        ema9 >= ema20 * 0.995,
+    )
+
+
+def analyze_stock(
+    df,
+    capital=INITIAL_CAPITAL,
+    risk_percent=RISK_PERCENT,
+    live_quote=None,
+    symbol=None,
+    hourly_df=None,
+):
     try:
         if symbol and symbol.upper() in MANUALLY_BLOCKED_SYMBOLS:
-            return {
-                "signal": "FILTERED",
-                "reason": (
-                    f"{symbol.upper()} bị chặn: "
-                    f"{MANUALLY_BLOCKED_SYMBOLS[symbol.upper()]}"
+            return _result_filtered(
+                f"{symbol.upper()} bị chặn: "
+                f"{MANUALLY_BLOCKED_SYMBOLS[symbol.upper()]}"
+            )
+
+        if hourly_df is None and symbol:
+            try:
+                from data_provider import fetch_stock_hourly
+                hourly_df = fetch_stock_hourly(
+                    symbol, lookback="14d"
                 )
-            }
+            except Exception:
+                hourly_df = None
+
+        h1_ema9, h1_ema20, h1_bullish, h1_early = (
+            _hourly_trend(hourly_df)
+        )
 
         data = calculate_indicators(df)
         row = data.iloc[-1].copy()
 
-        price = float(row.Close)
+        daily_close = float(row.Close)
+        is_live = live_quote is not None
+
         avg_turnover = float(row.AVG_TURNOVER_20D)
         median_turnover = float(row.MEDIAN_TURNOVER_20D)
-        data_date = pd.Timestamp(row.Date).strftime("%d/%m/%Y")
 
         if (
             not np.isfinite(avg_turnover)
@@ -496,318 +547,421 @@ def analyze_stock(df, symbol=None, hourly_df=None, benchmark_df=None):
             or avg_turnover < MIN_AVG_TURNOVER_20D
             or median_turnover < MIN_MEDIAN_TURNOVER_20D
         ):
-            return {
-                "signal": "FILTERED",
-                "reason": (
-                    f"Thanh khoản không đạt: bình quân "
-                    f"{avg_turnover / 1e9:.2f} tỷ/ngày, "
-                    f"trung vị {median_turnover / 1e9:.2f} tỷ/ngày."
-                ),
-                "data_date": data_date
-            }
+            return _result_filtered(
+                "Thanh khoản không đạt: "
+                f"GTGD bình quân 20 phiên "
+                f"{avg_turnover / 1e9:.2f} tỷ/ngày "
+                f"(yêu cầu ≥ "
+                f"{MIN_AVG_TURNOVER_20D / 1e9:.0f} tỷ), "
+                f"trung vị {median_turnover / 1e9:.2f} tỷ/ngày "
+                f"(yêu cầu ≥ "
+                f"{MIN_MEDIAN_TURNOVER_20D / 1e9:.0f} tỷ).",
+                row,
+            )
 
-        today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").date()
-        age_days = (today - pd.Timestamp(row.Date).date()).days
+        if is_live:
+            price = float(live_quote.get("last_price", 0))
+
+            if not np.isfinite(price) or price <= 0:
+                raise ValueError("Giá bảng điện không hợp lệ.")
+
+            reference = live_quote.get("reference_price")
+
+            if (
+                reference is not None
+                and pd.notna(reference)
+                and float(reference) > 0
+            ):
+                if abs(price / float(reference) - 1) > 0.20:
+                    raise ValueError(
+                        "Giá bảng điện lệch bất thường so với giá tham chiếu."
+                    )
+
+            row.Close = price
+
+        else:
+            price = daily_close
+
+        data_date = pd.Timestamp(row.Date).strftime("%d/%m/%Y")
+
+        age_days = (
+            pd.Timestamp.now().normalize()
+            - pd.Timestamp(row.Date).normalize()
+        ).days
 
         if age_days > 7:
             return {
                 "signal": "WAIT",
-                "reason": f"Dữ liệu nến ngày đã cũ {age_days} ngày.",
-                "data_date": data_date
+                "reason": (
+                    f"Dữ liệu nến đã cũ {age_days} ngày; "
+                    "không phát tín hiệu mua."
+                ),
+                "data_date": data_date,
             }
 
-        atr = float(row.ATR14)
-
-        if not np.isfinite(atr) or atr <= 0:
+        if not np.isfinite(float(row.ATR14)) or float(row.ATR14) <= 0:
             raise ValueError("ATR không hợp lệ.")
 
         ma20 = float(row.MA20)
-        extension_pct = (price / ma20 - 1) * 100 if ma20 > 0 else 999
 
-        score, reasons = calculate_score(row)
-
-        market = analyze_market_regime(benchmark_df)
-        relative = _relative_strength(data, benchmark_df)
-
-        resistance, breakout, breakout_level = (
-            _find_resistance_and_breakout(data, price, row)
+        extension_pct = (
+            (price / ma20 - 1) * 100
+            if ma20 > 0 else 999
         )
 
-        resistance_gap_pct = (
-            (resistance / price - 1) * 100
-            if resistance is not None else None
+        previous_close = float(data.iloc[-2].Close)
+
+        day_change_pct = (
+            (price / previous_close - 1) * 100
+            if previous_close > 0 else 0
         )
 
-        stop = price - 1.5 * atr
+        if is_live and day_change_pct > 7:
+            return {
+                "signal": "WAIT",
+                "reason": (
+                    f"Giá tăng {day_change_pct:.1f}% "
+                    "so với đóng cửa trước, không mua đuổi."
+                ),
+                "data_date": data_date,
+            }
 
-        if stop <= 0 or stop >= price:
-            raise ValueError("Giá cắt lỗ không hợp lệ.")
+        confirmed_score, confirmed_reasons = calculate_score(row)
+        early_score, early_reasons = calculate_early_score(row)
 
-        target = _minimum_target_for_rr(price, stop)
+        # BUY xác nhận
+        plan = None
 
-        if resistance is not None and resistance > price and not breakout:
-            resistance_target = math.floor(resistance / 100) * 100
+        if extension_pct <= 8 and float(row.RSI) <= 70:
+            plan = _risk_plan(
+                price, row, capital, risk_percent
+            )
 
-            if resistance_target > price:
-                target = resistance_target
+            if plan is not None:
+                confirmed_conditions = [
+                    confirmed_score >= MIN_SCORE,
+                    45 <= float(row.RSI) <= 70,
+                    price > ma20,
+                    plan["reward_risk"] >= MIN_REWARD_RISK,
+                    plan["quantity"] >= LOT_SIZE,
+                    plan["risk_money"] <= plan["risk_budget"],
+                    avg_turnover >= MIN_AVG_TURNOVER_20D,
+                    median_turnover >= MIN_MEDIAN_TURNOVER_20D,
+                    extension_pct <= 8,
+                    h1_bullish,
+                ]
 
-        rr = (
-            _net_reward_risk(price, stop, target)
-            if target is not None and target > price else 0.0
+                if all(confirmed_conditions):
+                    result = {
+                        "signal": "BUY",
+                        "signal_type": "BUY_CONFIRMED",
+                        "score": confirmed_score,
+                        "early_score": early_score,
+                        "price": round(price),
+                        "daily_close": round(daily_close),
+                        **plan,
+                        "rsi": round(float(row.RSI), 2),
+                        "volume_ratio": round(
+                            float(row.VOLUME_RATIO), 2
+                        ),
+                        "h1_ema9": (
+                            round(h1_ema9, 4)
+                            if h1_ema9 is not None else None
+                        ),
+                        "h1_ema20": (
+                            round(h1_ema20, 4)
+                            if h1_ema20 is not None else None
+                        ),
+                        "h1_confirmed": h1_bullish,
+                        "avg_turnover_20d": round(avg_turnover),
+                        "median_turnover_20d": round(median_turnover),
+                        "reasons": confirmed_reasons,
+                        "data_date": data_date,
+                        "message": (
+                            "BUY xác nhận: đạt bộ lọc kỹ thuật, "
+                            "thanh khoản và quản trị rủi ro."
+                        ),
+                        "reason": "Đạt đầy đủ điều kiện BUY xác nhận.",
+                        "price_mode": (
+                            "Giá khớp gần nhất từ bảng giá"
+                            if is_live else "Giá đóng cửa nến ngày"
+                        ),
+                    }
+
+                    if is_live:
+                        result["reference_price"] = (
+                            live_quote.get("reference_price")
+                        )
+                        result["exchange"] = (
+                            live_quote.get("exchange")
+                        )
+
+                    return result
+
+        # EARLY BUY
+        high20 = float(row.HIGH20_PREVIOUS)
+
+        proximity = (
+            price / high20 if high20 > 0 else 0
         )
 
-        h1 = _hourly_confirmation(hourly_df)
+        early_hard_gates = [
+            early_score >= EARLY_MIN_SCORE,
+            price >= ma20 * 0.99,
+            45 <= float(row.RSI) <= 68,
+            extension_pct <= EARLY_MAX_EXTENSION_PCT,
+            EARLY_HIGH20_MIN_DISTANCE <= proximity
+            <= EARLY_HIGH20_MAX_DISTANCE,
+            h1_early,
+        ]
+
+        early_plan = _risk_plan(
+            price, row, capital, risk_percent
+        )
+
+        if early_plan is not None:
+            early_hard_gates.extend([
+                early_plan["reward_risk"] >= MIN_REWARD_RISK,
+                early_plan["quantity"] >= LOT_SIZE,
+                early_plan["risk_money"] <= early_plan["risk_budget"],
+            ])
+        else:
+            early_hard_gates.append(False)
+
+        if all(early_hard_gates):
+            result = {
+                "signal": "EARLY_BUY",
+                "signal_type": "EARLY_ENTRY",
+                "score": early_score,
+                "confirmed_score": confirmed_score,
+                "price": round(price),
+                "daily_close": round(daily_close),
+                **early_plan,
+                "rsi": round(float(row.RSI), 2),
+                "volume_ratio": round(
+                    float(row.VOLUME_RATIO), 2
+                ),
+                "h1_ema9": (
+                    round(h1_ema9, 4)
+                    if h1_ema9 is not None else None
+                ),
+                "h1_ema20": (
+                    round(h1_ema20, 4)
+                    if h1_ema20 is not None else None
+                ),
+                "h1_confirmed": h1_early,
+                "avg_turnover_20d": round(avg_turnover),
+                "median_turnover_20d": round(median_turnover),
+                "reasons": early_reasons,
+                "data_date": data_date,
+                "message": (
+                    "EARLY BUY: cổ phiếu đang tích lũy sát vùng "
+                    "breakout; giải ngân thăm dò, rủi ro cao hơn "
+                    "BUY xác nhận."
+                ),
+                "reason": (
+                    "Đạt bộ lọc mua sớm và quản trị rủi ro; "
+                    "cần xác nhận thêm khi breakout."
+                ),
+                "price_mode": (
+                    "Giá khớp gần nhất từ bảng giá"
+                    if is_live else "Giá đóng cửa nến ngày"
+                ),
+            }
+
+            if is_live:
+                result["reference_price"] = (
+                    live_quote.get("reference_price")
+                )
+                result["exchange"] = live_quote.get("exchange")
+
+            return result
+
         blockers = []
 
-        if not market.get("ok", False):
-            blockers.append("Bối cảnh thị trường: " + market.get("reason", "Không xác định"))
-
-        if relative is None:
-            blockers.append("Không đủ dữ liệu để so sánh sức mạnh với VN-Index")
-        elif not relative["ok"]:
-            blockers.append("Cổ phiếu yếu hơn VN-Index trong 20 phiên gần nhất")
-
-        if score < MIN_SCORE:
-            blockers.append(f"Điểm kỹ thuật {score} dưới ngưỡng {MIN_SCORE}")
-
-        if not (MIN_RSI <= float(row.RSI) <= MAX_RSI):
+        if early_score < EARLY_MIN_SCORE:
             blockers.append(
-                f"RSI {float(row.RSI):.1f} ngoài vùng mua ưu tiên "
-                f"{MIN_RSI:.0f}–{MAX_RSI:.0f}"
+                f"Điểm mua sớm {early_score}/{EARLY_MIN_SCORE}"
             )
 
-        if price <= ma20:
-            blockers.append("Giá chưa nằm trên MA20")
-
-        if extension_pct > MAX_EXTENSION_FROM_MA20_PCT:
+        if extension_pct > EARLY_MAX_EXTENSION_PCT:
             blockers.append(
-                f"Giá cách MA20 {extension_pct:.1f}%, có nguy cơ mua đuổi"
+                f"Giá cách MA20 {extension_pct:.1f}%"
             )
 
-        if (
-            resistance is not None
-            and not breakout
-            and resistance_gap_pct < MIN_ROOM_TO_RESISTANCE_PCT
+        if not (
+            EARLY_HIGH20_MIN_DISTANCE
+            <= proximity
+            <= EARLY_HIGH20_MAX_DISTANCE
         ):
             blockers.append(
-                f"Chỉ còn {resistance_gap_pct:.1f}% tới kháng cự gần "
-                f"{resistance:,.0f}"
+                "Chưa ở vùng giá phù hợp trước breakout"
             )
 
-        if target is None or rr < MIN_REWARD_RISK:
-            blockers.append("Không đủ tỷ lệ lợi nhuận/rủi ro sau chi phí 2:1")
-
-        if not h1["ok"]:
-            blockers.append("H1 chưa xác nhận: " + h1["reason"])
-
-        if breakout:
-            reasons.append(f"Breakout D1 được xác nhận tại vùng {breakout_level:,.0f}")
-
-        if resistance is not None:
-            reasons.append(f"Kháng cự gần: {resistance:,.0f}")
-
-        if h1["ok"]:
-            reasons.append("H1 xác nhận xu hướng tăng bằng EMA9/EMA20")
-
-        if market.get("ok"):
-            reasons.append("VN-Index đang ở xu hướng thuận lợi")
-
-        if relative and relative["ok"]:
-            reasons.append("Cổ phiếu mạnh hơn VN-Index trong 20 phiên")
-
-        signal = "BUY" if not blockers else "WAIT"
-
-        reason = (
-            "Đạt đầy đủ điều kiện D1, H1, VN-Index, sức mạnh tương đối, "
-            "kháng cự và RR sau chi phí."
-            if signal == "BUY" else "; ".join(blockers)
-        )
+        if plan is None:
+            blockers.append(
+                "Chưa đạt RR tối thiểu 2:1 "
+                "hoặc khối lượng mua tối thiểu"
+            )
 
         return {
-            "signal": signal,
-            "score": score,
+            "signal": "WAIT",
+            "score": max(confirmed_score, early_score),
+            "confirmed_score": confirmed_score,
+            "early_score": early_score,
             "price": round(price),
-            "daily_close": round(price),
-            "stop_loss": round(stop),
-            "target_price": round(target) if target else None,
-            "reward_risk": round(rr, 2),
+            "daily_close": round(daily_close),
             "rsi": round(float(row.RSI), 2),
             "volume_ratio": round(float(row.VOLUME_RATIO), 2),
             "avg_turnover_20d": round(avg_turnover),
             "median_turnover_20d": round(median_turnover),
-            "resistance": round(resistance) if resistance else None,
-            "resistance_gap_pct": (
-                round(resistance_gap_pct, 2)
-                if resistance_gap_pct is not None else None
+            "reasons": (
+                early_reasons
+                if early_score > confirmed_score
+                else confirmed_reasons
             ),
-            "breakout_confirmed": breakout,
-            "breakout_level": round(breakout_level) if breakout_level is not None else None,
-            "h1_status": h1["status"],
-            "h1_last_bar": h1.get("last_hour"),
-            "h1_ema9": h1.get("ema9"),
-            "h1_ema20": h1.get("ema20"),
-            "market_regime": market.get("reason"),
-            "market_return_20d": market.get("market_return_20d"),
-            "stock_return_20d": relative.get("stock_return_20d") if relative else None,
-            "relative_strength": relative.get("relative_strength") if relative else None,
-            "reasons": reasons,
             "blockers": blockers,
+            "reason": (
+                "Chưa đạt đầy đủ điều kiện mua; tiếp tục theo dõi, "
+                "không mua chỉ dựa vào điểm số."
+            ),
+            "message": "Chưa có tín hiệu mua đạt chuẩn.",
             "data_date": data_date,
-            "message": reason,
-            "reason": reason,
-            "price_mode": "Giá đóng cửa nến ngày"
         }
 
     except Exception as exc:
         return {
             "signal": "WAIT",
             "reason": str(exc),
-            "data_date": None
+            "data_date": None,
         }
 
 
-# =====================================================
-# QUÉT TOÀN THỊ TRƯỜNG
-# =====================================================
-
-def scan_market(max_symbols=None, progress_callback=None):
+def scan_market(
+    capital=INITIAL_CAPITAL,
+    risk_percent=RISK_PERCENT,
+    max_symbols=None,
+    progress_callback=None,
+    live_mode=False,
+    live_quotes=None,
+):
     from data_provider import (
         fetch_exchange_symbols,
         fetch_stock_history,
-        fetch_stock_hourly
     )
+
+    try:
+        from data_provider import fetch_stock_hourly
+    except ImportError:
+        fetch_stock_hourly = None
 
     symbols = fetch_exchange_symbols()
 
     if max_symbols is not None:
         symbols = symbols[:max(1, int(max_symbols))]
 
+    if live_mode and live_quotes is None:
+        raise RuntimeError(
+            "Đang trong khung giờ giao dịch nhưng chưa có bảng giá."
+        )
+
     results = []
     errors = []
-
     filtered_count = 0
-    insufficient_history_count = 0
-    hourly_unavailable_count = 0
-
     total = len(symbols)
-
-    # Tải VN-Index một lần cho toàn bộ lượt quét.
-    benchmark_df = None
-    benchmark_error = None
-
-    try:
-        benchmark_df = fetch_stock_history(MARKET_SYMBOL, length=260)
-    except Exception as exc:
-        benchmark_error = str(exc)
 
     for index, symbol in enumerate(symbols, start=1):
         try:
             if symbol.upper() in MANUALLY_BLOCKED_SYMBOLS:
                 filtered_count += 1
-                if progress_callback:
-                    progress_callback(index, total)
                 continue
 
-            history = fetch_stock_history(symbol, length=260)
-
-            daily_result = analyze_stock(
-                history,
-                symbol=symbol,
-                hourly_df=None,
-                benchmark_df=benchmark_df
+            history = fetch_stock_history(
+                symbol, length=260
             )
 
-            if daily_result.get("signal") == "FILTERED":
+            quote = None
+
+            if live_mode:
+                quote = live_quotes.get(symbol)
+
+                if quote is None:
+                    raise ValueError(
+                        "Không nhận được giá bảng điện cho mã này."
+                    )
+
+            hourly = None
+
+            if fetch_stock_hourly is not None:
+                try:
+                    hourly = fetch_stock_hourly(
+                        symbol, lookback="14d"
+                    )
+                except Exception:
+                    hourly = None
+
+            result = analyze_stock(
+                history,
+                capital=capital,
+                risk_percent=risk_percent,
+                live_quote=quote,
+                symbol=symbol,
+                hourly_df=hourly,
+            )
+
+            result["symbol"] = symbol
+
+            if result.get("signal") in ("BUY", "EARLY_BUY"):
+                results.append(result)
+
+            elif result.get("signal") == "FILTERED":
                 filtered_count += 1
 
-            elif daily_result.get("data_date") is None:
-                message = daily_result.get("reason", "")
-
-                if "INSUFFICIENT_HISTORY" in message or "200 phiên" in message:
-                    insufficient_history_count += 1
-                else:
-                    errors.append({"symbol": symbol, "error": message})
-
-            else:
-                d1_blockers = daily_result.get("blockers", [])
-
-                # Các điều kiện D1 phải đạt trước khi tải H1.
-                hard_d1_blockers = [
-                    item for item in d1_blockers
-                    if (
-                        "Điểm kỹ thuật" in item
-                        or "RSI" in item
-                        or "MA20" in item
-                        or "mua đuổi" in item
-                        or "kháng cự" in item
-                        or "lợi nhuận/rủi ro" in item
-                        or "Cổ phiếu yếu hơn VN-Index" in item
-                        or "Không đủ dữ liệu để so sánh" in item
-                        or "Bối cảnh thị trường" in item
-                    )
-                ]
-
-                if hard_d1_blockers:
-                    filtered_count += 1
-                else:
-                    hourly = None
-                    hourly_error = None
-
-                    try:
-                        hourly = fetch_stock_hourly(symbol)
-                    except Exception as exc:
-                        hourly_error = str(exc)
-                        hourly_unavailable_count += 1
-
-                    result = analyze_stock(
-                        history,
-                        symbol=symbol,
-                        hourly_df=hourly,
-                        benchmark_df=benchmark_df
-                    )
-
-                    result["symbol"] = symbol
-
-                    if hourly is None:
-                        result["h1_status"] = "Không lấy được dữ liệu H1"
-                        result["h1_error"] = hourly_error
-
-                    if result.get("signal") == "BUY":
-                        results.append(result)
-                    else:
-                        filtered_count += 1
-
-        except Exception as exc:
-            message = str(exc)
-
-            if "200 phiên" in message or "INSUFFICIENT_HISTORY" in message:
-                insufficient_history_count += 1
-            else:
+            elif result.get("data_date") is None:
                 errors.append({
                     "symbol": symbol,
-                    "error": message
+                    "error": result.get(
+                        "reason",
+                        "Không phân tích được dữ liệu."
+                    ),
                 })
+
+        except Exception as exc:
+            errors.append({
+                "symbol": symbol,
+                "error": str(exc),
+            })
 
         if progress_callback:
             progress_callback(index, total)
 
     results.sort(
         key=lambda x: (
+            1 if x.get("signal") == "BUY" else 0,
             x.get("score", 0),
             x.get("reward_risk", 0),
-            x.get("volume_ratio", 0)
+            x.get("volume_ratio", 0),
         ),
-        reverse=True
+        reverse=True,
+    )
+
+    early_count = sum(
+        1 for x in results
+        if x.get("signal") == "EARLY_BUY"
+    )
+
+    confirmed_count = sum(
+        1 for x in results
+        if x.get("signal") == "BUY"
     )
 
     return {
         "results": results,
         "scanned": total,
         "buy_count": len(results),
+        "confirmed_buy_count": confirmed_count,
+        "early_buy_count": early_count,
         "filtered_count": filtered_count,
-        "insufficient_history_count": insufficient_history_count,
-        "hourly_unavailable_count": hourly_unavailable_count,
         "error_count": len(errors),
         "errors": errors,
-        "market_regime_error": benchmark_error
     }
