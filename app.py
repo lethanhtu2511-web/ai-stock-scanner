@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 
@@ -11,6 +12,7 @@ from data_provider import (
     fetch_exchange_symbols,
     get_hourly_source_status,
 )
+from intraday import fetch_intraday_5m, analyze_intraday_5m
 
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -245,20 +247,105 @@ def render_hourly_source_status():
             st.success(f"{source}: chưa ghi nhận trạng thái khóa hạn mức.")
 
 
+def render_intraday_result(result, data):
+    st.subheader(f"Phân tích trong phiên: {result['symbol']}")
+
+    signal = result["signal"]
+
+    if signal == "TÍN HIỆU TĂNG":
+        st.success("🟢 TÍN HIỆU TĂNG – KHUNG 5 PHÚT")
+    elif signal == "THEO DÕI":
+        st.warning("🟡 THEO DÕI – CHƯA ĐỦ ĐIỀU KIỆN")
+    else:
+        st.info("⚪ CHỜ – CHƯA CÓ TÍN HIỆU RÕ")
+
+    st.write(result["explanation"])
+
+    st.caption(
+        "Nến hoàn tất gần nhất: "
+        + pd.Timestamp(result["timestamp"]).strftime("%H:%M %d/%m/%Y")
+        + " | Nguồn dữ liệu: VCI"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Giá gần nhất", fmt_price(result["price"]))
+    c2.metric("Điểm kỹ thuật", f"{result['score']}/100")
+    c3.metric("RSI 14", fmt_num(result["rsi"]))
+    c4.metric("KL/TB20 nến", fmt_num(result["volume_ratio"]))
+
+    st.subheader("Xu hướng và động lượng")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("EMA9", fmt_price(result["ema9"]))
+    c2.metric("EMA20", fmt_price(result["ema20"]))
+    c3.metric("VWAP", fmt_price(result["vwap"]))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("MACD", fmt_num(result["macd"], 4))
+    c2.metric("MACD Signal", fmt_num(result["macd_signal"], 4))
+    c3.metric("ATR14", fmt_price(result["atr"]))
+
+    st.subheader("Vùng giá tham khảo")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Hỗ trợ gần", fmt_price(result["support"]))
+    c2.metric("Kháng cự gần", fmt_price(result["resistance"]))
+    c3.metric("Mốc rủi ro ATR", fmt_price(result["stop_reference"]))
+
+    if result["reasons"]:
+        st.subheader("Yếu tố tích cực")
+        for item in result["reasons"]:
+            st.write("• " + item)
+
+    if result["blockers"]:
+        st.subheader("Rủi ro / điều kiện chưa đạt")
+        for item in result["blockers"]:
+            st.write("• " + item)
+
+    st.subheader("Biểu đồ nến 5 phút")
+
+    chart_df = data.tail(60).copy()
+    chart_df = chart_df.set_index("Date")
+
+    st.line_chart(
+        chart_df[["Close", "EMA9", "EMA20", "VWAP"]],
+        use_container_width=True,
+    )
+
+    with st.expander("Xem 30 nến 5 phút gần nhất"):
+        view = data.tail(30).copy()
+        view["Date"] = pd.to_datetime(view["Date"]).dt.strftime(
+            "%H:%M %d/%m"
+        )
+        st.dataframe(
+            view[[
+                "Date", "Open", "High", "Low", "Close", "Volume"
+            ]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.caption(
+        "Lưu ý: tín hiệu 5 phút chỉ phản ánh biến động trong phiên. "
+        "Không thay thế điều kiện BUY xác nhận D1 + H1 của chiến lược 2–5 phiên."
+    )
+
+
 # =====================================================
 # TABS
 # =====================================================
 
-tab1, tab2 = st.tabs(
+tab1, tab2, tab3 = st.tabs(
     [
         "Phân tích một mã",
         "Quét toàn thị trường",
+        "Phân tích trong phiên 5 phút",
     ]
 )
 
 
 # =====================================================
-# TAB 1: PHÂN TÍCH MỘT MÃ
+# TAB 1: PHÂN TÍCH MỘT MÃ D1 + H1
 # =====================================================
 
 with tab1:
@@ -266,6 +353,7 @@ with tab1:
         "Nhập mã cổ phiếu",
         value="FPT",
         max_chars=10,
+        key="daily_symbol",
     ).strip().upper()
 
     if st.button(
@@ -425,10 +513,6 @@ with tab2:
             f"{meta['symbols_total']} mã trong danh sách."
         )
 
-        # ---------------------------------------------
-        # TỔNG KẾT
-        # ---------------------------------------------
-
         st.subheader("Tổng kết quét")
 
         c1, c2, c3, c4 = st.columns(4)
@@ -449,10 +533,6 @@ with tab2:
             "Thiếu lịch sử dưới 200 phiên",
             output.get("insufficient_history_count", 0),
         )
-
-        # ---------------------------------------------
-        # THỐNG KÊ H1
-        # ---------------------------------------------
 
         st.subheader("Thống kê dữ liệu H1")
 
@@ -479,10 +559,6 @@ with tab2:
         st.metric("Tổng lỗi ghi nhận", output.get("error_count", 0))
 
         render_hourly_source_status()
-
-        # ---------------------------------------------
-        # DANH SÁCH TÍN HIỆU
-        # ---------------------------------------------
 
         results = output.get("results", [])
 
@@ -545,10 +621,6 @@ with tab2:
                 "Không hạ tiêu chuẩn chỉ để tạo thêm tín hiệu."
             )
 
-        # ---------------------------------------------
-        # CHI TIẾT LỖI
-        # ---------------------------------------------
-
         errors = output.get("errors", [])
 
         if errors:
@@ -570,6 +642,84 @@ with tab2:
 
 
 # =====================================================
+# TAB 3: PHÂN TÍCH TRONG PHIÊN 5 PHÚT
+# =====================================================
+
+with tab3:
+    st.subheader("Phân tích cổ phiếu trực tiếp trong phiên")
+
+    st.caption(
+        "Phân tích một mã bằng nến 5 phút đã hoàn tất. "
+        "Nguồn dữ liệu VCI."
+    )
+
+    intraday_symbol = st.text_input(
+        "Nhập mã cổ phiếu cần phân tích 5 phút",
+        value="FPT",
+        max_chars=10,
+        key="intraday_symbol",
+    ).strip().upper()
+
+    c1, c2 = st.columns([1, 1])
+
+    with c1:
+        analyze_button = st.button(
+            "PHÂN TÍCH 5 PHÚT",
+            type="primary",
+            use_container_width=True,
+            key="run_intraday",
+        )
+
+    with c2:
+        refresh_button = st.button(
+            "CẬP NHẬT DỮ LIỆU",
+            use_container_width=True,
+            key="refresh_intraday",
+        )
+
+    if analyze_button or refresh_button:
+        if not intraday_symbol:
+            st.error("Vui lòng nhập mã cổ phiếu.")
+        else:
+            try:
+                with st.spinner(
+                    f"Đang lấy dữ liệu nến 5 phút của {intraday_symbol}..."
+                ):
+                    candles = fetch_intraday_5m(
+                        intraday_symbol,
+                        force_refresh=refresh_button,
+                    )
+
+                    intraday_result = analyze_intraday_5m(
+                        candles,
+                        symbol=intraday_symbol,
+                    )
+
+                render_intraday_result(
+                    intraday_result,
+                    intraday_result["candles"],
+                )
+
+            except Exception as exc:
+                st.error(
+                    f"Không phân tích được {intraday_symbol}: {exc}"
+                )
+
+    st.divider()
+
+    st.caption(
+        "Tự cập nhật: hiện chưa bật tự động làm mới. "
+        "Bạn có thể bấm CẬP NHẬT DỮ LIỆU để lấy nến mới nhất."
+    )
+
+    st.caption(
+        "Không sử dụng tín hiệu 5 phút làm căn cứ duy nhất để mua. "
+        "Đối chiếu xu hướng D1/H1, thanh khoản, vùng giá và rủi ro "
+        "trước khi ra quyết định."
+    )
+
+
+# =====================================================
 # CHÂN TRANG
 # =====================================================
 
@@ -583,5 +733,6 @@ st.caption(
 st.caption(
     "Dữ liệu D1: vn-market-data. "
     "Dữ liệu H1: Vnstock KBS, dự phòng VCI. "
+    "Dữ liệu 5 phút: Vnstock VCI. "
     "Bot chỉ phân tích, không tự động đặt lệnh."
 )
