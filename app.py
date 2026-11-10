@@ -14,9 +14,9 @@ from data_provider import (
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
-# =====================================================
+# =========================================================
 # CẤU HÌNH TRANG
-# =====================================================
+# =========================================================
 
 st.set_page_config(
     page_title="AI STOCK SCANNER",
@@ -32,7 +32,10 @@ if "market_scan_meta" not in st.session_state:
 
 
 st.title("📈 AI STOCK SCANNER")
-st.caption("Sàng lọc cổ phiếu HOSE/HNX cho chiến lược ngắn hạn 2–5 phiên.")
+
+st.caption(
+    "Sàng lọc cổ phiếu HOSE/HNX cho chiến lược ngắn hạn 2–5 phiên."
+)
 
 st.info(
     "Bot ưu tiên chất lượng tín hiệu hơn số lượng. "
@@ -40,33 +43,37 @@ st.info(
 )
 
 st.caption(
-    "Bộ lọc thanh khoản: GTGD bình quân 20 phiên tối thiểu 5 tỷ/ngày "
-    "và trung vị tối thiểu 3 tỷ/ngày."
+    "Thanh khoản tối thiểu: GTGD bình quân 20 phiên ≥ 5 tỷ/ngày "
+    "và GTGD trung vị ≥ 3 tỷ/ngày."
 )
 
 st.caption(
-    "BUY xác nhận: điểm kỹ thuật từ 78, RSI 45–70, xác nhận H1 "
-    "và tỷ lệ lợi nhuận/rủi ro sau chi phí tối thiểu 2:1."
+    "BUY xác nhận: điểm kỹ thuật ≥ 78, RSI 45–70, "
+    "xác nhận H1 và RR sau chi phí ≥ 2:1."
 )
 
 st.caption(
-    "EARLY BUY: điểm mua sớm từ 70, giá ở vùng tích lũy gần đỉnh 20 phiên, "
-    "có xác nhận H1 và vẫn phải đạt điều kiện quản trị rủi ro."
+    "EARLY BUY: điểm mua sớm ≥ 70, giá ở vùng tích lũy gần đỉnh "
+    "20 phiên, có xác nhận H1 và đạt điều kiện quản trị rủi ro."
 )
 
 tab1, tab2 = st.tabs([
     "Phân tích một mã",
-    "Quét toàn thị trường"
+    "Quét toàn thị trường",
 ])
 
 
-# =====================================================
+# =========================================================
 # HÀM HỖ TRỢ
-# =====================================================
+# =========================================================
 
 def is_valid_number(value):
     try:
-        return value is not None and pd.notna(value)
+        return (
+            value is not None
+            and pd.notna(value)
+            and value != ""
+        )
     except (TypeError, ValueError):
         return False
 
@@ -74,18 +81,21 @@ def is_valid_number(value):
 def format_price(value):
     if not is_valid_number(value):
         return "—"
+
     return f"{float(value):,.0f} đ"
 
 
 def format_number(value, digits=2):
     if not is_valid_number(value):
         return "—"
+
     return f"{float(value):,.{digits}f}"
 
 
 def format_turnover(value):
     if not is_valid_number(value):
         return "—"
+
     return f"{float(value) / 1e9:.2f} tỷ/ngày"
 
 
@@ -110,6 +120,33 @@ def render_signal(signal):
         st.info("⚪ WAIT – TIẾP TỤC THEO DÕI")
 
 
+def get_h1_status(result):
+    available = result.get("h1_data_available", False)
+
+    if not available:
+        return (
+            "Không có dữ liệu H1 hợp lệ",
+            "warning",
+        )
+
+    if result.get("h1_confirmed"):
+        return (
+            "Xu hướng H1 tăng – đã xác nhận BUY",
+            "success",
+        )
+
+    if result.get("h1_early"):
+        return (
+            "H1 đang cải thiện – có thể theo dõi mua sớm",
+            "info",
+        )
+
+    return (
+        "Có dữ liệu H1 nhưng xu hướng chưa xác nhận",
+        "warning",
+    )
+
+
 def make_results_dataframe(results):
     df = pd.DataFrame(results)
 
@@ -126,17 +163,21 @@ def make_results_dataframe(results):
         "stop_loss",
         "target_price",
         "reward_risk",
+        "quantity",
         "rsi",
         "volume_ratio",
         "h1_ema9",
         "h1_ema20",
+        "h1_status",
         "avg_turnover_20d",
         "median_turnover_20d",
         "data_date",
         "reason",
     ]
 
-    df = df[[c for c in columns if c in df.columns]]
+    df = df[
+        [c for c in columns if c in df.columns]
+    ]
 
     return df.rename(columns={
         "signal": "Tín hiệu",
@@ -144,24 +185,80 @@ def make_results_dataframe(results):
         "score": "Điểm tín hiệu",
         "confirmed_score": "Điểm BUY xác nhận",
         "early_score": "Điểm EARLY BUY",
-        "price": "Giá tham chiếu phân tích",
+        "price": "Giá phân tích",
         "stop_loss": "Cắt lỗ",
         "target_price": "Mục tiêu",
         "reward_risk": "LN/RR",
+        "quantity": "Số lượng",
         "rsi": "RSI",
         "volume_ratio": "KL/TB20",
         "h1_ema9": "EMA9 H1",
         "h1_ema20": "EMA20 H1",
-        "avg_turnover_20d": "GTGD TB20 (đồng/ngày)",
+        "h1_status": "Trạng thái H1",
+        "avg_turnover_20d": "GTGD TB20",
         "median_turnover_20d": "GTGD trung vị 20 phiên",
         "data_date": "Ngày dữ liệu",
         "reason": "Nhận định",
     })
 
 
-# =====================================================
+def render_h1_section(result, hourly, hourly_error=None):
+    st.subheader("Xác nhận xu hướng H1")
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric(
+        "EMA9 H1",
+        format_price(result.get("h1_ema9")),
+    )
+
+    c2.metric(
+        "EMA20 H1",
+        format_price(result.get("h1_ema20")),
+    )
+
+    status, level = get_h1_status(result)
+
+    c3.metric(
+        "Trạng thái H1",
+        status,
+    )
+
+    if level == "success":
+        st.success(status)
+
+    elif level == "warning":
+        st.warning(status)
+
+    else:
+        st.info(status)
+
+    detail = result.get("h1_status")
+
+    if detail:
+        st.caption(f"Chi tiết dữ liệu H1: {detail}")
+
+    if hourly is not None:
+        source = hourly.attrs.get(
+            "source",
+            "Không xác định",
+        )
+
+        st.success(
+            f"Đã nhận DataFrame H1. Nguồn: {source}. "
+            "Trạng thái tính EMA được xác định riêng."
+        )
+
+    elif hourly_error:
+        st.warning(
+            "Không lấy được dữ liệu H1. "
+            f"Chi tiết: {hourly_error}"
+        )
+
+
+# =========================================================
 # TAB 1: PHÂN TÍCH MỘT MÃ
-# =====================================================
+# =========================================================
 
 with tab1:
 
@@ -169,6 +266,7 @@ with tab1:
         "Nhập mã cổ phiếu",
         value="FPT",
         max_chars=10,
+        key="single_symbol",
     ).strip().upper()
 
     if st.button(
@@ -182,13 +280,15 @@ with tab1:
             st.error("Vui lòng nhập mã cổ phiếu.")
 
         else:
-            try:
-                with st.spinner("Đang lấy dữ liệu D1 và H1..."):
 
-                    # DỮ LIỆU D1
+            try:
+                with st.spinner(
+                    "Đang lấy dữ liệu D1 và H1..."
+                ):
+
                     history = fetch_stock_history(
                         symbol,
-                        length=260
+                        length=260,
                     )
 
                     if history is None or history.empty:
@@ -202,14 +302,17 @@ with tab1:
                             "yêu cầu tối thiểu 200 phiên."
                         )
 
-                    # DỮ LIỆU H1
                     hourly = None
                     hourly_error = None
 
                     try:
                         hourly = fetch_stock_hourly(symbol)
 
-                        if hourly is None or hourly.empty:
+                        if (
+                            hourly is None
+                            or not isinstance(hourly, pd.DataFrame)
+                            or hourly.empty
+                        ):
                             hourly = None
                             hourly_error = (
                                 "Nguồn dữ liệu H1 trả về rỗng."
@@ -218,16 +321,15 @@ with tab1:
                     except Exception as exc:
                         hourly_error = str(exc)
 
-                    # PHÂN TÍCH
-                    # Tương thích scanner.py hiện tại:
-                    # analyze_stock nhận hourly_df,
-                    # không nhận benchmark_df.
-
                     result = analyze_stock(
                         history,
                         symbol=symbol,
                         hourly_df=hourly,
                     )
+
+                # -----------------------------------------
+                # KẾT QUẢ CHUNG
+                # -----------------------------------------
 
                 st.subheader(
                     f"Kết quả phân tích: {symbol}"
@@ -240,7 +342,6 @@ with tab1:
                     "không tự động đặt lệnh."
                 )
 
-                # TÍN HIỆU
                 signal = result.get("signal", "WAIT")
 
                 render_signal(signal)
@@ -248,28 +349,35 @@ with tab1:
                 st.write(
                     result.get(
                         "reason",
-                        result.get("message", "")
+                        result.get("message", ""),
                     )
                 )
 
+                # -----------------------------------------
                 # ĐIỂM KỸ THUẬT
+                # -----------------------------------------
+
                 st.subheader("Điểm kỹ thuật")
 
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
                     "Giá phân tích",
-                    format_price(result.get("price"))
+                    format_price(result.get("price")),
                 )
 
                 c2.metric(
                     "Điểm tín hiệu",
-                    f"{result.get('score', 0)}/100"
+                    (
+                        f"{result.get('score')}/100"
+                        if is_valid_number(result.get("score"))
+                        else "—"
+                    ),
                 )
 
                 c3.metric(
                     "RSI",
-                    format_number(result.get("rsi"))
+                    format_number(result.get("rsi")),
                 )
 
                 c1, c2, c3 = st.columns(3)
@@ -282,7 +390,7 @@ with tab1:
                             result.get("confirmed_score")
                         )
                         else "—"
-                    )
+                    ),
                 )
 
                 c2.metric(
@@ -293,27 +401,34 @@ with tab1:
                             result.get("early_score")
                         )
                         else "—"
-                    )
+                    ),
                 )
 
                 c3.metric(
                     "Khối lượng/TB20",
-                    format_number(result.get("volume_ratio"))
+                    format_number(
+                        result.get("volume_ratio")
+                    ),
                 )
 
-                # KẾ HOẠCH QUẢN TRỊ RỦI RO
-                st.subheader("Kế hoạch quản trị rủi ro")
+                # -----------------------------------------
+                # QUẢN TRỊ RỦI RO
+                # -----------------------------------------
+
+                st.subheader(
+                    "Kế hoạch quản trị rủi ro"
+                )
 
                 c1, c2, c3 = st.columns(3)
 
                 c1.metric(
                     "Giá cắt lỗ",
-                    format_price(result.get("stop_loss"))
+                    format_price(result.get("stop_loss")),
                 )
 
                 c2.metric(
                     "Giá mục tiêu",
-                    format_price(result.get("target_price"))
+                    format_price(result.get("target_price")),
                 )
 
                 c3.metric(
@@ -324,10 +439,31 @@ with tab1:
                             result.get("reward_risk")
                         )
                         else "—"
-                    )
+                    ),
                 )
 
+                c1, c2 = st.columns(2)
+
+                c1.metric(
+                    "Số lượng cổ phiếu",
+                    (
+                        f"{result.get('quantity'):,}"
+                        if is_valid_number(
+                            result.get("quantity")
+                        )
+                        else "—"
+                    ),
+                )
+
+                c2.metric(
+                    "Vốn dự kiến sử dụng",
+                    format_price(result.get("capital_used")),
+                )
+
+                # -----------------------------------------
                 # THANH KHOẢN
+                # -----------------------------------------
+
                 st.subheader("Thanh khoản")
 
                 c1, c2 = st.columns(2)
@@ -336,85 +472,45 @@ with tab1:
                     "GTGD bình quân 20 phiên",
                     format_turnover(
                         result.get("avg_turnover_20d")
-                    )
+                    ),
                 )
 
                 c2.metric(
                     "GTGD trung vị 20 phiên",
                     format_turnover(
                         result.get("median_turnover_20d")
-                    )
+                    ),
                 )
 
-                # XÁC NHẬN H1
-                st.subheader("Xác nhận xu hướng H1")
+                # -----------------------------------------
+                # H1
+                # -----------------------------------------
 
-                c1, c2, c3 = st.columns(3)
-
-                c1.metric(
-                    "EMA9 H1",
-                    format_price(result.get("h1_ema9"))
+                render_h1_section(
+                    result,
+                    hourly,
+                    hourly_error,
                 )
 
-                c2.metric(
-                    "EMA20 H1",
-                    format_price(result.get("h1_ema20"))
-                )
+                # -----------------------------------------
+                # YẾU TỐ KỸ THUẬT
+                # -----------------------------------------
 
-                h1_ok = result.get("h1_confirmed")
-
-                if h1_ok is True:
-                    h1_text = "Đạt điều kiện"
-
-                elif h1_ok is False:
-                    h1_text = "Chưa đạt/không xác nhận"
-
-                else:
-                    h1_text = "Không có dữ liệu"
-
-                c3.metric(
-                    "Trạng thái H1",
-                    h1_text
-                )
-
-                if hourly is not None:
-
-                    source = hourly.attrs.get(
-                        "source",
-                        "Không xác định"
-                    )
-
-                    st.success(
-                        f"Đã lấy dữ liệu H1. Nguồn: {source}."
-                    )
-
-                elif hourly_error:
-
-                    st.warning(
-                        "Không lấy được dữ liệu H1. "
-                        "Bot không xác nhận BUY hoặc EARLY BUY "
-                        "khi thiếu dữ liệu H1. "
-                        f"Chi tiết: {hourly_error}"
-                    )
-
-                # CÁC YẾU TỐ KỸ THUẬT
                 st.subheader("Các yếu tố kỹ thuật")
 
                 reasons = result.get("reasons", [])
 
                 if reasons:
-
                     for item in reasons:
                         st.write("• " + str(item))
-
                 else:
-                    st.write("Chưa có thông tin.")
+                    st.write(
+                        "Chưa có thông tin về yếu tố kỹ thuật."
+                    )
 
-                # ĐIỀU KIỆN CHƯA ĐẠT
                 blockers = result.get("blockers", [])
 
                 if blockers:
-
                     st.subheader("Điều kiện chưa đạt")
 
                     for item in blockers:
@@ -423,30 +519,29 @@ with tab1:
                 if result.get("message"):
                     st.info(result["message"])
 
+                # -----------------------------------------
+                # DỮ LIỆU GỐC
+                # -----------------------------------------
+
                 st.caption(
                     "D1: MA20, MA50, MA200, RSI, MACD, ATR, "
-                    "khối lượng, thanh khoản và vùng đỉnh 20/50 phiên. "
-                    "H1: EMA9 và EMA20."
+                    "khối lượng, thanh khoản và vùng đỉnh "
+                    "20/50 phiên. H1: EMA9 và EMA20."
                 )
 
-                # DỮ LIỆU D1
                 with st.expander(
                     "Xem 10 phiên D1 gần nhất"
                 ):
-
                     st.dataframe(
                         history.tail(10),
                         use_container_width=True,
                         hide_index=True,
                     )
 
-                # DỮ LIỆU H1
                 if hourly is not None:
-
                     with st.expander(
                         "Xem 20 nến H1 gần nhất"
                     ):
-
                         st.dataframe(
                             hourly.tail(20),
                             use_container_width=True,
@@ -454,15 +549,14 @@ with tab1:
                         )
 
             except Exception as exc:
-
                 st.error(
                     f"Không phân tích được {symbol}: {exc}"
                 )
 
 
-# =====================================================
+# =========================================================
 # TAB 2: QUÉT TOÀN THỊ TRƯỜNG
-# =====================================================
+# =========================================================
 
 with tab2:
 
@@ -471,15 +565,13 @@ with tab2:
     )
 
     st.info(
-        "Bot sử dụng dữ liệu D1 đã hoàn tất và H1 "
-        "để xác nhận tín hiệu. "
-        "Không sử dụng bảng giá trực tiếp trong chế độ quét này."
+        "Bot sử dụng dữ liệu D1 và H1 để xác nhận tín hiệu. "
+        "Không tự động đặt lệnh."
     )
 
     st.warning(
-        "Kết quả gồm hai nhóm riêng: BUY xác nhận và EARLY BUY. "
-        "EARLY BUY là tín hiệu theo dõi/mua sớm, "
-        "rủi ro cao hơn BUY xác nhận."
+        "BUY xác nhận và EARLY BUY được phân loại riêng. "
+        "EARLY BUY có rủi ro cao hơn BUY xác nhận."
     )
 
     if st.button(
@@ -495,9 +587,8 @@ with tab2:
         try:
 
             with st.spinner(
-                "Đang lấy danh sách cổ phiếu HOSE và HNX..."
+                "Đang lấy danh sách cổ phiếu..."
             ):
-
                 symbols = fetch_exchange_symbols()
 
             if not symbols:
@@ -510,7 +601,6 @@ with tab2:
             )
 
             def update_progress(done, total):
-
                 progress.progress(
                     done / total if total else 1.0
                 )
@@ -538,15 +628,19 @@ with tab2:
             }
 
             progress.progress(1.0)
+
             status_box.success(
                 "Đã hoàn tất quét thị trường."
             )
 
         except Exception as exc:
-
             st.error(
                 f"Không thể quét toàn thị trường: {exc}"
             )
+
+    # ---------------------------------------------
+    # HIỂN THỊ KẾT QUẢ ĐÃ QUÉT
+    # ---------------------------------------------
 
     output = st.session_state.get(
         "market_scan_output"
@@ -561,41 +655,46 @@ with tab2:
         st.divider()
 
         st.caption(
-            f"Kết quả lần quét lúc {meta['completed_at']} "
+            f"Kết quả lần quét lúc "
+            f"{meta['completed_at']} "
             f"({meta['symbols_total']} mã trong danh sách)."
         )
 
-        # TỔNG QUAN
+        # Tổng quan
         c1, c2, c3 = st.columns(3)
 
         c1.metric(
             "Đã xử lý",
-            f"{output.get('scanned', 0)} mã"
+            f"{output.get('scanned', 0)} mã",
         )
 
         c2.metric(
             "BUY xác nhận",
-            output.get("confirmed_buy_count", 0)
+            output.get("confirmed_buy_count", 0),
         )
 
         c3.metric(
             "EARLY BUY",
-            output.get("early_buy_count", 0)
+            output.get("early_buy_count", 0),
         )
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
 
         c1.metric(
             "Loại do điều kiện",
-            output.get("filtered_count", 0)
+            output.get("filtered_count", 0),
         )
 
         c2.metric(
             "Lỗi dữ liệu/truy vấn",
-            output.get("error_count", 0)
+            output.get("error_count", 0),
         )
 
-        # KẾT QUẢ
+        c3.metric(
+            "Không có H1 hợp lệ",
+            output.get("h1_unavailable_count", 0),
+        )
+
         results = output.get("results", [])
 
         if results:
@@ -610,7 +709,6 @@ with tab2:
                 hide_index=True,
             )
 
-            # TÁCH BUY XÁC NHẬN VÀ EARLY BUY
             confirmed = [
                 x for x in results
                 if x.get("signal") == "BUY"
@@ -621,7 +719,7 @@ with tab2:
                 if x.get("signal") == "EARLY_BUY"
             ]
 
-            # BUY XÁC NHẬN
+            # BUY xác nhận
             if confirmed:
 
                 st.subheader(
@@ -675,7 +773,7 @@ with tab2:
                     use_container_width=True,
                 )
 
-            # TẢI TOÀN BỘ
+            # Toàn bộ tín hiệu
             st.download_button(
                 "TẢI TOÀN BỘ TÍN HIỆU",
                 data=display.to_csv(
@@ -689,11 +787,15 @@ with tab2:
         else:
 
             st.info(
-                "Không có mã nào đạt đủ điều kiện BUY hoặc EARLY BUY. "
-                "Không có tín hiệu cũng là kết quả hợp lệ."
+                "Không có mã nào đạt đủ điều kiện BUY "
+                "hoặc EARLY BUY. Không có tín hiệu cũng "
+                "là kết quả hợp lệ."
             )
 
-        # LỖI DỮ LIỆU
+        # -----------------------------------------
+        # CHI TIẾT LỖI DỮ LIỆU
+        # -----------------------------------------
+
         errors = output.get("errors", [])
 
         if errors:
@@ -705,7 +807,7 @@ with tab2:
             ):
 
                 st.dataframe(
-                    error_df.head(50),
+                    error_df.head(100),
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -721,15 +823,17 @@ with tab2:
                 )
 
 
-# =====================================================
+# =========================================================
 # CHÂN TRANG
-# =====================================================
+# =========================================================
 
 st.divider()
 
 st.caption(
     "Thời điểm hệ thống: "
-    + datetime.now(VN_TZ).strftime("%H:%M:%S %d/%m/%Y")
+    + datetime.now(VN_TZ).strftime(
+        "%H:%M:%S %d/%m/%Y"
+    )
 )
 
 st.caption(
