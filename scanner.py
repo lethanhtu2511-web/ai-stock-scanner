@@ -23,8 +23,6 @@ EARLY_MAX_EXTENSION_PCT = 5.0
 EARLY_HIGH20_MIN_DISTANCE = 0.96
 EARLY_HIGH20_MAX_DISTANCE = 1.015
 
-MAX_H1_REQUESTS_PER_SCAN = 20
-
 MANUALLY_BLOCKED_SYMBOLS = {
     "NVB": "Mã đang được người dùng chặn thủ công do cảnh báo ứng dụng."
 }
@@ -328,89 +326,6 @@ def calculate_early_score(row):
 
 
 # =========================================================
-# XÁC NHẬN H1
-# =========================================================
-
-def _hourly_confirmation(hourly_df):
-    if hourly_df is None or len(hourly_df) < 25:
-        return {
-            "valid": False,
-            "bullish": False,
-            "early": False,
-            "ema9": None,
-            "ema20": None,
-            "status": "Không đủ 25 nến H1 hoàn tất.",
-        }
-
-    df = hourly_df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
-
-    close_col = next(
-        (
-            c for c in ("close", "closing_price", "price")
-            if c in df.columns
-        ),
-        None,
-    )
-
-    if close_col is None:
-        return {
-            "valid": False,
-            "bullish": False,
-            "early": False,
-            "ema9": None,
-            "ema20": None,
-            "status": "Không có cột Close H1.",
-        }
-
-    close = pd.to_numeric(
-        df[close_col],
-        errors="coerce",
-    ).dropna()
-
-    if len(close) < 25:
-        return {
-            "valid": False,
-            "bullish": False,
-            "early": False,
-            "ema9": None,
-            "ema20": None,
-            "status": "Không đủ giá H1 hợp lệ.",
-        }
-
-    ema9_series = close.ewm(span=9, adjust=False).mean()
-    ema20_series = close.ewm(span=20, adjust=False).mean()
-
-    ema9 = float(ema9_series.iloc[-1])
-    ema20 = float(ema20_series.iloc[-1])
-    last_close = float(close.iloc[-1])
-
-    bullish = (
-        ema9 > ema20
-        and last_close >= ema9
-        and ema9 >= float(ema9_series.iloc[-2])
-    )
-
-    early = (
-        ema9 >= ema20 * 0.995
-        and last_close >= ema20
-    )
-
-    return {
-        "valid": True,
-        "bullish": bullish,
-        "early": early,
-        "ema9": ema9,
-        "ema20": ema20,
-        "status": (
-            "H1 xác nhận tăng"
-            if bullish
-            else "H1 chưa xác nhận xu hướng tăng"
-        ),
-    }
-
-
-# =========================================================
 # TỶ LỆ LỜI/LỖ SAU CHI PHÍ
 # =========================================================
 
@@ -441,7 +356,6 @@ def _risk_plan(row, price):
     if stop <= 0 or stop >= price:
         return None
 
-    # Chỉ dùng kháng cự thực tế đã hình thành trước phiên hiện tại.
     candidates = [
         float(row.HIGH20_PREVIOUS),
         float(row.HIGH50_PREVIOUS),
@@ -471,20 +385,16 @@ def _risk_plan(row, price):
 
 
 # =========================================================
-# PHÂN TÍCH MỘT MÃ
+# PHÂN TÍCH MỘT MÃ - CHỈ SỬ DỤNG D1
 # =========================================================
 
-def analyze_stock(
-    df,
-    symbol=None,
-    hourly_df=None,
-    hourly_error=None,
-):
+def analyze_stock(df, symbol=None):
     try:
         symbol = str(symbol or "").strip().upper()
 
         if symbol in MANUALLY_BLOCKED_SYMBOLS:
             return {
+                "symbol": symbol,
                 "signal": "FILTERED",
                 "reason": MANUALLY_BLOCKED_SYMBOLS[symbol],
             }
@@ -502,6 +412,7 @@ def analyze_stock(
 
         if age_days > 7:
             return {
+                "symbol": symbol,
                 "signal": "WAIT",
                 "reason": f"Dữ liệu D1 cũ {age_days} ngày.",
                 "data_date": data_date,
@@ -533,7 +444,6 @@ def analyze_stock(
         score, reasons = calculate_score(row)
         early_score, early_reasons = calculate_early_score(row)
 
-        h1 = _hourly_confirmation(hourly_df)
         plan = _risk_plan(row, price)
 
         extension = (
@@ -541,7 +451,10 @@ def analyze_stock(
             if row.MA20 > 0 else 999
         )
 
-        # BUY xác nhận
+        high20 = float(row.HIGH20_PREVIOUS)
+        proximity = price / high20 if high20 > 0 else 0
+
+        # BUY xác nhận theo D1
         if (
             score >= MIN_SCORE
             and 45 <= float(row.RSI) <= 68
@@ -549,7 +462,6 @@ def analyze_stock(
             and extension <= 8
             and plan is not None
             and plan["reward_risk"] >= MIN_REWARD_RISK
-            and h1["bullish"]
         ):
             return {
                 **common,
@@ -558,18 +470,11 @@ def analyze_stock(
                 "score": score,
                 "confirmed_score": score,
                 "early_score": early_score,
-                "h1_confirmed": True,
-                "h1_ema9": round(h1["ema9"], 2),
-                "h1_ema20": round(h1["ema20"], 2),
-                "h1_status": h1["status"],
                 "reasons": reasons,
-                "reason": "Đạt điều kiện BUY xác nhận D1 + H1 và RR.",
+                "reason": "Đạt điều kiện BUY xác nhận theo D1 và RR sau chi phí.",
             }
 
-        # EARLY BUY
-        high20 = float(row.HIGH20_PREVIOUS)
-        proximity = price / high20 if high20 > 0 else 0
-
+        # EARLY BUY theo D1
         early_ok = (
             early_score >= EARLY_MIN_SCORE
             and price >= float(row.MA20) * 0.99
@@ -578,7 +483,6 @@ def analyze_stock(
             and EARLY_HIGH20_MIN_DISTANCE <= proximity <= EARLY_HIGH20_MAX_DISTANCE
             and plan is not None
             and plan["reward_risk"] >= MIN_REWARD_RISK
-            and h1["early"]
         )
 
         if early_ok:
@@ -589,12 +493,8 @@ def analyze_stock(
                 "score": early_score,
                 "confirmed_score": score,
                 "early_score": early_score,
-                "h1_confirmed": False,
-                "h1_ema9": round(h1["ema9"], 2),
-                "h1_ema20": round(h1["ema20"], 2),
-                "h1_status": h1["status"],
                 "reasons": early_reasons,
-                "reason": "EARLY BUY theo dõi; chưa phải BUY xác nhận.",
+                "reason": "EARLY BUY theo D1; tín hiệu sớm, cần theo dõi thêm.",
             }
 
         blockers = []
@@ -622,29 +522,14 @@ def analyze_stock(
                 "Không có mục tiêu kháng cự khách quan đạt RR 2:1."
             )
 
-        if not h1["bullish"]:
-            blockers.append(
-                f"H1 chưa xác nhận: {hourly_error or h1['status']}"
-            )
-
         return {
             **common,
             "signal": "WAIT",
             "score": score,
             "confirmed_score": score,
             "early_score": early_score,
-            "h1_confirmed": False,
-            "h1_ema9": h1["ema9"],
-            "h1_ema20": h1["ema20"],
-            "h1_status": (
-                f"Không lấy được H1: {hourly_error}"
-                if hourly_error and hourly_df is None
-                else h1["status"]
-            ),
             "reasons": (
-                reasons
-                if score >= early_score
-                else early_reasons
+                reasons if score >= early_score else early_reasons
             ),
             "blockers": blockers,
             "reason": "Chưa đủ điều kiện mua; tiếp tục theo dõi.",
@@ -652,6 +537,7 @@ def analyze_stock(
 
     except Exception as exc:
         return {
+            "symbol": str(symbol or "").strip().upper(),
             "signal": "WAIT",
             "reason": str(exc),
             "data_date": None,
@@ -659,21 +545,18 @@ def analyze_stock(
 
 
 # =========================================================
-# QUÉT TOÀN THỊ TRƯỜNG THEO 2 GIAI ĐOẠN
+# QUÉT TOÀN THỊ TRƯỜNG - CHỈ DÙNG D1
 # =========================================================
 
 def scan_market(
     max_symbols=None,
     progress_callback=None,
     symbols=None,
-    max_h1_requests=MAX_H1_REQUESTS_PER_SCAN,
 ):
     from data_provider import (
         fetch_exchange_symbols,
         fetch_stock_history,
-        fetch_stock_hourly,
         InsufficientHistoryError,
-        get_hourly_source_status,
     )
 
     if symbols is None:
@@ -688,16 +571,10 @@ def scan_market(
     if max_symbols is not None:
         symbols = symbols[:max(0, int(max_symbols))]
 
-    max_h1_requests = max(
-        0,
-        int(max_h1_requests),
-    )
-
     total = len(symbols)
 
     results = []
     errors = []
-    candidates = []
 
     filtered_count = 0
     liquidity_filtered_count = 0
@@ -705,19 +582,6 @@ def scan_market(
 
     d1_error_count = 0
     insufficient_history_count = 0
-
-    h1_attempted_count = 0
-    h1_available_count = 0
-    h1_unavailable_count = 0
-    h1_kbs_error_count = 0
-    h1_vci_fallback_count = 0
-    h1_rate_limited_count = 0
-    h1_skipped_rate_limit_count = 0
-    h1_skipped_budget_count = 0
-
-    # -----------------------------------------------------
-    # GIAI ĐOẠN 1: QUÉT D1 TOÀN BỘ DANH SÁCH
-    # -----------------------------------------------------
 
     for index, symbol in enumerate(symbols, start=1):
         try:
@@ -757,57 +621,23 @@ def scan_market(
                 })
                 continue
 
-            try:
-                data = calculate_indicators(history)
-                row = data.iloc[-1]
-
-            except Exception as exc:
-                message = str(exc)
-
-                if "INSUFFICIENT_HISTORY" in message:
-                    insufficient_history_count += 1
-                    stage = "INSUFFICIENT_HISTORY"
-                else:
-                    d1_error_count += 1
-                    stage = "D1_PROCESS"
-
-                errors.append({
-                    "symbol": symbol,
-                    "stage": stage,
-                    "error": message,
-                })
-                continue
-
-            avg_turnover = float(row.AVG_TURNOVER_20D)
-            median_turnover = float(row.MEDIAN_TURNOVER_20D)
-
-            if (
-                avg_turnover < MIN_AVG_TURNOVER_20D
-                or median_turnover < MIN_MEDIAN_TURNOVER_20D
-            ):
-                filtered_count += 1
-                liquidity_filtered_count += 1
-                continue
-
-            score, _ = calculate_score(row)
-            early_score, _ = calculate_early_score(row)
-
-            plan = _risk_plan(
-                row,
-                float(row.Close),
+            result = analyze_stock(
+                history,
+                symbol=symbol,
             )
 
-            # D1 chưa đủ triển vọng thì không tiêu hao lượt H1.
-            if plan is None or max(score, early_score) < 60:
-                wait_count += 1
-                continue
+            signal = result.get("signal")
 
-            candidates.append({
-                "symbol": symbol,
-                "history": history,
-                "score": score,
-                "early_score": early_score,
-            })
+            if signal == "FILTERED":
+                filtered_count += 1
+
+                if "thanh khoản" in str(result.get("reason", "")).lower():
+                    liquidity_filtered_count += 1
+
+            elif signal == "WAIT":
+                wait_count += 1
+
+            results.append(result)
 
         except Exception as exc:
             d1_error_count += 1
@@ -821,154 +651,12 @@ def scan_market(
             if progress_callback:
                 progress_callback(index, total)
 
-    # -----------------------------------------------------
-    # XẾP HẠNG ỨNG VIÊN
-    # ƯU TIÊN ĐIỂM TÍN HIỆU CAO NHẤT: BUY HOẶC EARLY BUY
-    # -----------------------------------------------------
-
-    candidates.sort(
-        key=lambda item: (
-            max(item["score"], item["early_score"]),
-            item["early_score"],
-            item["score"],
-        ),
-        reverse=True,
-    )
-
-    selected = candidates[:max_h1_requests]
-
-    h1_skipped_budget_count = max(
-        0,
-        len(candidates) - len(selected),
-    )
-
-    # Các ứng viên chưa được chọn H1 vẫn được tính là WAIT.
-    wait_count += h1_skipped_budget_count
-
-    # -----------------------------------------------------
-    # GIAI ĐOẠN 2: LẤY H1 CHO NHÓM ƯU TIÊN
-    # -----------------------------------------------------
-
-    h1_should_stop = False
-
-    for candidate in selected:
-        symbol = candidate["symbol"]
-        history = candidate["history"]
-
-        hourly = None
-        hourly_error = None
-
-        if h1_should_stop:
-            h1_skipped_rate_limit_count += 1
-            wait_count += 1
-            continue
-
-        # Nếu cả hai nguồn đã khóa trước khi bắt đầu,
-        # không gọi API thêm.
-        source_status = get_hourly_source_status()
-
-        both_blocked = (
-            source_status.get("KBS", {}).get("blocked")
-            and source_status.get("VCI", {}).get("blocked")
-        )
-
-        if both_blocked:
-            h1_should_stop = True
-            h1_skipped_rate_limit_count += 1
-            wait_count += 1
-            continue
-
-        h1_attempted_count += 1
-
-        try:
-            hourly = fetch_stock_hourly(
-                symbol,
-                lookback="14d",
-            )
-
-            h1_available_count += 1
-
-            source = str(
-                hourly.attrs.get("source", "")
-            ).upper()
-
-            if source == "VCI":
-                h1_vci_fallback_count += 1
-
-        except Exception as exc:
-            hourly_error = str(exc)
-            h1_unavailable_count += 1
-
-            upper_error = hourly_error.upper()
-
-            if "KBS:" in upper_error:
-                h1_kbs_error_count += 1
-
-            if (
-                "HẾT HẠN MỨC" in upper_error
-                or "RATE LIMIT" in upper_error
-                or "429" in upper_error
-                or "TOO MANY REQUESTS" in upper_error
-            ):
-                h1_rate_limited_count += 1
-
-            errors.append({
-                "symbol": symbol,
-                "stage": "H1",
-                "error": hourly_error,
-            })
-
-            source_status = get_hourly_source_status()
-
-            if (
-                source_status.get("KBS", {}).get("blocked")
-                and source_status.get("VCI", {}).get("blocked")
-            ):
-                h1_should_stop = True
-
-        result = analyze_stock(
-            history,
-            symbol=symbol,
-            hourly_df=hourly,
-            hourly_error=hourly_error,
-        )
-
-        result["symbol"] = symbol
-
-        if result.get("signal") in ("BUY", "EARLY_BUY"):
-            results.append(result)
-
-        elif result.get("signal") == "FILTERED":
-            filtered_count += 1
-
-        else:
-            wait_count += 1
-            results.append(result)
-
-    # Nếu nguồn bị khóa giữa lượt quét, ghi nhận các mã còn lại.
-    if h1_should_stop:
-        remaining = max(
-            0,
-            len(selected) - h1_attempted_count,
-        )
-
-        # Tránh cộng trùng những mã đã xử lý.
-        processed = h1_attempted_count
-        skipped = max(0, len(selected) - processed)
-
-        h1_skipped_rate_limit_count = max(
-            h1_skipped_rate_limit_count,
-            skipped,
-        )
-
-    # -----------------------------------------------------
-    # SẮP XẾP KẾT QUẢ
-    # -----------------------------------------------------
-
+    # Sắp xếp BUY trước, EARLY BUY sau, WAIT cuối.
     results.sort(
         key=lambda item: (
-            1 if item.get("signal") == "BUY" else 0,
-            1 if item.get("signal") == "EARLY_BUY" else 0,
+            2 if item.get("signal") == "BUY"
+            else 1 if item.get("signal") == "EARLY_BUY"
+            else 0,
             item.get("score", 0),
             item.get("reward_risk", 0),
         ),
@@ -996,16 +684,7 @@ def scan_market(
         "wait_count": wait_count,
         "d1_error_count": d1_error_count,
         "insufficient_history_count": insufficient_history_count,
-        "d1_candidate_count": len(candidates),
-        "h1_attempted_count": h1_attempted_count,
-        "h1_available_count": h1_available_count,
-        "h1_unavailable_count": h1_unavailable_count,
-        "h1_kbs_error_count": h1_kbs_error_count,
-        "h1_vci_fallback_count": h1_vci_fallback_count,
-        "h1_rate_limited_count": h1_rate_limited_count,
-        "h1_skipped_rate_limit_count": h1_skipped_rate_limit_count,
-        "h1_skipped_budget_count": h1_skipped_budget_count,
-        "h1_request_limit_per_scan": max_h1_requests,
+        "d1_candidate_count": confirmed_count + early_count,
         "error_count": len(errors),
         "errors": errors,
     }
