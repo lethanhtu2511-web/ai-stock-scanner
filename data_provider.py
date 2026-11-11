@@ -4,10 +4,10 @@ import time
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
 
 from vn_market_data import get_ohlcv
-from vnstock import Listing, Market
 
 
 # =========================================================
@@ -15,45 +15,34 @@ from vnstock import Listing, Market
 # =========================================================
 
 HISTORY_CACHE_SECONDS = 900
-HOURLY_CACHE_SECONDS = 3600
 SYMBOL_CACHE_SECONDS = 21600
-
-BASE_RATE_LIMIT_COOLDOWN_SECONDS = 3600
-MAX_RATE_LIMIT_COOLDOWN_SECONDS = 12 * 3600
-
 HISTORY_CACHE_MAX_ITEMS = 500
-HOURLY_CACHE_MAX_ITEMS = 500
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DAILY_CANDLE_READY_TIME = dt_time(15, 30)
 
-HOURLY_SOURCES = ("kbs", "vci")
+VIETCAP_LISTING_URL = (
+    "https://trading.vietcap.com.vn/api/price/symbols/getAll"
+)
 
+VIETCAP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "Referer": "https://trading.vietcap.com.vn/",
+    "Origin": "https://trading.vietcap.com.vn",
+}
 
 # =========================================================
 # BỘ NHỚ TẠM
 # =========================================================
 
 _HISTORY_CACHE = {}
-_HOURLY_CACHE = {}
 
 _SYMBOL_CACHE = None
 _SYMBOL_CACHE_AT = 0.0
-
-_SOURCE_BLOCKED_UNTIL = {
-    "kbs": 0.0,
-    "vci": 0.0,
-}
-
-_SOURCE_BLOCK_REASON = {
-    "kbs": "",
-    "vci": "",
-}
-
-_SOURCE_RATE_LIMIT_HITS = {
-    "kbs": 0,
-    "vci": 0,
-}
 
 
 # =========================================================
@@ -61,15 +50,15 @@ _SOURCE_RATE_LIMIT_HITS = {
 # =========================================================
 
 class InsufficientHistoryError(RuntimeError):
-    """Mã có dữ liệu nhưng không đủ 200 phiên giao dịch."""
+    pass
 
 
 class SourceRateLimitError(RuntimeError):
-    """Nguồn dữ liệu đã chạm giới hạn truy vấn."""
+    pass
 
 
 # =========================================================
-# KIỂM TRA MÃ CỔ PHIẾU
+# KIỂM TRA MÃ
 # =========================================================
 
 def normalize_symbol(symbol):
@@ -84,135 +73,7 @@ def normalize_symbol(symbol):
 
 
 # =========================================================
-# NHẬN DIỆN LỖI GIỚI HẠN API
-# =========================================================
-
-def _is_rate_limit_error(exc):
-    message = str(exc).lower()
-
-    patterns = (
-        "hết hạn mức",
-        "rate limit",
-        "too many requests",
-        "100/100",
-        "quota exceeded",
-        "request limit",
-        "limit exceeded",
-        "429",
-        "too many request",
-        "vượt quá số lần",
-        "đã đạt giới hạn",
-    )
-
-    return any(pattern in message for pattern in patterns)
-
-
-# =========================================================
-# QUẢN LÝ THỜI GIAN KHÓA NGUỒN
-# =========================================================
-
-def _block_source(source, reason):
-    source = str(source).lower()
-
-    if source not in _SOURCE_BLOCKED_UNTIL:
-        return
-
-    _SOURCE_RATE_LIMIT_HITS[source] += 1
-
-    hit_count = _SOURCE_RATE_LIMIT_HITS[source]
-
-    cooldown = min(
-        BASE_RATE_LIMIT_COOLDOWN_SECONDS
-        * (2 ** (hit_count - 1)),
-        MAX_RATE_LIMIT_COOLDOWN_SECONDS,
-    )
-
-    _SOURCE_BLOCKED_UNTIL[source] = (
-        time.monotonic() + cooldown
-    )
-
-    _SOURCE_BLOCK_REASON[source] = (
-        f"{reason} | "
-        f"Lần chạm giới hạn liên tiếp: {hit_count}. "
-        f"Tạm nghỉ {cooldown // 60} phút."
-    )
-
-
-def _source_is_blocked(source):
-    source = str(source).lower()
-
-    if source not in _SOURCE_BLOCKED_UNTIL:
-        return False
-
-    until = _SOURCE_BLOCKED_UNTIL[source]
-
-    if time.monotonic() >= until:
-        _SOURCE_BLOCKED_UNTIL[source] = 0.0
-        _SOURCE_BLOCK_REASON[source] = ""
-        return False
-
-    return True
-
-
-def _source_success(source):
-    """
-    Chỉ gọi khi đã nhận và chuẩn hóa dữ liệu thành công.
-    Khi thành công mới xóa lịch sử vi phạm hạn mức.
-    """
-
-    source = str(source).lower()
-
-    if source not in _SOURCE_BLOCKED_UNTIL:
-        return
-
-    _SOURCE_BLOCKED_UNTIL[source] = 0.0
-    _SOURCE_BLOCK_REASON[source] = ""
-    _SOURCE_RATE_LIMIT_HITS[source] = 0
-
-
-def get_hourly_source_status():
-    """
-    Trả trạng thái KBS và VCI cho app.py hiển thị.
-    """
-
-    now = time.monotonic()
-    result = {}
-
-    for source in ("kbs", "vci"):
-        remaining = max(
-            0,
-            int(
-                _SOURCE_BLOCKED_UNTIL[source] - now
-            ),
-        )
-
-        result[source.upper()] = {
-            "blocked": remaining > 0,
-            "remaining_seconds": remaining,
-            "reason": _SOURCE_BLOCK_REASON[source],
-            "consecutive_rate_limit_hits": (
-                _SOURCE_RATE_LIMIT_HITS[source]
-            ),
-        }
-
-    return result
-
-
-def reset_hourly_source_limits():
-    """
-    Chỉ dùng khi người quản trị chủ động muốn thử lại.
-
-    Không tự động gọi hàm này khi nguồn báo hết hạn mức.
-    """
-
-    for source in ("kbs", "vci"):
-        _SOURCE_BLOCKED_UNTIL[source] = 0.0
-        _SOURCE_BLOCK_REASON[source] = ""
-        _SOURCE_RATE_LIMIT_HITS[source] = 0
-
-
-# =========================================================
-# CHUẨN HÓA CỘT DỮ LIỆU
+# CHUẨN HÓA OHLCV
 # =========================================================
 
 def _flatten_columns(df):
@@ -227,8 +88,8 @@ def _flatten_columns(df):
         ]
 
     df.columns = [
-        str(column).strip().lower()
-        for column in df.columns
+        str(c).strip().lower()
+        for c in df.columns
     ]
 
     return df
@@ -274,9 +135,8 @@ def _standardize_ohlcv(raw, label="OHLCV"):
     ]
 
     missing = [
-        column
-        for column in required
-        if column not in df.columns
+        c for c in required
+        if c not in df.columns
     ]
 
     if missing:
@@ -445,281 +305,35 @@ def fetch_stock_history(symbol, length=260):
 
 
 # =========================================================
-# CHUẨN HÓA THỜI GIAN H1
-# =========================================================
-
-def _parse_vietnam_datetime(series):
-    parsed = []
-
-    for value in series:
-        try:
-            ts = pd.Timestamp(value)
-
-            if pd.isna(ts):
-                parsed.append(pd.NaT)
-
-            elif ts.tzinfo is None:
-                parsed.append(
-                    ts.tz_localize(VN_TZ)
-                )
-
-            else:
-                parsed.append(
-                    ts.tz_convert(VN_TZ)
-                )
-
-        except Exception:
-            parsed.append(pd.NaT)
-
-    return pd.Series(
-        pd.to_datetime(
-            parsed,
-            errors="coerce",
-        ),
-        index=series.index,
-    )
-
-
-# =========================================================
-# CHUẨN HÓA DỮ LIỆU H1
-# =========================================================
-
-def _normalize_hourly(raw, symbol, source):
-    df = _standardize_ohlcv(
-        raw,
-        "nến H1",
-    )
-
-    df["date"] = _parse_vietnam_datetime(
-        df["date"]
-    )
-
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    ]:
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
-        )
-
-    df = (
-        df.dropna()
-        .sort_values("date")
-        .drop_duplicates(
-            "date",
-            keep="last",
-        )
-    )
-
-    if df.empty:
-        raise ValueError(
-            "Không có nến H1 hợp lệ."
-        )
-
-    daily = fetch_stock_history(
-        symbol,
-        length=220,
-    )
-
-    daily_close = float(
-        daily.iloc[-1]["Close"]
-    )
-
-    raw_hourly_close = float(
-        df.iloc[-1]["close"]
-    )
-
-    if daily_close <= 0 or raw_hourly_close <= 0:
-        raise ValueError(
-            "Giá H1 hoặc D1 không hợp lệ."
-        )
-
-    ratio = raw_hourly_close / daily_close
-
-    if 0.0005 <= ratio <= 0.005:
-        multiplier = 1000.0
-
-    elif 0.80 <= ratio <= 1.20:
-        multiplier = 1.0
-
-    else:
-        raise ValueError(
-            "Không xác định được đơn vị giá H1 "
-            f"so với D1 (tỷ lệ: {ratio:.5f})."
-        )
-
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-    ]:
-        df[column] = (
-            df[column] * multiplier
-        )
-
-    now = pd.Timestamp.now(tz=VN_TZ)
-    current_hour = now.floor("h")
-
-    # Chỉ sử dụng nến H1 đã hoàn tất.
-    df = df.loc[
-        df["date"] < current_hour
-    ].copy()
-
-    df = _valid_ohlcv(df)
-
-    df = df.rename(
-        columns={
-            "date": "Date",
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "volume": "Volume",
-        }
-    ).reset_index(drop=True)
-
-    if len(df) < 25:
-        raise ValueError(
-            f"Chỉ có {len(df)} nến H1 hoàn tất; "
-            "cần tối thiểu 25."
-        )
-
-    hourly_close = float(
-        df.iloc[-1]["Close"]
-    )
-
-    difference = abs(
-        hourly_close / daily_close - 1
-    )
-
-    if difference > 0.15:
-        raise ValueError(
-            f"Giá H1 lệch {difference * 100:.1f}% "
-            "so với D1."
-        )
-
-    last_time = pd.Timestamp(
-        df.iloc[-1]["Date"]
-    )
-
-    age_hours = (
-        pd.Timestamp.now(tz=VN_TZ) - last_time
-    ).total_seconds() / 3600
-
-    if age_hours > 72:
-        raise ValueError(
-            f"Nến H1 gần nhất đã cũ {age_hours:.1f} giờ."
-        )
-
-    df.attrs["source"] = source.upper()
-    df.attrs["price_multiplier"] = multiplier
-
-    df.attrs["last_date"] = (
-        last_time.strftime("%d/%m/%Y %H:%M")
-    )
-
-    return df
-
-
-# =========================================================
-# LẤY DỮ LIỆU H1
+# H1 ĐÃ TẮT
 # =========================================================
 
 def fetch_stock_hourly(symbol, lookback="14d"):
-    symbol = normalize_symbol(symbol)
-
-    key = (
-        symbol,
-        str(lookback),
-    )
-
-    now = time.monotonic()
-
-    cached = _HOURLY_CACHE.get(key)
-
-    if (
-        cached
-        and now - cached[0] < HOURLY_CACHE_SECONDS
-    ):
-        return cached[1].copy()
-
-    errors = []
-
-    for source in HOURLY_SOURCES:
-
-        # Nguồn bị khóa thì tuyệt đối không gọi lại.
-        if _source_is_blocked(source):
-            remaining = max(
-                0,
-                int(
-                    _SOURCE_BLOCKED_UNTIL[source]
-                    - time.monotonic()
-                ),
-            )
-
-            errors.append(
-                f"{source.upper()}: đang tạm khóa "
-                "do giới hạn truy vấn "
-                f"(còn khoảng {remaining // 60} phút)."
-            )
-
-            continue
-
-        try:
-            raw = (
-                Market()
-                .equity(symbol)
-                .ohlcv(
-                    length=lookback,
-                    interval="1H",
-                    source=source,
-                )
-            )
-
-            df = _normalize_hourly(
-                raw,
-                symbol,
-                source,
-            )
-
-            # Chỉ reset trạng thái khi đã lấy được dữ liệu hợp lệ.
-            _source_success(source)
-
-            _HOURLY_CACHE[key] = (
-                time.monotonic(),
-                df.copy(),
-            )
-
-            if len(_HOURLY_CACHE) > HOURLY_CACHE_MAX_ITEMS:
-                oldest = min(
-                    _HOURLY_CACHE,
-                    key=lambda item: _HOURLY_CACHE[item][0],
-                )
-
-                del _HOURLY_CACHE[oldest]
-
-            return df
-
-        except Exception as exc:
-            errors.append(
-                f"{source.upper()}: {exc}"
-            )
-
-            if _is_rate_limit_error(exc):
-                _block_source(
-                    source,
-                    exc,
-                )
-
     raise RuntimeError(
-        f"{symbol}: không lấy được H1. "
-        + " | ".join(errors)
+        "Phân tích H1 đã tạm tắt. "
+        "Bot hiện sử dụng dữ liệu D1."
     )
+
+
+def get_hourly_source_status():
+    return {
+        "KBS": {
+            "blocked": True,
+            "remaining_seconds": 0,
+            "reason": "Đã tắt H1.",
+            "consecutive_rate_limit_hits": 0,
+        },
+        "VCI": {
+            "blocked": True,
+            "remaining_seconds": 0,
+            "reason": "Đã tắt H1.",
+            "consecutive_rate_limit_hits": 0,
+        },
+    }
+
+
+def reset_hourly_source_limits():
+    return None
 
 
 # =========================================================
@@ -747,46 +361,90 @@ def fetch_stock_quote(symbol):
 
 
 # =========================================================
-# LẤY DANH SÁCH MÃ
+# DANH SÁCH MÃ HOSE / HNX
 # =========================================================
 
-def _extract_symbols(result):
-    if result is None:
-        return []
-
-    if isinstance(result, pd.DataFrame):
-        columns = {
-            str(column).strip().lower(): column
-            for column in result.columns
-        }
-
-        if "symbol" not in columns:
-            raise RuntimeError(
-                "Danh sách không có cột symbol."
-            )
-
-        values = result[
-            columns["symbol"]
-        ].tolist()
-
-    elif isinstance(result, pd.Series):
-        values = result.tolist()
-
-    else:
-        values = list(result)
-
+def _extract_symbols(rows, exchange):
     symbols = []
 
-    for value in values:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        board = str(
+            row.get("board", "")
+        ).strip().upper()
+
+        instrument_type = str(
+            row.get("type", "")
+        ).strip().upper()
+
+        symbol = str(
+            row.get("symbol", "")
+        ).strip().upper()
+
+        if exchange == "HOSE":
+            valid_board = board == "HSX"
+        else:
+            valid_board = board == "HNX"
+
+        if not valid_board:
+            continue
+
+        if instrument_type != "STOCK":
+            continue
+
         try:
             symbols.append(
-                normalize_symbol(value)
+                normalize_symbol(symbol)
             )
-
-        except (ValueError, TypeError):
+        except ValueError:
             continue
 
     return sorted(set(symbols))
+
+
+def _fetch_vietcap_listing():
+    errors = []
+
+    for attempt in range(3):
+        try:
+            with httpx.Client(
+                headers=VIETCAP_HEADERS,
+                timeout=15.0,
+                follow_redirects=True,
+            ) as client:
+
+                response = client.get(
+                    VIETCAP_LISTING_URL
+                )
+
+                response.raise_for_status()
+
+                data = response.json()
+
+                if not isinstance(data, list):
+                    raise ValueError(
+                        "Dữ liệu danh sách mã không đúng định dạng."
+                    )
+
+                if not data:
+                    raise ValueError(
+                        "Danh sách mã trả về rỗng."
+                    )
+
+                return data
+
+        except Exception as exc:
+            errors.append(str(exc))
+
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+
+    raise RuntimeError(
+        "Không lấy được danh sách mã từ Vietcap: "
+        + " | ".join(errors)
+    )
 
 
 def fetch_exchange_symbols(force_refresh=False):
@@ -802,25 +460,17 @@ def fetch_exchange_symbols(force_refresh=False):
     ):
         return list(_SYMBOL_CACHE)
 
-    listing = Listing(source="KBS")
+    rows = _fetch_vietcap_listing()
 
-    try:
-        hose_raw = listing.symbols_by_group(
-            group="HOSE"
-        )
+    hose = _extract_symbols(
+        rows,
+        "HOSE",
+    )
 
-        hnx_raw = listing.symbols_by_group(
-            group="HNX"
-        )
-
-    except Exception as exc:
-        raise RuntimeError(
-            "Không lấy được danh sách HOSE/HNX "
-            f"từ KBS: {exc}"
-        ) from exc
-
-    hose = _extract_symbols(hose_raw)
-    hnx = _extract_symbols(hnx_raw)
+    hnx = _extract_symbols(
+        rows,
+        "HNX",
+    )
 
     if not hose:
         raise RuntimeError(
@@ -851,7 +501,7 @@ def fetch_exchange_symbols(force_refresh=False):
         "duplicate_count": (
             len(hose) + len(hnx) - len(symbols)
         ),
-        "source": "KBS Listing",
+        "source": "Vietcap public listing",
     }
 
     return list(symbols)
