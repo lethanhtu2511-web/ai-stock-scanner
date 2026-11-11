@@ -1,992 +1,441 @@
 
-import streamlit as st
-import pandas as pd
-
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from scanner import analyze_stock, scan_market
+import pandas as pd
+import streamlit as st
+
+from scanner import scan_market
 from data_provider import fetch_exchange_symbols
 from intraday import fetch_intraday_5m, analyze_intraday_5m
-
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 st.set_page_config(
     page_title="AI STOCK SCANNER",
     page_icon="📈",
-    layout="wide",
+    layout="wide"
 )
-
-
-# =====================================================
-# SESSION STATE
-# =====================================================
-
-DEFAULTS = {
-    "market_scan_output": None,
-    "market_scan_meta": None,
-    "symbol_list": [],
-    "symbol_stats": {},
-}
-
-for key, value in DEFAULTS.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# =====================================================
-# CONFIG
-# =====================================================
 
 st.title("📈 AI STOCK SCANNER")
-
-st.caption(
-    "AI phân tích cổ phiếu HOSE và HNX – "
-    "chiến lược lướt sóng 2–5 phiên."
-)
-
-st.info(
-    "Phân tích mã đơn lẻ: nến 5 phút. "
-    "Quét toàn thị trường: dữ liệu D1."
-)
-
-st.caption(
-    "Hệ thống chỉ phân tích và đưa ra tín hiệu tham khảo, "
-    "không tự động đặt lệnh."
-)
+st.caption("HOSE/HNX | Lướt sóng 2–5 phiên | Không tự đặt lệnh")
+st.info("Quét thị trường dùng D1. Phân tích mã đơn lẻ dùng nến 5 phút.")
 
 
-# =====================================================
-# HELPERS
-# =====================================================
-
-def valid_number(value):
+def fmt(x, digits=0):
     try:
-        return value is not None and pd.notna(value)
+        if x is None or pd.isna(x):
+            return "—"
+        return f"{float(x):,.{digits}f}"
     except (TypeError, ValueError):
-        return False
-
-
-def fmt_price(value):
-    if not valid_number(value):
         return "—"
-    return f"{float(value):,.0f} đ"
 
 
-def fmt_num(value, digits=2):
-    if not valid_number(value):
-        return "—"
-    return f"{float(value):,.{digits}f}"
+def joined(x):
+    if isinstance(x, list):
+        return "; ".join(str(v) for v in x)
+    if isinstance(x, dict):
+        return "; ".join(
+            f"{k}: {'Đạt' if v else 'Không đạt'}"
+            for k, v in x.items()
+        )
+    return "" if x is None else str(x)
 
 
-def fmt_turnover(value):
-    if not valid_number(value):
-        return "—"
-    return f"{float(value) / 1e9:.2f} tỷ"
+def export_frame(results):
+    rows = []
+    for r in results:
+        rows.append({
+            "Tín hiệu": r.get("signal"),
+            "Mã": r.get("symbol"),
+            "Điểm tín hiệu": r.get("score"),
+            "Điểm BUY": r.get("confirmed_score"),
+            "Điểm EARLY": r.get("early_score"),
+            "Giá phân tích": r.get("price"),
+            "Cắt lỗ": r.get("stop_loss"),
+            "Mục tiêu": r.get("target_price"),
+            "RR": r.get("reward_risk"),
+            "RSI": r.get("rsi"),
+            "KL/TB20": r.get("volume_ratio"),
+            "ATR %": r.get("atr_pct"),
+            "GTGD TB20": r.get("avg_turnover_20d"),
+            "GTGD trung vị": r.get("median_turnover_20d"),
+            "Ngày dữ liệu": r.get("data_date"),
+            "Nhận định": r.get("reason"),
+            "Điều kiện thiếu BUY": joined(r.get("failed_buy")),
+            "Điều kiện thiếu EARLY": joined(r.get("failed_early")),
+            "Điều kiện thiếu NEAR": joined(r.get("failed_near")),
+            "Lý do bị chặn": joined(r.get("blockers")),
+            "Điểm phạt": joined(r.get("penalties")),
+            "Điểm tích cực": joined(r.get("reasons")),
+            "Kiểm tra BUY": joined(r.get("buy_conditions")),
+            "Kiểm tra EARLY": joined(r.get("early_conditions")),
+            "Kiểm tra NEAR": joined(r.get("near_conditions")),
+            "Lý do RR": r.get("risk_note"),
+            "Cách MA20 (%)": r.get("extension_pct"),
+            "Giá/đỉnh 20 phiên (%)": r.get("proximity_pct")
+        })
+    return pd.DataFrame(rows)
 
 
-def render_signal(signal):
+def position_size(price, stop, capital, risk_pct):
+    try:
+        price = float(price)
+        stop = float(stop)
+        if price <= 0 or stop <= 0 or stop >= price:
+            return None
+
+        cost = price * (1 + 0.0015 + 0.002)
+        stop_net = stop * (1 - 0.0015 - 0.001 - 0.002)
+        risk_share = cost - stop_net
+
+        if risk_share <= 0:
+            return None
+
+        by_risk = int(capital * risk_pct / 100 / risk_share)
+        by_cash = int(capital / cost)
+        shares = (min(by_risk, by_cash) // 100) * 100
+
+        return {
+            "shares": shares,
+            "cost": round(shares * cost),
+            "loss": round(shares * risk_share)
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def render_detail(r):
+    signal = r.get("signal", "WAIT")
 
     if signal == "BUY":
-        st.success("🟢 BUY XÁC NHẬN")
-
+        st.success("BUY xác nhận D1")
     elif signal == "EARLY_BUY":
-        st.warning("🟡 EARLY BUY")
-
+        st.warning("EARLY BUY - Chưa xác nhận")
     elif signal == "NEAR_BUY":
-        st.info("🔵 NEAR BUY – GẦN ĐẠT ĐIỀU KIỆN")
-
-    elif signal == "FILTERED":
-        st.warning("⚪ FILTERED")
-
+        st.info("NEAR BUY - Chỉ theo dõi")
     else:
-        st.info("⚪ WAIT – TIẾP TỤC THEO DÕI")
+        st.info(signal)
 
+    st.write(r.get("reason", ""))
 
-def make_results_dataframe(results):
+    a, b, c, d = st.columns(4)
+    a.metric("Giá", fmt(r.get("price")))
+    b.metric("Điểm BUY", fmt(r.get("confirmed_score")))
+    c.metric("Điểm EARLY", fmt(r.get("early_score")))
+    d.metric("RSI", fmt(r.get("rsi"), 2))
 
-    df = pd.DataFrame(results)
+    a, b, c, d = st.columns(4)
+    a.metric("KL/TB20", fmt(r.get("volume_ratio"), 2))
+    b.metric("Cắt lỗ", fmt(r.get("stop_loss")))
+    c.metric("Mục tiêu", fmt(r.get("target_price")))
+    d.metric("RR", fmt(r.get("reward_risk"), 2))
 
-    if df.empty:
-        return df
+    st.caption("Ngày dữ liệu: " + str(r.get("data_date", "—")))
 
-    columns = [
-        "signal",
-        "symbol",
-        "score",
-        "confirmed_score",
-        "early_score",
-        "price",
-        "stop_loss",
-        "target_price",
-        "reward_risk",
-        "rsi",
-        "volume_ratio",
-        "atr_pct",
-        "avg_turnover_20d",
-        "median_turnover_20d",
-        "data_date",
-        "reason",
-    ]
+    for title, key in [
+        ("Điều kiện BUY", "buy_conditions"),
+        ("Điều kiện EARLY", "early_conditions"),
+        ("Điều kiện NEAR", "near_conditions")
+    ]:
+        checks = r.get(key) or {}
+        if checks:
+            with st.expander(title):
+                for name, ok in checks.items():
+                    st.write(("✅ " if ok else "❌ ") + name)
 
-    df = df[
-        [c for c in columns if c in df.columns]
-    ]
+    if r.get("risk_note"):
+        st.warning("RR: " + r["risk_note"])
 
-    return df.rename(columns={
-        "signal": "Tín hiệu",
-        "symbol": "Mã",
-        "score": "Điểm tín hiệu",
-        "confirmed_score": "Điểm BUY",
-        "early_score": "Điểm EARLY",
-        "price": "Giá phân tích",
-        "stop_loss": "Cắt lỗ",
-        "target_price": "Mục tiêu",
-        "reward_risk": "RR",
-        "rsi": "RSI",
-        "volume_ratio": "KL/TB20",
-        "atr_pct": "ATR %",
-        "avg_turnover_20d": "GTGD TB20",
-        "median_turnover_20d": "GTGD trung vị",
-        "data_date": "Ngày dữ liệu",
-        "reason": "Nhận định",
-    })
+    if r.get("blockers"):
+        st.markdown("**Điều kiện chưa đạt**")
+        for item in r["blockers"]:
+            st.write("❌ " + str(item))
+
+    if r.get("penalties"):
+        st.markdown("**Điểm phạt**")
+        for item in r["penalties"]:
+            st.write("⚠️ " + str(item))
+
+    if r.get("reasons"):
+        with st.expander("Yếu tố tích cực"):
+            for item in r["reasons"]:
+                st.write("✅ " + str(item))
 
 
 # =====================================================
-# POSITION SIZING
+# PHÂN TÍCH 5 PHÚT
 # =====================================================
-
-def calculate_position(price, stop, capital, risk_pct):
-
-    if not all(
-        valid_number(x)
-        for x in [price, stop, capital]
-    ):
-        return None
-
-    price = float(price)
-    stop = float(stop)
-    capital = float(capital)
-
-    if price <= 0 or stop <= 0 or stop >= price:
-        return None
-
-    risk_budget = capital * risk_pct / 100
-
-    buy_cost_per_share = price * (
-        1 + 0.0015 + 0.002
-    )
-
-    stop_proceeds_per_share = stop * (
-        1 - 0.0015 - 0.001 - 0.002
-    )
-
-    risk_per_share = (
-        buy_cost_per_share - stop_proceeds_per_share
-    )
-
-    if risk_per_share <= 0:
-        return None
-
-    shares_by_risk = int(
-        risk_budget / risk_per_share
-    )
-
-    shares_by_risk = (
-        shares_by_risk // 100
-    ) * 100
-
-    shares_by_capital = int(
-        capital / buy_cost_per_share
-    )
-
-    shares_by_capital = (
-        shares_by_capital // 100
-    ) * 100
-
-    shares = min(
-        shares_by_risk,
-        shares_by_capital
-    )
-
-    return {
-        "shares": shares,
-        "risk_budget": risk_budget,
-        "risk_per_share": risk_per_share,
-        "estimated_value": (
-            shares * buy_cost_per_share
-        ),
-        "estimated_loss": (
-            shares * risk_per_share
-        ),
-    }
-
-
-# =====================================================
-# INTRADAY ANALYSIS
-# =====================================================
-
-def render_intraday_analysis(symbol):
-
-    st.subheader(
-        "Phân tích cổ phiếu theo thời gian thực"
-    )
-
-    st.caption(
-        "Khung 5 phút | Nguồn KBS | "
-        "Tự cập nhật mỗi 45 giây."
-    )
-
-    st.warning(
-        "Tín hiệu 5 phút không thay thế xác nhận xu hướng D1."
-    )
-
-    try:
-
-        with st.spinner(
-            f"Đang lấy dữ liệu {symbol}..."
-        ):
-
-            candles = fetch_intraday_5m(
-                symbol,
-                force_refresh=True,
-            )
-
-            result = analyze_intraday_5m(
-                candles,
-                symbol=symbol,
-            )
-
-        st.divider()
-
-        st.subheader(f"Kết quả: {symbol}")
-
-        if result.get("timestamp") is not None:
-
-            st.caption(
-                "Nến gần nhất: "
-                + pd.Timestamp(
-                    result["timestamp"]
-                ).strftime("%H:%M %d/%m/%Y")
-            )
-
-        st.caption(
-            "Nguồn dữ liệu: "
-            + str(candles.attrs.get("source", "KBS"))
-        )
-
-        signal = result["signal"]
-
-        if signal == "TÍN HIỆU TĂNG":
-            st.success("🟢 TÍN HIỆU TĂNG")
-
-        elif signal == "THEO DÕI":
-            st.warning("🟡 THEO DÕI")
-
-        else:
-            st.info("⚪ CHỜ")
-
-        st.write(result["explanation"])
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        c1.metric(
-            "Giá",
-            fmt_price(result["price"])
-        )
-
-        c2.metric(
-            "Điểm",
-            f'{result["score"]}/100'
-        )
-
-        c3.metric(
-            "RSI",
-            fmt_num(result["rsi"])
-        )
-
-        c4.metric(
-            "KL/TB20",
-            fmt_num(result["volume_ratio"])
-        )
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        c1.metric(
-            "EMA9",
-            fmt_price(result["ema9"])
-        )
-
-        c2.metric(
-            "EMA20",
-            fmt_price(result["ema20"])
-        )
-
-        c3.metric(
-            "VWAP",
-            fmt_price(result["vwap"])
-        )
-
-        c4.metric(
-            "MACD",
-            fmt_num(result["macd"], 4)
-        )
-
-        st.subheader("Vùng giá tham khảo")
-
-        c1, c2, c3 = st.columns(3)
-
-        c1.metric(
-            "Hỗ trợ",
-            fmt_price(result["support"])
-        )
-
-        c2.metric(
-            "Kháng cự",
-            fmt_price(result["resistance"])
-        )
-
-        c3.metric(
-            "Cắt lỗ",
-            fmt_price(result["stop_reference"])
-        )
-
-        st.subheader("Biểu đồ 5 phút")
-
-        chart_data = result["candles"].copy()
-
-        chart_data = chart_data.set_index("Date")
-
-        chart_columns = [
-            c for c in [
-                "Close",
-                "EMA9",
-                "EMA20",
-                "VWAP"
-            ]
-            if c in chart_data.columns
-        ]
-
-        st.line_chart(
-            chart_data[chart_columns],
-            height=400,
-        )
-
-        if result.get("reasons"):
-
-            st.subheader("Yếu tố tích cực")
-
-            for item in result["reasons"]:
-                st.write("✅ " + item)
-
-        if result.get("blockers"):
-
-            st.subheader("Cảnh báo")
-
-            for item in result["blockers"]:
-                st.write("⚠️ " + item)
-
-        with st.expander(
-            "Dữ liệu 30 nến gần nhất"
-        ):
-
-            display_columns = [
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume",
-                "EMA9",
-                "EMA20",
-                "RSI14",
-                "VWAP",
-                "MACD",
-            ]
-
-            available = [
-                c for c in display_columns
-                if c in chart_data.columns
-            ]
-
-            st.dataframe(
-                chart_data[available].tail(30),
-                use_container_width=True,
-            )
-
-    except Exception as exc:
-
-        st.error(
-            f"Không phân tích được {symbol}: {exc}"
-        )
-
-        st.caption(
-            "Ngoài phiên có thể không có nến mới. "
-            "Trong phiên, nếu dữ liệu trễ hoặc không đầy đủ, "
-            "bot sẽ không đưa ra kết luận đáng tin cậy."
-        )
-
 
 @st.fragment(run_every="45s")
 def intraday_panel(symbol):
-
-    if not symbol:
-        st.warning("Vui lòng nhập mã cổ phiếu.")
-        return
-
-    render_intraday_analysis(symbol)
-
-
-# =====================================================
-# MARKET RESULT
-# =====================================================
-
-def render_market_results(output, meta):
-
-    if output is None or meta is None:
-        return
-
-    st.divider()
-
-    st.caption(
-        f"Kết quả lúc {meta['completed_at']} – "
-        f"{meta['symbols_total']} mã."
-    )
-
-    st.subheader("Tổng kết quét")
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-
-    c1.metric(
-        "BUY",
-        output.get("confirmed_buy_count", 0)
-    )
-
-    c2.metric(
-        "EARLY BUY",
-        output.get("early_buy_count", 0)
-    )
-
-    c3.metric(
-        "NEAR BUY",
-        output.get("near_buy_count", 0)
-    )
-
-    c4.metric(
-        "WAIT",
-        output.get("wait_count", 0)
-    )
-
-    c5.metric(
-        "FILTERED",
-        output.get("filtered_count", 0)
-    )
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Lọc thanh khoản",
-        output.get("liquidity_filtered_count", 0)
-    )
-
-    c2.metric(
-        "Thiếu lịch sử",
-        output.get("insufficient_history_count", 0)
-    )
-
-    c3.metric(
-        "Lỗi dữ liệu",
-        output.get("d1_error_count", 0)
-    )
-
-    results = output.get("results", [])
-
-    if not results:
-        st.info("Không có kết quả.")
-        return
-
-    st.subheader("Xếp hạng cơ hội")
-
-    display = make_results_dataframe(results)
-
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # -------------------------------------------------
-    # FILTER RESULTS
-    # -------------------------------------------------
-
-    st.subheader("Lọc nhanh kết quả")
-
-    filter_signal = st.selectbox(
-        "Loại tín hiệu",
-        [
-            "Tất cả",
-            "BUY",
-            "EARLY_BUY",
-            "NEAR_BUY",
-            "WAIT",
-        ],
-        key="result_signal_filter",
-    )
-
-    if filter_signal == "Tất cả":
-        filtered_results = results
-    else:
-        filtered_results = [
-            x for x in results
-            if x.get("signal") == filter_signal
-        ]
-
-    # -------------------------------------------------
-    # DETAILED ANALYSIS
-    # -------------------------------------------------
-
-    st.subheader("Phân tích chi tiết từng cổ phiếu")
-
-    for item in filtered_results:
-
-        symbol = item.get("symbol", "")
-        signal = item.get("signal", "")
-        score = item.get("score", 0)
-
-        with st.expander(
-            f"{symbol} | {signal} | {score} điểm"
-        ):
-
-            render_signal(signal)
-
-            st.write(
-                item.get("reason", "")
-            )
-
-            c1, c2, c3, c4 = st.columns(4)
-
-            c1.metric(
-                "Giá",
-                fmt_price(item.get("price"))
-            )
-
-            c2.metric(
-                "Điểm BUY",
-                str(item.get("confirmed_score", "—"))
-            )
-
-            c3.metric(
-                "Điểm EARLY",
-                str(item.get("early_score", "—"))
-            )
-
-            c4.metric(
-                "RSI",
-                fmt_num(item.get("rsi"))
-            )
-
-            c1, c2, c3, c4 = st.columns(4)
-
-            c1.metric(
-                "KL/TB20",
-                fmt_num(item.get("volume_ratio"))
-            )
-
-            c2.metric(
-                "ATR %",
-                fmt_num(item.get("atr_pct"))
-            )
-
-            c3.metric(
-                "GTGD TB20",
-                fmt_turnover(item.get("avg_turnover_20d"))
-            )
-
-            c4.metric(
-                "GTGD trung vị",
-                fmt_turnover(item.get("median_turnover_20d"))
-            )
-
-            st.caption(
-                "Ngày dữ liệu: "
-                + str(item.get("data_date", "—"))
-            )
-
-            # Yếu tố tích cực
-            if item.get("reasons"):
-
-                st.markdown("**Yếu tố tích cực:**")
-
-                for reason in item["reasons"]:
-                    st.write("✅ " + reason)
-
-            # Điểm phạt
-            if item.get("penalties"):
-
-                st.markdown("**Yếu tố bị trừ điểm:**")
-
-                for penalty in item["penalties"]:
-                    st.write("⚠️ " + penalty)
-
-            # Điều kiện chưa đạt
-            if item.get("blockers"):
-
-                st.markdown("**Điều kiện chưa đạt:**")
-
-                for blocker in item["blockers"]:
-                    st.write("❌ " + blocker)
-
-            # Điều kiện BUY
-            if item.get("conditions"):
-
-                st.markdown("**Kiểm tra điều kiện BUY:**")
-
-                for name, passed in item["conditions"].items():
-
-                    if passed:
-                        st.write(f"✅ {name}")
-                    else:
-                        st.write(f"❌ {name}")
-
-            # Kế hoạch giao dịch
-            if signal in [
-                "BUY",
-                "EARLY_BUY",
-                "NEAR_BUY"
-            ]:
-
-                st.markdown("**Kế hoạch giao dịch:**")
-
-                c1, c2, c3, c4 = st.columns(4)
-
-                c1.metric(
-                    "Giá tham chiếu",
-                    fmt_price(item.get("price"))
-                )
-
-                c2.metric(
-                    "Cắt lỗ",
-                    fmt_price(item.get("stop_loss"))
-                )
-
-                c3.metric(
-                    "Mục tiêu",
-                    fmt_price(item.get("target_price"))
-                )
-
-                c4.metric(
-                    "RR",
-                    fmt_num(item.get("reward_risk"))
-                )
-
-            st.divider()
-
-    # -------------------------------------------------
-    # POSITION SIZING
-    # -------------------------------------------------
-
-    st.subheader("Quản trị vốn và khối lượng")
-
-    capital = st.number_input(
-        "Vốn giao dịch (đồng)",
-        min_value=1_000_000,
-        max_value=10_000_000_000,
-        value=10_000_000,
-        step=1_000_000,
-        key="position_capital",
-    )
-
-    risk_pct = st.number_input(
-        "Rủi ro tối đa mỗi lệnh (%)",
-        min_value=0.5,
-        max_value=5.0,
-        value=2.0,
-        step=0.5,
-        key="position_risk",
-    )
-
-    candidates = [
-        x for x in results
-        if x.get("signal") in [
-            "BUY",
-            "EARLY_BUY"
-        ]
-        and valid_number(x.get("stop_loss"))
-    ]
-
-    if candidates:
-
-        position_rows = []
-
-        for item in candidates:
-
-            plan = calculate_position(
-                item.get("price"),
-                item.get("stop_loss"),
-                capital,
-                risk_pct,
-            )
-
-            if plan is None:
-                continue
-
-            position_rows.append({
-                "Mã": item["symbol"],
-                "Giá tham chiếu": item["price"],
-                "Cắt lỗ": item["stop_loss"],
-                "RR": item.get("reward_risk"),
-                "Số lượng tham khảo": plan["shares"],
-                "Giá trị mua ước tính": round(
-                    plan["estimated_value"]
-                ),
-                "Rủi ro ước tính": round(
-                    plan["estimated_loss"]
-                ),
-            })
-
-        if position_rows:
-
-            st.dataframe(
-                pd.DataFrame(position_rows),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.caption(
-                "Số lượng được tính theo vốn, phí giao dịch "
-                "và mức rủi ro. Không có nghĩa là nên mua "
-                "tất cả các mã cùng lúc."
-            )
-
-        else:
-            st.info(
-                "Với vốn và mức rủi ro hiện tại, "
-                "chưa đủ điều kiện mua tối thiểu 100 cổ phiếu."
-            )
-
-    else:
-
-        st.info(
-            "Chưa có mã BUY/EARLY BUY đủ dữ liệu "
-            "để tính khối lượng."
+    try:
+        candles = fetch_intraday_5m(
+            symbol, force_refresh=False
         )
+        r = analyze_intraday_5m(candles, symbol=symbol)
 
-    # -------------------------------------------------
-    # EXPORT
-    # -------------------------------------------------
+        st.subheader(f"{symbol} - Nến 5 phút")
+        st.write(r.get("explanation", ""))
 
-    st.subheader("Tải kết quả")
+        a, b, c, d = st.columns(4)
+        a.metric("Tín hiệu", r.get("signal", "—"))
+        b.metric("Giá", fmt(r.get("price")))
+        c.metric("Điểm", fmt(r.get("score")))
+        d.metric("RSI", fmt(r.get("rsi"), 2))
 
-    st.download_button(
-        "TẢI TOÀN BỘ KẾT QUẢ",
-        data=display.to_csv(
-            index=False
-        ).encode("utf-8-sig"),
-        file_name="ket_qua_quet_thi_truong.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-    errors = output.get("errors", [])
-
-    if errors:
-
-        with st.expander(
-            f"Lỗi dữ liệu ({len(errors)} mã)"
-        ):
-
-            error_df = pd.DataFrame(errors)
-
-            st.dataframe(
-                error_df,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            st.download_button(
-                "TẢI DANH SÁCH LỖI",
-                data=error_df.to_csv(
-                    index=False
-                ).encode("utf-8-sig"),
-                file_name="loi_du_lieu.csv",
-                mime="text/csv",
-            )
-
-
-# =====================================================
-# TABS
-# =====================================================
-
-tab1, tab2 = st.tabs([
-    "Phân tích một mã – 5 phút",
-    "Quét toàn thị trường – D1",
-])
-
-
-# =====================================================
-# TAB 1
-# =====================================================
-
-with tab1:
-
-    st.subheader(
-        "Phân tích cổ phiếu đơn lẻ"
-    )
-
-    symbol = st.text_input(
-        "Nhập mã cổ phiếu",
-        value="FPT",
-        max_chars=10,
-        key="intraday_symbol",
-    ).strip().upper()
-
-    intraday_panel(symbol)
-
-
-# =====================================================
-# TAB 2
-# =====================================================
-
-with tab2:
-
-    st.subheader("Quét HOSE và HNX")
-
-    if st.button(
-        "LẤY DANH SÁCH MÃ HOSE + HNX",
-        use_container_width=True,
-        key="get_symbols",
-    ):
-
-        try:
-
-            symbols = fetch_exchange_symbols(
-                force_refresh=True
-            )
-
-            st.session_state.symbol_list = symbols
-
-            st.session_state.symbol_stats = (
-                fetch_exchange_symbols.last_stats
-            )
-
-            st.success(
-                f"Đã lấy được {len(symbols)} mã."
-            )
-
-        except Exception as exc:
-
-            st.error(
-                f"Không lấy được danh sách mã: {exc}"
-            )
-
-    symbols = st.session_state.symbol_list
-    stats = st.session_state.symbol_stats
-
-    if symbols:
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        c1.metric(
-            "HOSE",
-            stats.get("hose_count", "—")
-        )
-
-        c2.metric(
-            "HNX",
-            stats.get("hnx_count", "—")
-        )
-
-        c3.metric(
-            "Tổng mã",
-            len(symbols)
-        )
-
-        c4.metric(
-            "Mã trùng",
-            stats.get("duplicate_count", "—")
-        )
+        a, b, c, d = st.columns(4)
+        a.metric("EMA9", fmt(r.get("ema9")))
+        b.metric("EMA20", fmt(r.get("ema20")))
+        c.metric("VWAP", fmt(r.get("vwap")))
+        d.metric("KL/TB20", fmt(r.get("volume_ratio"), 2))
 
         st.caption(
-            "Nguồn: "
-            + str(stats.get("source", "Không rõ"))
+            "Nến cuối: " + str(r.get("timestamp", "—"))
+            + " | Nguồn: KBS"
         )
 
-        with st.expander("Danh sách mã"):
-            st.write(", ".join(symbols))
+        chart = r["candles"].copy().set_index("Date")
+        cols = [
+            x for x in ["Close", "EMA9", "EMA20", "VWAP"]
+            if x in chart
+        ]
+        st.line_chart(chart[cols], height=350)
 
-        if st.button(
-            "QUÉT TOÀN BỘ THỊ TRƯỜNG",
-            type="primary",
-            use_container_width=True,
-            key="scan_all_market",
-        ):
+        a, b, c = st.columns(3)
+        a.metric("Hỗ trợ", fmt(r.get("support")))
+        b.metric("Kháng cự", fmt(r.get("resistance")))
+        c.metric("Cắt lỗ tham khảo", fmt(r.get("stop_reference")))
 
-            progress = st.progress(0)
-            status = st.empty()
+        for item in r.get("reasons", []):
+            st.write("✅ " + item)
+        for item in r.get("blockers", []):
+            st.write("⚠️ " + item)
 
-            def update_progress(done, total):
+    except Exception as exc:
+        st.warning(f"Không có phân tích 5 phút hợp lệ: {exc}")
 
-                progress.progress(
-                    done / total if total else 1.0
-                )
 
-                status.write(
-                    f"Đang phân tích {done}/{total} mã..."
-                )
+tab_market, tab_intraday = st.tabs([
+    "🔎 Quét HOSE/HNX",
+    "📊 Phân tích 5 phút"
+])
 
-            try:
+with tab_intraday:
+    symbol = st.text_input(
+        "Mã cổ phiếu",
+        value="SAB",
+        max_chars=10
+    ).strip().upper()
 
-                with st.spinner(
-                    "Đang phân tích dữ liệu D1..."
-                ):
-
-                    output = scan_market(
-                        symbols=symbols,
-                        progress_callback=update_progress,
-                    )
-
-                st.session_state.market_scan_output = output
-
-                st.session_state.market_scan_meta = {
-                    "symbols_total": len(symbols),
-                    "completed_at": datetime.now(
-                        VN_TZ
-                    ).strftime("%H:%M:%S %d/%m/%Y"),
-                }
-
-                progress.progress(1.0)
-
-                status.success(
-                    "Đã hoàn tất quét thị trường."
-                )
-
-            except Exception as exc:
-
-                st.error(
-                    f"Lỗi quét thị trường: {exc}"
-                )
-
-    render_market_results(
-        st.session_state.market_scan_output,
-        st.session_state.market_scan_meta,
-    )
+    if symbol and symbol.isalnum():
+        intraday_panel(symbol)
+    else:
+        st.warning("Nhập mã cổ phiếu hợp lệ.")
 
 
 # =====================================================
-# FOOTER
+# QUÉT THỊ TRƯỜNG D1
 # =====================================================
 
-st.divider()
+with tab_market:
+    st.subheader("Quét toàn thị trường")
+
+    if "scan_output" not in st.session_state:
+        st.session_state.scan_output = None
+
+    if "scan_time" not in st.session_state:
+        st.session_state.scan_time = None
+
+    if st.button(
+        "🚀 BẮT ĐẦU QUÉT",
+        type="primary",
+        use_container_width=True
+    ):
+        progress = st.progress(0)
+        status = st.empty()
+
+        try:
+            symbols = fetch_exchange_symbols()
+            total = len(symbols)
+
+            if not total:
+                raise RuntimeError("Danh sách HOSE/HNX trống")
+
+            def update(i, n):
+                progress.progress(min(i / max(n, 1), 1.0))
+                status.caption(f"Đang quét {i}/{n} mã")
+
+            with st.spinner("Đang phân tích D1..."):
+                output = scan_market(
+                    symbols=symbols,
+                    progress_callback=update
+                )
+
+            st.session_state.scan_output = output
+            st.session_state.scan_time = datetime.now(
+                VN_TZ
+            ).strftime("%H:%M %d/%m/%Y")
+
+            progress.progress(1.0)
+            status.success("Hoàn tất quét")
+
+        except Exception as exc:
+            st.error(f"Quét thất bại: {exc}")
+
+    output = st.session_state.scan_output
+
+    if output:
+        st.caption(
+            "Lần quét: "
+            + str(st.session_state.scan_time)
+        )
+
+        a, b, c, d, e = st.columns(5)
+        a.metric("BUY", output.get("confirmed_buy_count", 0))
+        b.metric("EARLY", output.get("early_buy_count", 0))
+        c.metric("NEAR", output.get("near_buy_count", 0))
+        d.metric("WAIT", output.get("wait_count", 0))
+        e.metric("FILTERED", output.get("filtered_count", 0))
+
+        a, b, c = st.columns(3)
+        a.metric("Đã quét", output.get("scanned", 0))
+        b.metric(
+            "Thiếu lịch sử",
+            output.get("insufficient_history_count", 0)
+        )
+        c.metric("Lỗi D1", output.get("d1_error_count", 0))
+
+        results = output.get("results", [])
+        full_df = export_frame(results)
+
+        if not full_df.empty:
+            st.download_button(
+                "⬇️ TẢI CSV ĐẦY ĐỦ LÝ DO",
+                data=full_df.to_csv(
+                    index=False
+                ).encode("utf-8-sig"),
+                file_name="ai_stock_scanner_full.csv",
+                mime="text/csv"
+            )
+
+            st.subheader("Bảng xếp hạng")
+
+            choices = [
+                "Tất cả", "BUY", "EARLY_BUY",
+                "NEAR_BUY", "WAIT", "FILTERED"
+            ]
+            selected_signal = st.selectbox(
+                "Lọc tín hiệu", choices
+            )
+
+            if selected_signal == "Tất cả":
+                filtered = results
+            else:
+                filtered = [
+                    x for x in results
+                    if x.get("signal") == selected_signal
+                ]
+
+            filtered_df = export_frame(filtered)
+
+            visible_columns = [
+                "Tín hiệu", "Mã", "Điểm tín hiệu",
+                "Điểm BUY", "Điểm EARLY",
+                "Giá phân tích", "RR", "RSI",
+                "KL/TB20", "Ngày dữ liệu",
+                "Nhận định", "Điều kiện thiếu BUY",
+                "Điều kiện thiếu EARLY",
+                "Điều kiện thiếu NEAR"
+            ]
+
+            if not filtered_df.empty:
+                st.dataframe(
+                    filtered_df[visible_columns],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Không có mã thuộc nhóm này")
+
+            if filtered:
+                st.subheader("Phân tích chi tiết")
+
+                names = [
+                    f"{x.get('symbol')} | {x.get('signal')}"
+                    for x in filtered
+                ]
+
+                selected_index = st.selectbox(
+                    "Chọn mã để xem",
+                    range(len(names)),
+                    format_func=lambda i: names[i]
+                )
+
+                chosen = filtered[selected_index]
+                render_detail(chosen)
+
+            st.subheader("Quản trị vốn")
+
+            capital = st.number_input(
+                "Vốn (đồng)",
+                min_value=1_000_000,
+                value=10_000_000,
+                step=1_000_000
+            )
+            risk_pct = st.number_input(
+                "Rủi ro mỗi lệnh (%)",
+                min_value=0.5,
+                max_value=5.0,
+                value=2.0,
+                step=0.5
+            )
+
+            candidates = [
+                r for r in results
+                if r.get("signal") in ("BUY", "EARLY_BUY")
+                and r.get("stop_loss") is not None
+            ]
+
+            plans = []
+            for r in candidates:
+                p = position_size(
+                    r.get("price"),
+                    r.get("stop_loss"),
+                    capital,
+                    risk_pct
+                )
+                if p:
+                    plans.append({
+                        "Mã": r["symbol"],
+                        "Tín hiệu": r["signal"],
+                        "Số cổ phiếu": p["shares"],
+                        "Vốn cần": p["cost"],
+                        "Lỗ ước tính": p["loss"]
+                    })
+
+            if plans:
+                st.dataframe(
+                    pd.DataFrame(plans),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                st.caption(
+                    "Khối lượng làm tròn theo lô 100 cổ phiếu. "
+                    "Chưa tính rủi ro trượt giá vượt dự kiến."
+                )
+            else:
+                st.info("Chưa có mã đủ điều kiện lập kế hoạch vốn.")
+
+        if output.get("errors"):
+            with st.expander("Chi tiết lỗi dữ liệu"):
+                st.dataframe(
+                    pd.DataFrame(output["errors"]),
+                    use_container_width=True
+                )
 
 st.caption(
-    "Thời gian hệ thống: "
-    + datetime.now(VN_TZ).strftime(
-        "%H:%M:%S %d/%m/%Y"
-    )
-)
-
-st.caption(
-    "D1: vn-market-data | Intraday: KBS | "
-    "Không tự động đặt lệnh."
+    "Điểm số là thang đánh giá kỹ thuật, không phải xác suất thắng. "
+    "Tín hiệu D1 chỉ được xác nhận sau khi nến ngày hoàn tất."
 )
