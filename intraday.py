@@ -10,7 +10,7 @@ from vnstock import Market
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Cache riêng cho dữ liệu 5 phút, không dùng chung với H1.
+# Cache dữ liệu nến 5 phút
 INTRADAY_CACHE_SECONDS = 45
 INTRADAY_CACHE = {}
 
@@ -109,8 +109,8 @@ def _standardize(raw):
 
 def _remove_incomplete_candle(df):
     """
-    Timestamp của nến được hiểu là thời điểm bắt đầu nến.
-    Chỉ giữ nến đã kết thúc đủ 5 phút.
+    Chỉ giữ các nến 5 phút đã hoàn tất.
+    Timestamp được hiểu là thời điểm bắt đầu nến.
     """
     if df.empty:
         return df
@@ -127,9 +127,8 @@ def _remove_incomplete_candle(df):
 
 def _normalize_price_unit(df, symbol):
     """
-    Vnstock có thể trả giá cổ phiếu theo đơn vị nghìn đồng.
-    Đối chiếu giá 5 phút với giá đóng cửa D1 gần nhất để xác định
-    hệ số. Không tự ý nhân giá nếu không xác định được đơn vị.
+    Đối chiếu giá 5 phút với giá D1 gần nhất để xác định
+    dữ liệu đang ở đơn vị đồng hay nghìn đồng.
     """
     from data_provider import fetch_stock_history
 
@@ -162,7 +161,6 @@ def _normalize_price_unit(df, symbol):
     last_close = float(df.iloc[-1]["close"])
     difference = abs(last_close / daily_close - 1)
 
-    # So sánh có dung sai vì giá trong phiên có thể biến động.
     if difference > 0.15:
         raise ValueError(
             f"Giá 5 phút lệch {difference * 100:.1f}% so với D1. "
@@ -170,6 +168,7 @@ def _normalize_price_unit(df, symbol):
         )
 
     df.attrs["price_multiplier"] = multiplier
+
     return df
 
 
@@ -191,13 +190,13 @@ def fetch_intraday_5m(symbol, force_refresh=False):
     errors = []
 
     try:
+        # Vnstock 6: chọn nguồn VCI ngay khi khởi tạo Market.
         raw = (
-            Market()
+            Market("vci")
             .equity(symbol)
             .ohlcv(
                 length=MAX_CANDLES,
                 interval="5m",
-                source="vci",
             )
         )
 
@@ -222,17 +221,23 @@ def fetch_intraday_5m(symbol, force_refresh=False):
             now_vn - last_time
         ).total_seconds() / 60
 
-        # Ngoài phiên, dữ liệu cuối phiên trước vẫn có thể hợp lệ.
-        # Nhưng trong phiên mà dữ liệu quá cũ thì không dùng để phát tín hiệu.
         if age_minutes > 60:
             current_time = now_vn.time()
 
             in_session = (
-                (current_time >= datetime.strptime("09:00", "%H:%M").time()
-                 and current_time <= datetime.strptime("11:30", "%H:%M").time())
+                (
+                    current_time
+                    >= datetime.strptime("09:00", "%H:%M").time()
+                    and current_time
+                    <= datetime.strptime("11:30", "%H:%M").time()
+                )
                 or
-                (current_time >= datetime.strptime("13:00", "%H:%M").time()
-                 and current_time <= datetime.strptime("14:45", "%H:%M").time())
+                (
+                    current_time
+                    >= datetime.strptime("13:00", "%H:%M").time()
+                    and current_time
+                    <= datetime.strptime("14:45", "%H:%M").time()
+                )
             )
 
             if in_session:
@@ -304,9 +309,11 @@ def analyze_intraday_5m(df, symbol=None):
     low = data["Low"]
     volume = data["Volume"]
 
+    # EMA 9 và EMA 20
     data["EMA9"] = close.ewm(span=9, adjust=False).mean()
     data["EMA20"] = close.ewm(span=20, adjust=False).mean()
 
+    # RSI 14
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -324,19 +331,25 @@ def analyze_intraday_5m(df, symbol=None):
     ).mean()
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
+
     data["RSI14"] = (100 - 100 / (1 + rs)).fillna(50)
 
+    # MACD
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
 
     data["MACD"] = ema12 - ema26
+
     data["MACD_SIGNAL"] = data["MACD"].ewm(
         span=9,
         adjust=False,
     ).mean()
+
     data["MACD_HIST"] = data["MACD"] - data["MACD_SIGNAL"]
 
+    # VWAP tính riêng từng ngày
     typical_price = (high + low + close) / 3
+
     data["DATE_ONLY"] = pd.to_datetime(data["Date"]).dt.date
     data["TP_VOLUME"] = typical_price * volume
 
@@ -345,6 +358,7 @@ def analyze_intraday_5m(df, symbol=None):
         / data.groupby("DATE_ONLY")["Volume"].cumsum().replace(0, np.nan)
     )
 
+    # ATR và khối lượng
     prev_close = close.shift(1)
 
     true_range = pd.concat(
@@ -357,7 +371,9 @@ def analyze_intraday_5m(df, symbol=None):
     ).max(axis=1)
 
     data["ATR14"] = true_range.rolling(14).mean()
+
     data["VOL_MA20"] = volume.rolling(20).mean()
+
     data["VOL_RATIO"] = (
         volume / data["VOL_MA20"].replace(0, np.nan)
     )
@@ -374,9 +390,16 @@ def analyze_intraday_5m(df, symbol=None):
     ema9 = float(last["EMA9"])
     ema20 = float(last["EMA20"])
     rsi = float(last["RSI14"])
-    vwap = float(last["VWAP"]) if pd.notna(last["VWAP"]) else np.nan
+
+    vwap = (
+        float(last["VWAP"])
+        if pd.notna(last["VWAP"])
+        else np.nan
+    )
+
     macd = float(last["MACD"])
     macd_signal = float(last["MACD_SIGNAL"])
+
     volume_ratio = (
         float(last["VOL_RATIO"])
         if pd.notna(last["VOL_RATIO"])
@@ -440,37 +463,54 @@ def analyze_intraday_5m(df, symbol=None):
     if not volume_ok:
         blockers.append("Khối lượng chưa xác nhận.")
 
-    # Không đuổi theo nến tăng quá mạnh so với ATR.
-    atr = float(last["ATR14"]) if pd.notna(last["ATR14"]) else 0.0
+    # Tránh mua đuổi khi nến biến động quá lớn
+    atr = (
+        float(last["ATR14"])
+        if pd.notna(last["ATR14"])
+        else 0.0
+    )
+
     candle_range = float(last["High"] - last["Low"])
 
     if atr > 0 and candle_range > atr * 2.5:
-        blockers.append("Nến biến động quá lớn so với ATR; tránh mua đuổi.")
+        blockers.append(
+            "Nến biến động quá lớn so với ATR; tránh mua đuổi."
+        )
 
     if rsi >= 75:
         blockers.append("RSI quá mua.")
 
-    if bullish_trend and vwap_ok and rsi_ok and macd_ok and volume_ok:
+    if (
+        bullish_trend
+        and vwap_ok
+        and rsi_ok
+        and macd_ok
+        and volume_ok
+    ):
         signal = "TÍN HIỆU TĂNG"
+
         explanation = (
             "Các điều kiện xu hướng, VWAP, RSI, MACD và khối lượng "
             "đang đồng thuận trên khung 5 phút. Đây vẫn là tín hiệu "
-            "ngắn hạn trong phiên, không thay thế xác nhận D1/H1."
+            "ngắn hạn trong phiên, không thay thế xác nhận D1."
         )
+
     elif score >= 50:
         signal = "THEO DÕI"
+
         explanation = (
             "Có một số yếu tố tích cực nhưng chưa đủ đồng thuận "
             "để xem là tín hiệu tăng."
         )
+
     else:
         signal = "CHỜ"
+
         explanation = (
             "Chưa có lợi thế kỹ thuật rõ ràng trên khung 5 phút."
         )
 
     if blockers and signal == "TÍN HIỆU TĂNG":
-        # Điều kiện cảnh báo mạnh sẽ vô hiệu hóa tín hiệu.
         if any(
             "quá mua" in x
             or "quá lớn" in x
@@ -478,6 +518,7 @@ def analyze_intraday_5m(df, symbol=None):
             for x in blockers
         ):
             signal = "THEO DÕI"
+
             explanation = (
                 "Có tín hiệu tăng nhưng xuất hiện rủi ro mua đuổi. "
                 "Chờ giá điều chỉnh hoặc xác nhận lại."
