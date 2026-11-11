@@ -2,1020 +2,658 @@
 import numpy as np
 import pandas as pd
 
-# =========================================================
-# CONFIG
-# =========================================================
+# =====================================================
+# AI STOCK SCANNER - D1
+# =====================================================
 
 MIN_SCORE = 78
 EARLY_MIN_SCORE = 70
 NEAR_MIN_SCORE = 70
-MIN_REWARD_RISK = 2.0
+MIN_RR = 2.0
 
-MIN_AVG_TURNOVER_20D = 5_000_000_000
-MIN_MEDIAN_TURNOVER_20D = 3_000_000_000
-MIN_HISTORY_SESSIONS = 200
+MIN_HISTORY = 200
+MIN_AVG_TURNOVER = 5_000_000_000
+MIN_MEDIAN_TURNOVER = 3_000_000_000
 
 BUY_FEE = 0.0015
 SELL_FEE = 0.0015
 SELL_TAX = 0.001
 SLIPPAGE = 0.002
 
-EARLY_MAX_EXTENSION_PCT = 5.0
-MAX_BUY_EXTENSION_PCT = 8.0
-
-# Không mua đuổi khi khối lượng quá thấp
-EARLY_MIN_VOLUME_RATIO = 0.65
-NEAR_MIN_VOLUME_RATIO = 0.60
-
-MANUALLY_BLOCKED_SYMBOLS = {
-    "NVB": "Mã đang được người dùng chặn thủ công."
-}
+BLOCKED = {"NVB": "Mã bị chặn thủ công"}
+MANUALLY_BLOCKED_SYMBOLS = BLOCKED
 
 
-# =========================================================
-# DATA VALIDATION
-# =========================================================
+def _number(value, default=0.0):
+    try:
+        x = float(value)
+        return x if np.isfinite(x) else default
+    except (TypeError, ValueError):
+        return default
 
-def _validate_history(df):
-    if df is None or not isinstance(df, pd.DataFrame):
-        raise ValueError("Dữ liệu D1 không hợp lệ.")
 
-    data = df.copy()
-    data.columns = [str(c).strip() for c in data.columns]
+def _validate(df):
+    required = [
+        "Date", "Open", "High",
+        "Low", "Close", "Volume"
+    ]
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("Dữ liệu D1 không hợp lệ")
 
-    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
-    missing = [c for c in required if c not in data.columns]
+    d = df.copy()
+    d.columns = [str(c).strip() for c in d.columns]
 
+    missing = [c for c in required if c not in d]
     if missing:
-        raise ValueError(f"Thiếu cột D1: {missing}")
+        raise ValueError(f"Thiếu cột: {missing}")
 
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    d["Date"] = pd.to_datetime(d["Date"], errors="coerce")
+    for c in required[1:]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    for col in required[1:]:
-        data[col] = pd.to_numeric(data[col], errors="coerce")
-
-    data = (
-        data.dropna(subset=required)
+    d = (
+        d.dropna(subset=required)
         .sort_values("Date")
         .drop_duplicates("Date", keep="last")
         .reset_index(drop=True)
     )
 
     valid = (
-        (data["Open"] > 0)
-        & (data["High"] >= data["Low"])
-        & (data["Low"] > 0)
-        & (data["Close"] > 0)
-        & (data["Volume"] >= 0)
-        & (data["High"] >= data["Open"])
-        & (data["High"] >= data["Close"])
-        & (data["Low"] <= data["Open"])
-        & (data["Low"] <= data["Close"])
+        (d["Open"] > 0)
+        & (d["Close"] > 0)
+        & (d["Low"] > 0)
+        & (d["Volume"] >= 0)
+        & (d["High"] >= d[["Open", "Close", "Low"]].max(axis=1))
+        & (d["Low"] <= d[["Open", "Close"]].min(axis=1))
     )
+    d = d.loc[valid].reset_index(drop=True)
 
-    data = data.loc[valid].reset_index(drop=True)
-
-    if len(data) < MIN_HISTORY_SESSIONS:
+    if len(d) < MIN_HISTORY:
         raise ValueError(
-            f"INSUFFICIENT_HISTORY: {len(data)} phiên; "
-            f"yêu cầu tối thiểu {MIN_HISTORY_SESSIONS}."
+            f"INSUFFICIENT_HISTORY: {len(d)}/{MIN_HISTORY} phiên"
         )
+    return d
 
-    return data
-
-
-# =========================================================
-# INDICATORS
-# =========================================================
 
 def calculate_indicators(df):
+    d = _validate(df)
 
-    data = _validate_history(df)
+    c = d["Close"]
+    h = d["High"]
+    l = d["Low"]
+    v = d["Volume"]
 
-    close = data["Close"]
-    high = data["High"]
-    low = data["Low"]
-    volume = data["Volume"]
+    d["TURNOVER"] = c * v
+    previous_turnover = d["TURNOVER"].shift(1)
+    d["AVG_TURNOVER_20D"] = previous_turnover.rolling(20).mean()
+    d["MEDIAN_TURNOVER_20D"] = previous_turnover.rolling(20).median()
 
-    data["TURNOVER"] = close * volume
+    for n in (20, 50, 200):
+        d[f"MA{n}"] = c.rolling(n).mean()
 
-    # Thanh khoản chỉ sử dụng dữ liệu trước phiên hiện tại
-    data["AVG_TURNOVER_20D"] = (
-        data["TURNOVER"].shift(1).rolling(20).mean()
-    )
+    d["MA20_PREVIOUS_5D"] = d["MA20"].shift(5)
 
-    data["MEDIAN_TURNOVER_20D"] = (
-        data["TURNOVER"].shift(1).rolling(20).median()
-    )
-
-    # MA
-    data["MA20"] = close.rolling(20).mean()
-    data["MA50"] = close.rolling(50).mean()
-    data["MA200"] = close.rolling(200).mean()
-
-    data["MA20_PREVIOUS_5D"] = data["MA20"].shift(5)
-
-    # RSI Wilder
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
+    delta = c.diff()
+    gain = delta.clip(lower=0).ewm(
+        alpha=1 / 14, adjust=False, min_periods=14
+    ).mean()
+    loss = (-delta.clip(upper=0)).ewm(
+        alpha=1 / 14, adjust=False, min_periods=14
     ).mean()
 
-    avg_loss = loss.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
-    ).mean()
-
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-
+    rs = gain / loss.replace(0, np.nan)
     rsi = 100 - 100 / (1 + rs)
+    rsi = rsi.mask((loss == 0) & (gain > 0), 100)
+    rsi = rsi.mask((gain == 0) & (loss > 0), 0)
+    d["RSI"] = rsi.mask((gain == 0) & (loss == 0), 50)
 
-    rsi = rsi.mask(
-        (avg_loss == 0) & (avg_gain > 0), 100
-    )
-
-    rsi = rsi.mask(
-        (avg_gain == 0) & (avg_loss > 0), 0
-    )
-
-    rsi = rsi.mask(
-        (avg_gain == 0) & (avg_loss == 0), 50
-    )
-
-    data["RSI"] = rsi
-
-    # MACD
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-
-    data["MACD"] = ema12 - ema26
-
-    data["MACD_SIGNAL"] = data["MACD"].ewm(
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    d["MACD"] = ema12 - ema26
+    d["MACD_SIGNAL"] = d["MACD"].ewm(
         span=9, adjust=False
     ).mean()
+    d["MACD_HIST"] = d["MACD"] - d["MACD_SIGNAL"]
+    d["MACD_HIST_PREVIOUS"] = d["MACD_HIST"].shift(1)
 
-    data["MACD_HIST"] = (
-        data["MACD"] - data["MACD_SIGNAL"]
+    d["VOLUME_MA20"] = v.shift(1).rolling(20).mean()
+    d["VOLUME_RATIO"] = v / d["VOLUME_MA20"].replace(0, np.nan)
+    d["VOLUME_MA5_PREVIOUS"] = v.shift(1).rolling(5).mean()
+    d["VOLUME_DRYUP_RATIO"] = (
+        d["VOLUME_MA5_PREVIOUS"]
+        / d["VOLUME_MA20"].replace(0, np.nan)
     )
 
-    data["MACD_HIST_PREVIOUS"] = (
-        data["MACD_HIST"].shift(1)
-    )
+    prev = c.shift(1)
+    tr = pd.concat([
+        h - l,
+        (h - prev).abs(),
+        (l - prev).abs()
+    ], axis=1).max(axis=1)
 
-    # Volume
-    data["VOLUME_MA20"] = (
-        volume.shift(1).rolling(20).mean()
-    )
-
-    data["VOLUME_MA5"] = volume.rolling(5).mean()
-
-    data["VOLUME_MA5_PREVIOUS"] = (
-        volume.shift(1).rolling(5).mean()
-    )
-
-    data["VOLUME_RATIO"] = (
-        volume / data["VOLUME_MA20"].replace(0, np.nan)
-    )
-
-    data["VOLUME_DRYUP_RATIO"] = (
-        data["VOLUME_MA5_PREVIOUS"]
-        / data["VOLUME_MA20"].replace(0, np.nan)
-    )
-
-    # ATR Wilder
-    prev_close = close.shift(1)
-
-    tr = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1
-    ).max(axis=1)
-
-    data["ATR14"] = tr.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
+    d["ATR14"] = tr.ewm(
+        alpha=1 / 14, min_periods=14, adjust=False
     ).mean()
+    d["ATR14_PCT"] = d["ATR14"] / c * 100
 
-    data["ATR14_PCT"] = (
-        data["ATR14"] / close * 100
-    )
+    for n in (20, 50, 60):
+        d[f"HIGH{n}_PREVIOUS"] = h.shift(1).rolling(n).max()
 
-    # Kháng cự và hỗ trợ trước phiên hiện tại
-    data["HIGH20_PREVIOUS"] = (
-        high.shift(1).rolling(20).max()
-    )
+    d["LOW20_PREVIOUS"] = l.shift(1).rolling(20).min()
+    d["RANGE20"] = (
+        h.rolling(20).max() - l.rolling(20).min()
+    ) / c * 100
+    d["RANGE20_PREVIOUS_5D"] = d["RANGE20"].shift(5)
 
-    data["HIGH50_PREVIOUS"] = (
-        high.shift(1).rolling(50).max()
-    )
+    d = d.replace([np.inf, -np.inf], np.nan)
+    d = d.dropna(subset=[
+        "MA200", "RSI", "ATR14", "VOLUME_RATIO",
+        "HIGH60_PREVIOUS", "RANGE20_PREVIOUS_5D"
+    ])
 
-    data["HIGH60_PREVIOUS"] = (
-        high.shift(1).rolling(60).max()
-    )
-
-    data["LOW20_PREVIOUS"] = (
-        low.shift(1).rolling(20).min()
-    )
-
-    # Độ co hẹp biên độ
-    data["RANGE20"] = (
-        high.rolling(20).max()
-        - low.rolling(20).min()
-    ) / close * 100
-
-    data["RANGE20_PREVIOUS_5D"] = (
-        data["RANGE20"].shift(5)
-    )
-
-    data = (
-        data.replace([np.inf, -np.inf], np.nan)
-        .dropna()
-        .reset_index(drop=True)
-    )
-
-    if data.empty:
-        raise ValueError(
-            "Không còn dữ liệu hợp lệ sau khi tính chỉ báo."
-        )
-
-    return data
+    if d.empty:
+        raise ValueError("Không đủ dữ liệu chỉ báo")
+    return d.reset_index(drop=True)
 
 
-# =========================================================
-# CONFIRMED SCORE
-# =========================================================
-
-def calculate_score(row):
-
+def calculate_score(r):
     score = 0
     reasons = []
 
-    # 1. Xu hướng: tối đa 20
-    trend = 0
+    def add(points, message):
+        nonlocal score
+        score += points
+        reasons.append(message)
 
-    if row.Close > row.MA20:
-        trend += 8
-        reasons.append("Giá trên MA20")
+    if r.Close > r.MA20:
+        add(8, "Giá trên MA20")
+    if r.MA20 > r.MA50:
+        add(7, "MA20 trên MA50")
+    if r.MA50 > r.MA200:
+        add(5, "MA50 trên MA200")
 
-    if row.MA20 > row.MA50:
-        trend += 7
-        reasons.append("MA20 trên MA50")
+    if r.VOLUME_RATIO >= 1.5:
+        add(10, "Khối lượng tăng mạnh")
+    elif r.VOLUME_RATIO >= 1.2:
+        add(7, "Khối lượng cải thiện")
 
-    if row.MA50 > row.MA200:
-        trend += 5
-        reasons.append("MA50 trên MA200")
+    if r.TURNOVER > r.AVG_TURNOVER_20D * 1.2:
+        add(10, "Giá trị giao dịch tăng")
 
-    score += min(trend, 20)
+    if r.Close > r.Open and r.VOLUME_RATIO >= 1:
+        add(5, "Nến tăng có khối lượng")
 
-    # 2. Dòng tiền: tối đa 25
-    flow = 0
+    if r.MACD > r.MACD_SIGNAL:
+        add(10, "MACD tích cực")
 
-    if row.VOLUME_RATIO >= 1.5:
-        flow += 10
-        reasons.append("Khối lượng tăng trên 50%")
+    if 52 <= r.RSI <= 65:
+        add(10, "RSI khỏe")
+    elif 48 <= r.RSI <= 68:
+        add(5, "RSI chấp nhận được")
 
-    elif row.VOLUME_RATIO >= 1.2:
-        flow += 7
-        reasons.append("Khối lượng cải thiện")
+    if r.Close > r.HIGH20_PREVIOUS:
+        if r.VOLUME_RATIO >= 1.2:
+            add(15, "Breakout 20 phiên có dòng tiền")
+        else:
+            add(7, "Vượt đỉnh thiếu khối lượng")
+    elif r.Close >= r.HIGH20_PREVIOUS * 0.97:
+        add(8, "Áp sát đỉnh 20 phiên")
 
-    if row.TURNOVER > row.AVG_TURNOVER_20D * 1.2:
-        flow += 10
-        reasons.append("Giá trị giao dịch tăng")
+    position = (r.Close - r.Low) / max(r.High - r.Low, 1e-9)
+    if r.Close > r.Open and position >= 0.75:
+        add(10, "Nến đóng gần đỉnh")
+    elif r.Close > r.Open and position >= 0.55:
+        add(6, "Nến tăng tích cực")
 
-    if (
-        row.Close > row.Open
-        and row.Volume >= row.VOLUME_MA20
-    ):
-        flow += 5
-        reasons.append("Nến tăng có khối lượng xác nhận")
+    if 1.5 <= r.ATR14_PCT <= 4:
+        add(10, "ATR phù hợp")
+    elif 1 <= r.ATR14_PCT <= 5.5:
+        add(7, "ATR chấp nhận được")
+    elif r.ATR14_PCT <= 6.5:
+        add(3, "ATR cần theo dõi")
 
-    score += min(flow, 25)
-
-    # 3. MACD: 10
-    if row.MACD > row.MACD_SIGNAL:
-        score += 10
-        reasons.append("MACD tích cực")
-
-    # 4. RSI: 10
-    if 52 <= row.RSI <= 65:
-        score += 10
-        reasons.append("RSI trong vùng khỏe")
-
-    elif 48 <= row.RSI < 52 or 65 < row.RSI <= 68:
-        score += 5
-        reasons.append("RSI chấp nhận được")
-
-    # 5. Breakout: 15
-    breakout = row.Close > row.HIGH20_PREVIOUS
-
-    near_high = (
-        row.Close >= row.HIGH20_PREVIOUS * 0.97
-    )
-
-    if breakout and row.VOLUME_RATIO >= 1.2:
-        score += 15
-        reasons.append("Breakout đỉnh 20 phiên có dòng tiền")
-
-    elif breakout:
-        score += 7
-        reasons.append("Vượt đỉnh nhưng dòng tiền chưa mạnh")
-
-    elif near_high:
-        score += 8
-        reasons.append("Áp sát đỉnh 20 phiên")
-
-    # 6. Chất lượng nến: 10
-    candle_range = max(
-        float(row.High - row.Low), 1e-9
-    )
-
-    close_position = (
-        float(row.Close) - float(row.Low)
-    ) / candle_range
-
-    if row.Close > row.Open and close_position >= 0.75:
-        score += 10
-        reasons.append("Nến tăng đóng cửa gần đỉnh")
-
-    elif row.Close > row.Open and close_position >= 0.55:
-        score += 6
-        reasons.append("Nến tăng tương đối tốt")
-
-    # 7. ATR: 10
-    atr_pct = float(row.ATR14_PCT)
-
-    if 1.5 <= atr_pct <= 4:
-        score += 10
-        reasons.append("Biến động phù hợp lướt sóng")
-
-    elif 1 <= atr_pct < 1.5 or 4 < atr_pct <= 5.5:
-        score += 7
-        reasons.append("Biến động chấp nhận được")
-
-    elif atr_pct <= 6.5:
-        score += 3
-        reasons.append("Biến động thấp hoặc cần thận trọng")
-
-    return min(int(score), 100), reasons
+    return min(score, 100), reasons
 
 
-# =========================================================
-# EARLY SCORE - CÓ ĐIỂM THƯỞNG VÀ ĐIỂM PHẠT
-# =========================================================
-
-def calculate_early_score(row):
-
+def calculate_early_score(r):
     score = 0
     reasons = []
     penalties = []
 
-    high20 = float(row.HIGH20_PREVIOUS)
-
-    proximity = (
-        float(row.Close) / high20
-        if high20 > 0 else 0
-    )
-
-    ma20_prev = float(row.MA20_PREVIOUS_5D)
+    def add(points, message):
+        nonlocal score
+        score += points
+        if points >= 0:
+            reasons.append(message)
+        else:
+            penalties.append(message)
 
     slope = (
-        (float(row.MA20) / ma20_prev - 1) * 100
-        if ma20_prev > 0 else -99
+        (r.MA20 / r.MA20_PREVIOUS_5D - 1) * 100
+        if r.MA20_PREVIOUS_5D > 0 else -99
     )
+    proximity = r.Close / r.HIGH20_PREVIOUS
 
-    # Xu hướng
-    if row.Close >= row.MA20:
-        score += 12
-        reasons.append("Giá giữ trên MA20")
-    else:
-        score -= 8
-        penalties.append("Giá dưới MA20")
+    add(12 if r.Close >= r.MA20 else -8, "Giá so với MA20")
 
-    if row.MA20 >= row.MA50:
-        score += 8
-        reasons.append("MA20 trên MA50")
-    elif row.MA20 >= row.MA50 * 0.99:
-        score += 4
-        reasons.append("MA20 áp sát MA50")
+    if r.MA20 >= r.MA50:
+        add(8, "MA20 trên MA50")
+    elif r.MA20 >= r.MA50 * 0.99:
+        add(4, "MA20 sát MA50")
     else:
-        score -= 5
-        penalties.append("MA20 thấp hơn MA50")
+        add(-5, "MA20 dưới MA50")
 
     if slope >= 0.3:
-        score += 8
-        reasons.append("MA20 đang tăng")
+        add(8, "MA20 tăng")
     elif slope >= 0:
-        score += 4
-        reasons.append("MA20 đi ngang")
+        add(4, "MA20 ổn định")
     else:
-        score -= 5
-        penalties.append("MA20 đang giảm")
+        add(-5, "MA20 giảm")
 
-    # Vị trí giá
     if 0.97 <= proximity <= 1.015:
-        score += 18
-        reasons.append("Giá sát vùng đỉnh 20 phiên")
-
+        add(18, "Giá sát đỉnh 20 phiên")
     elif 0.94 <= proximity < 0.97:
-        score += 12
-        reasons.append("Giá tiến gần vùng đỉnh")
-
+        add(12, "Giá gần đỉnh")
     elif 0.90 <= proximity < 0.94:
-        score += 5
-        reasons.append("Giá đang hồi phục")
-
+        add(5, "Giá đang hồi phục")
     else:
-        score -= 5
-        penalties.append("Giá chưa đủ gần vùng đỉnh")
+        add(-5, "Vị trí giá chưa phù hợp")
 
-    # Khối lượng: không cộng điểm quá dễ
-    if 0.85 <= row.VOLUME_RATIO <= 1.8:
-        score += 10
-        reasons.append("Khối lượng đạt mức chấp nhận")
-
-    elif 0.65 <= row.VOLUME_RATIO < 0.85:
-        score += 5
-        reasons.append("Khối lượng hơi thấp")
-
-    elif row.VOLUME_RATIO > 1.8:
-        score += 5
-        reasons.append("Khối lượng tăng mạnh, cần tránh mua đuổi")
-
+    vr = r.VOLUME_RATIO
+    if 0.85 <= vr <= 1.8:
+        add(10, "Khối lượng chấp nhận được")
+    elif 0.65 <= vr < 0.85:
+        add(5, "Khối lượng hơi thấp")
+    elif vr > 1.8:
+        add(5, "Khối lượng tăng mạnh")
     else:
-        score -= 12
-        penalties.append("Khối lượng quá thấp")
+        add(-12, "Khối lượng quá thấp")
 
-    # Tích lũy
-    if row.VOLUME_DRYUP_RATIO <= 0.85:
-        score += 8
-        reasons.append("Khối lượng co hẹp trước khả năng bứt phá")
+    if r.VOLUME_DRYUP_RATIO <= 0.85:
+        add(8, "Khối lượng nền co hẹp")
+    elif r.VOLUME_DRYUP_RATIO <= 1:
+        add(5, "Khối lượng nền ổn định")
+    elif r.VOLUME_DRYUP_RATIO > 1.5:
+        add(-5, "Khối lượng nền bất thường")
 
-    elif row.VOLUME_DRYUP_RATIO <= 1:
-        score += 5
-        reasons.append("Khối lượng tích lũy ổn định")
-
-    elif row.VOLUME_DRYUP_RATIO > 1.5:
-        score -= 5
-        penalties.append("Khối lượng nền tăng bất thường")
-
-    # ATR
-    if 1 <= row.ATR14_PCT <= 4.5:
-        score += 8
-        reasons.append("ATR phù hợp")
-
-    elif row.ATR14_PCT > 6.5:
-        score -= 8
-        penalties.append("Biến động quá lớn")
-
+    if 1 <= r.ATR14_PCT <= 4.5:
+        add(8, "ATR phù hợp")
+    elif r.ATR14_PCT > 6.5:
+        add(-8, "ATR quá cao")
     else:
-        score += 3
+        add(3, "ATR cần theo dõi")
 
-    # Co hẹp biên độ
-    if row.RANGE20 <= row.RANGE20_PREVIOUS_5D * 1.05:
-        score += 8
-        reasons.append("Biên độ thu hẹp hoặc ổn định")
+    if r.RANGE20 <= r.RANGE20_PREVIOUS_5D * 1.05:
+        add(8, "Biên độ tích lũy ổn định")
 
-    # RSI
-    if 50 <= row.RSI <= 65:
-        score += 10
-        reasons.append("RSI khỏe")
-
-    elif 45 <= row.RSI < 50:
-        score += 5
-        reasons.append("RSI đang hồi phục")
-
-    elif 65 < row.RSI <= 68:
-        score += 5
-        reasons.append("RSI hơi cao")
-
-    elif row.RSI > 75:
-        score -= 10
-        penalties.append("RSI quá mua")
-
+    if 50 <= r.RSI <= 65:
+        add(10, "RSI khỏe")
+    elif 45 <= r.RSI < 50 or 65 < r.RSI <= 68:
+        add(5, "RSI chấp nhận được")
     else:
-        score -= 5
-        penalties.append("RSI yếu")
+        add(-10 if r.RSI > 75 else -5, "RSI chưa phù hợp")
 
-    # MACD
-    if row.MACD > row.MACD_SIGNAL:
-        score += 8
-        reasons.append("MACD tích cực")
-
-    elif row.MACD_HIST > row.MACD_HIST_PREVIOUS:
-        score += 5
-        reasons.append("MACD histogram cải thiện")
-
+    if r.MACD > r.MACD_SIGNAL:
+        add(8, "MACD tích cực")
+    elif r.MACD_HIST > r.MACD_HIST_PREVIOUS:
+        add(5, "MACD cải thiện")
     else:
-        score -= 5
-        penalties.append("MACD chưa cải thiện")
+        add(-5, "MACD chưa xác nhận")
 
-    # Nến
-    candle_range = max(
-        float(row.High - row.Low), 1e-9
-    )
+    position = (r.Close - r.Low) / max(r.High - r.Low, 1e-9)
+    if r.Close >= r.Open and position >= 0.65:
+        add(8, "Nến giữ giá tốt")
+    elif position < 0.3:
+        add(-8, "Nến đóng cửa yếu")
 
-    close_position = (
-        float(row.Close) - float(row.Low)
-    ) / candle_range
-
-    if row.Close >= row.Open and close_position >= 0.65:
-        score += 8
-        reasons.append("Nến giữ giá tốt")
-
-    elif close_position < 0.30:
-        score -= 8
-        penalties.append("Nến đóng cửa yếu")
-
-    score = max(0, min(int(score), 100))
-
-    return score, reasons, penalties
+    return max(0, min(int(score), 100)), reasons, penalties
 
 
-# =========================================================
-# RISK / REWARD
-# =========================================================
-
-def _net_reward_risk(price, stop, target):
-
-    buy_cost = price * (1 + BUY_FEE + SLIPPAGE)
-
-    stop_proceeds = stop * (
-        1 - SELL_FEE - SELL_TAX - SLIPPAGE
-    )
-
-    target_proceeds = target * (
-        1 - SELL_FEE - SELL_TAX - SLIPPAGE
-    )
-
-    risk = buy_cost - stop_proceeds
-    reward = target_proceeds - buy_cost
-
-    if risk <= 0 or reward <= 0:
-        return 0.0
-
-    return reward / risk
+def _net_rr(price, stop, target):
+    cost = price * (1 + BUY_FEE + SLIPPAGE)
+    stop_net = stop * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+    target_net = target * (1 - SELL_FEE - SELL_TAX - SLIPPAGE)
+    risk = cost - stop_net
+    reward = target_net - cost
+    return reward / risk if risk > 0 and reward > 0 else 0.0
 
 
-def _risk_plan(row, price):
-
-    atr = float(row.ATR14)
-
+def _risk_plan(r, price):
+    atr = _number(r.ATR14)
     if atr <= 0:
-        return None
+        return None, "ATR không hợp lệ"
 
+    # Cắt lỗ theo ATR, không tự nhận là mức hỗ trợ chắc chắn.
     stop = price - 1.5 * atr
+    if stop <= 0:
+        return None, "Cắt lỗ không hợp lệ"
 
-    if stop <= 0 or stop >= price:
-        return None
-
-    candidates = [
-        float(row.HIGH20_PREVIOUS),
-        float(row.HIGH50_PREVIOUS),
-        float(row.HIGH60_PREVIOUS),
-    ]
-
-    resistance_levels = sorted(set(
-        level for level in candidates
-        if np.isfinite(level) and level > price * 1.01
+    levels = sorted(set(
+        float(x) for x in [
+            r.HIGH20_PREVIOUS,
+            r.HIGH50_PREVIOUS,
+            r.HIGH60_PREVIOUS
+        ]
+        if np.isfinite(x) and x > price
     ))
 
-    # Tìm kháng cự gần nhất đáp ứng RR 2:1
-    for target in resistance_levels:
+    if not levels:
+        return None, "Không có kháng cự lịch sử phía trên giá"
 
-        rr = _net_reward_risk(
-            price, stop, target
+    # Không bỏ qua kháng cự gần để chọn mục tiêu xa.
+    target = levels[0]
+    rr = _net_rr(price, stop, target)
+
+    if rr < MIN_RR:
+        return None, (
+            f"RR tới kháng cự gần nhất chỉ {rr:.2f}, "
+            f"yêu cầu {MIN_RR:.1f}"
         )
 
-        if rr >= MIN_REWARD_RISK:
+    # Kiểm tra lại RR sau khi làm tròn giá.
+    stop = round(stop)
+    target = round(target)
+    rr = _net_rr(price, stop, target)
 
-            return {
-                "stop_loss": round(stop),
-                "target_price": round(target),
-                "reward_risk": round(rr, 2),
-                "resistance": round(target),
-            }
+    if rr < MIN_RR:
+        return None, f"RR sau làm tròn chỉ {rr:.2f}"
 
-    return None
+    return {
+        "stop_loss": stop,
+        "target_price": target,
+        "resistance": target,
+        "reward_risk": round(rr, 2)
+    }, ""
 
 
-# =========================================================
-# ANALYZE ONE STOCK
-# =========================================================
+def _checks(values):
+    return {name: bool(ok) for name, ok in values.items()}
+
+
+def _failed(checks):
+    return [name for name, ok in checks.items() if not ok]
+
 
 def analyze_stock(df, symbol=None):
-
     symbol = str(symbol or "").strip().upper()
 
     try:
-
-        if symbol in MANUALLY_BLOCKED_SYMBOLS:
+        if symbol in BLOCKED:
             return {
                 "symbol": symbol,
                 "signal": "FILTERED",
-                "reason": MANUALLY_BLOCKED_SYMBOLS[symbol],
+                "reason": BLOCKED[symbol],
+                "blockers": [BLOCKED[symbol]]
             }
 
-        data = calculate_indicators(df)
+        d = calculate_indicators(df)
+        r = d.iloc[-1]
+        price = float(r.Close)
 
-        row = data.iloc[-1]
+        data_date = pd.Timestamp(r.Date)
+        age = (pd.Timestamp.now().normalize() - data_date.normalize()).days
 
-        price = float(row.Close)
-
-        data_date = pd.Timestamp(
-            row.Date
-        ).strftime("%d/%m/%Y")
-
-        age_days = (
-            pd.Timestamp.now().normalize()
-            - pd.Timestamp(row.Date).normalize()
-        ).days
-
-        if age_days > 7:
-            return {
-                "symbol": symbol,
-                "signal": "WAIT",
-                "reason": f"Dữ liệu D1 cũ {age_days} ngày.",
-                "data_date": data_date,
-            }
-
-        avg_turnover = float(row.AVG_TURNOVER_20D)
-        median_turnover = float(row.MEDIAN_TURNOVER_20D)
+        avg = float(r.AVG_TURNOVER_20D)
+        median = float(r.MEDIAN_TURNOVER_20D)
 
         common = {
             "symbol": symbol,
             "price": round(price),
-            "data_date": data_date,
-            "rsi": round(float(row.RSI), 2),
-            "volume_ratio": round(float(row.VOLUME_RATIO), 2),
-            "avg_turnover_20d": round(avg_turnover),
-            "median_turnover_20d": round(median_turnover),
-            "atr_pct": round(float(row.ATR14_PCT), 2),
+            "data_date": data_date.strftime("%d/%m/%Y"),
+            "rsi": round(float(r.RSI), 2),
+            "volume_ratio": round(float(r.VOLUME_RATIO), 2),
+            "atr_pct": round(float(r.ATR14_PCT), 2),
+            "avg_turnover_20d": round(avg),
+            "median_turnover_20d": round(median)
         }
 
-        # Lọc thanh khoản
-        if (
-            avg_turnover < MIN_AVG_TURNOVER_20D
-            or median_turnover < MIN_MEDIAN_TURNOVER_20D
-        ):
+        if age < 0 or age > 7:
+            message = f"Dữ liệu D1 không mới: lệch {age} ngày"
+            return {
+                **common, "signal": "WAIT",
+                "reason": message,
+                "blockers": [message]
+            }
+
+        liquidity = []
+        if avg < MIN_AVG_TURNOVER:
+            liquidity.append("GTGD bình quân 20 phiên dưới 5 tỷ")
+        if median < MIN_MEDIAN_TURNOVER:
+            liquidity.append("GTGD trung vị 20 phiên dưới 3 tỷ")
+
+        if liquidity:
             return {
                 **common,
                 "signal": "FILTERED",
-                "reason": "Không đạt tiêu chuẩn thanh khoản.",
-                "blockers": [
-                    "GTGD bình quân hoặc trung vị dưới ngưỡng."
-                ],
+                "reason": "; ".join(liquidity),
+                "blockers": liquidity,
+                "failed_buy": liquidity,
+                "failed_early": liquidity,
+                "failed_near": liquidity
             }
 
-        score, reasons = calculate_score(row)
+        confirmed, reasons = calculate_score(r)
+        early, early_reasons, penalties = calculate_early_score(r)
+        plan, plan_error = _risk_plan(r, price)
 
-        early_score, early_reasons, early_penalties = (
-            calculate_early_score(row)
-        )
+        extension = (price / r.MA20 - 1) * 100
+        proximity = price / r.HIGH20_PREVIOUS
+        vr = float(r.VOLUME_RATIO)
+        rsi = float(r.RSI)
 
-        plan = _risk_plan(row, price)
+        # Điều kiện BUY xác nhận.
+        buy = _checks({
+            f"BUY score >= {MIN_SCORE}": confirmed >= MIN_SCORE,
+            "RSI 45-68": 45 <= rsi <= 68,
+            "Giá trên MA20": price > r.MA20,
+            "Giá không vượt MA20 quá 8%": 0 <= extension <= 8,
+            "Khối lượng >= 0.8 lần TB20": vr >= 0.8,
+            "RR tới kháng cự gần nhất >= 2": plan is not None
+        })
 
-        extension = (
-            (price / float(row.MA20) - 1) * 100
-            if row.MA20 > 0 else 999
-        )
+        # EARLY: ưu tiên sát điểm bứt phá.
+        early_checks = _checks({
+            f"EARLY score >= {EARLY_MIN_SCORE}": early >= EARLY_MIN_SCORE,
+            "Giá >= 99% MA20": price >= r.MA20 * 0.99,
+            "RSI 45-68": 45 <= rsi <= 68,
+            "Không vượt MA20 quá 5%": extension <= 5,
+            "Giá bằng 96%-101.5% đỉnh 20 phiên":
+                0.96 <= proximity <= 1.015,
+            "Khối lượng >= 0.65 lần TB20": vr >= 0.65,
+            "RR tới kháng cự gần nhất >= 2": plan is not None
+        })
 
-        high20 = float(row.HIGH20_PREVIOUS)
+        # NEAR: tín hiệu theo dõi, không phải lệnh mua.
+        near = _checks({
+            f"EARLY score >= {NEAR_MIN_SCORE}": early >= NEAR_MIN_SCORE,
+            "Giá >= 98% MA20": price >= r.MA20 * 0.98,
+            "RSI 45-68": 45 <= rsi <= 68,
+            "Không vượt MA20 quá 8%": extension <= 8,
+            "Giá >= 93% đỉnh 20 phiên": proximity >= 0.93,
+            "Khối lượng >= 0.60 lần TB20": vr >= 0.60,
+            "RR tới kháng cự gần nhất >= 2": plan is not None
+        })
 
-        proximity = (
-            price / high20
-            if high20 > 0 else 0
-        )
+        failed_buy = _failed(buy)
+        failed_early = _failed(early_checks)
+        failed_near = _failed(near)
 
-        rsi_ok = 45 <= float(row.RSI) <= 68
-        trend_ok = price > float(row.MA20)
-        extension_ok = extension <= MAX_BUY_EXTENSION_PCT
-        volume_ok = float(row.VOLUME_RATIO) >= 0.8
-
-        buy_conditions = {
-            "Điểm kỹ thuật": score >= MIN_SCORE,
-            "RSI": rsi_ok,
-            "Giá trên MA20": trend_ok,
-            "Không mua quá xa MA20": extension_ok,
-            "Khối lượng": volume_ok,
-            "Kế hoạch RR": plan is not None,
-        }
-
-        blockers = []
-
-        if score < MIN_SCORE:
-            blockers.append(
-                f"Điểm kỹ thuật {score}, yêu cầu {MIN_SCORE}."
+        if not failed_buy:
+            signal = "BUY"
+            score = confirmed
+            active_reasons = reasons
+            blockers = []
+        elif not failed_early:
+            signal = "EARLY_BUY"
+            score = early
+            active_reasons = early_reasons
+            blockers = failed_buy
+        elif not failed_near:
+            signal = "NEAR_BUY"
+            score = early
+            active_reasons = early_reasons
+            blockers = failed_buy + failed_early
+        else:
+            signal = "WAIT"
+            score = confirmed
+            active_reasons = reasons
+            blockers = (
+                ["BUY: " + x for x in failed_buy]
+                + ["EARLY: " + x for x in failed_early]
+                + ["NEAR: " + x for x in failed_near]
             )
 
-        if not rsi_ok:
-            blockers.append(
-                f"RSI {row.RSI:.1f} ngoài vùng 45–68."
+        if signal == "BUY":
+            reason = "Đủ điều kiện BUY xác nhận D1"
+        elif signal == "EARLY_BUY":
+            reason = "Đủ điều kiện EARLY; chưa xác nhận BUY"
+        elif signal == "NEAR_BUY":
+            reason = "Đạt điều kiện theo dõi NEAR; chưa xác nhận mua"
+        else:
+            reason = "Chưa đạt: " + "; ".join(
+                failed_buy[:2] + failed_early[:2] + failed_near[:2]
             )
 
-        if not trend_ok:
-            blockers.append("Giá chưa nằm trên MA20.")
-
-        if not extension_ok:
-            blockers.append(
-                f"Giá cách MA20 {extension:.1f}%."
-            )
-
-        if not volume_ok:
-            blockers.append(
-                f"Khối lượng chỉ bằng {row.VOLUME_RATIO:.2f} lần trung bình."
-            )
-
-        if plan is None:
-            blockers.append(
-                "Chưa có mục tiêu kháng cự đạt RR 2:1."
-            )
-
-        # BUY xác nhận
-        if all(buy_conditions.values()):
-
-            return {
-                **common,
-                **plan,
-                "signal": "BUY",
-                "score": score,
-                "confirmed_score": score,
-                "early_score": early_score,
-                "reasons": reasons,
-                "early_reasons": early_reasons,
-                "penalties": [],
-                "blockers": [],
-                "conditions": buy_conditions,
-                "reason": "Đạt điều kiện BUY xác nhận D1.",
-            }
-
-        # EARLY BUY
-        early_ok = (
-            early_score >= EARLY_MIN_SCORE
-            and price >= float(row.MA20) * 0.99
-            and rsi_ok
-            and extension <= EARLY_MAX_EXTENSION_PCT
-            and 0.96 <= proximity <= 1.015
-            and float(row.VOLUME_RATIO) >= EARLY_MIN_VOLUME_RATIO
-            and plan is not None
-        )
-
-        if early_ok:
-
-            return {
-                **common,
-                **plan,
-                "signal": "EARLY_BUY",
-                "score": early_score,
-                "confirmed_score": score,
-                "early_score": early_score,
-                "reasons": early_reasons,
-                "early_reasons": early_reasons,
-                "penalties": early_penalties,
-                "blockers": blockers,
-                "conditions": buy_conditions,
-                "reason": (
-                    "EARLY BUY: có khả năng bứt phá, "
-                    "cần theo dõi xác nhận."
-                ),
-            }
-
-        # NEAR BUY
-        near_ok = (
-            early_score >= NEAR_MIN_SCORE
-            and price >= float(row.MA20) * 0.98
-            and rsi_ok
-            and extension <= MAX_BUY_EXTENSION_PCT
-            and proximity >= 0.93
-            and float(row.VOLUME_RATIO) >= NEAR_MIN_VOLUME_RATIO
-            and plan is not None
-        )
-
-        if near_ok:
-
-            return {
-                **common,
-                **plan,
-                "signal": "NEAR_BUY",
-                "score": max(score, early_score),
-                "confirmed_score": score,
-                "early_score": early_score,
-                "reasons": early_reasons,
-                "early_reasons": early_reasons,
-                "penalties": early_penalties,
-                "blockers": blockers,
-                "conditions": buy_conditions,
-                "reason": (
-                    "Gần đạt điều kiện mua, "
-                    "chờ xác nhận thêm."
-                ),
-            }
-
-        # WAIT
-        return {
+        result = {
             **common,
-            "signal": "WAIT",
+            "signal": signal,
             "score": score,
-            "confirmed_score": score,
-            "early_score": early_score,
-            "reasons": reasons,
+            "confirmed_score": confirmed,
+            "early_score": early,
+            "reason": reason,
+            "reasons": active_reasons,
             "early_reasons": early_reasons,
-            "penalties": early_penalties,
-            "blockers": blockers,
-            "conditions": buy_conditions,
-            "reason": "Chưa đủ điều kiện mua; tiếp tục theo dõi.",
+            "penalties": penalties,
+            "blockers": list(dict.fromkeys(blockers)),
+            "conditions": buy,
+            "buy_conditions": buy,
+            "early_conditions": early_checks,
+            "near_conditions": near,
+            "failed_buy": failed_buy,
+            "failed_early": failed_early,
+            "failed_near": failed_near,
+            "risk_note": plan_error,
+            "extension_pct": round(extension, 2),
+            "proximity_pct": round(proximity * 100, 2),
+            "stop_loss": None,
+            "target_price": None,
+            "reward_risk": None
         }
+
+        if plan:
+            result.update(plan)
+
+        return result
 
     except Exception as exc:
-
+        message = str(exc)
         return {
             "symbol": symbol,
             "signal": "WAIT",
-            "reason": str(exc),
-            "blockers": [str(exc)],
-            "data_date": None,
+            "reason": message,
+            "blockers": [message],
+            "failed_buy": [message],
+            "failed_early": [message],
+            "failed_near": [message]
         }
 
 
-# =========================================================
-# MARKET SCANNER
-# =========================================================
-
-def scan_market(
-    max_symbols=None,
-    progress_callback=None,
-    symbols=None
-):
-
+def scan_market(max_symbols=None, progress_callback=None, symbols=None):
     from data_provider import (
         fetch_exchange_symbols,
         fetch_stock_history,
-        InsufficientHistoryError,
+        InsufficientHistoryError
     )
 
     if symbols is None:
         symbols = fetch_exchange_symbols()
 
     symbols = sorted(set(
-        str(s).strip().upper()
-        for s in symbols if s
+        str(s).strip().upper() for s in symbols if s
     ))
 
     if max_symbols is not None:
         symbols = symbols[:max(0, int(max_symbols))]
 
-    total = len(symbols)
-
     results = []
     errors = []
+    insufficient = 0
+    d1_errors = 0
 
-    filtered_count = 0
-    liquidity_filtered_count = 0
-    wait_count = 0
-    near_count = 0
-    d1_error_count = 0
-    insufficient_history_count = 0
-
-    for index, symbol in enumerate(symbols, start=1):
-
+    for i, symbol in enumerate(symbols, 1):
         try:
-
-            if symbol in MANUALLY_BLOCKED_SYMBOLS:
-                filtered_count += 1
-                continue
-
-            try:
-
-                history = fetch_stock_history(
-                    symbol,
-                    length=260
-                )
-
-            except InsufficientHistoryError as exc:
-
-                insufficient_history_count += 1
-
-                errors.append({
+            if symbol in BLOCKED:
+                results.append({
                     "symbol": symbol,
-                    "stage": "INSUFFICIENT_HISTORY",
-                    "error": str(exc),
+                    "signal": "FILTERED",
+                    "reason": BLOCKED[symbol],
+                    "blockers": [BLOCKED[symbol]]
                 })
-
                 continue
 
-            except Exception as exc:
+            history = fetch_stock_history(symbol, length=260)
+            results.append(analyze_stock(history, symbol))
 
-                message = str(exc)
-
-                stage = (
-                    "INSUFFICIENT_HISTORY"
-                    if "INSUFFICIENT_HISTORY" in message
-                    else "D1"
-                )
-
-                if stage == "INSUFFICIENT_HISTORY":
-                    insufficient_history_count += 1
-                else:
-                    d1_error_count += 1
-
-                errors.append({
-                    "symbol": symbol,
-                    "stage": stage,
-                    "error": message,
-                })
-
-                continue
-
-            result = analyze_stock(
-                history,
-                symbol=symbol
-            )
-
-            signal = result.get("signal")
-
-            if signal == "FILTERED":
-
-                filtered_count += 1
-
-                if "thanh khoản" in str(
-                    result.get("reason", "")
-                ).lower():
-
-                    liquidity_filtered_count += 1
-
-            elif signal == "WAIT":
-                wait_count += 1
-
-            elif signal == "NEAR_BUY":
-                near_count += 1
-
-            results.append(result)
-
-        except Exception as exc:
-
-            d1_error_count += 1
-
+        except InsufficientHistoryError as exc:
+            insufficient += 1
             errors.append({
                 "symbol": symbol,
-                "stage": "D1_UNKNOWN",
-                "error": str(exc),
+                "stage": "INSUFFICIENT_HISTORY",
+                "error": str(exc)
             })
-
+        except Exception as exc:
+            message = str(exc)
+            if "INSUFFICIENT_HISTORY" in message:
+                insufficient += 1
+                stage = "INSUFFICIENT_HISTORY"
+            else:
+                d1_errors += 1
+                stage = "D1"
+            errors.append({
+                "symbol": symbol,
+                "stage": stage,
+                "error": message
+            })
         finally:
-
             if progress_callback:
-                progress_callback(index, total)
+                progress_callback(i, len(symbols))
 
     priority = {
-        "BUY": 4,
-        "EARLY_BUY": 3,
-        "NEAR_BUY": 2,
-        "WAIT": 1,
-        "FILTERED": 0,
+        "BUY": 4, "EARLY_BUY": 3,
+        "NEAR_BUY": 2, "WAIT": 1,
+        "FILTERED": 0
     }
 
     results.sort(
-        key=lambda item: (
-            priority.get(item.get("signal"), 0),
-            item.get("score", 0),
-            item.get("reward_risk", 0),
-            item.get("volume_ratio", 0),
+        key=lambda x: (
+            priority.get(x.get("signal"), 0),
+            _number(x.get("score")),
+            _number(x.get("reward_risk"))
         ),
-        reverse=True,
+        reverse=True
     )
 
-    confirmed_count = sum(
-        x.get("signal") == "BUY"
-        for x in results
-    )
-
-    early_count = sum(
-        x.get("signal") == "EARLY_BUY"
-        for x in results
+    count = lambda signal: sum(
+        x.get("signal") == signal for x in results
     )
 
     return {
         "results": results,
-        "scanned": total,
-        "buy_count": confirmed_count + early_count,
-        "confirmed_buy_count": confirmed_count,
-        "early_buy_count": early_count,
-        "near_buy_count": near_count,
-        "filtered_count": filtered_count,
-        "liquidity_filtered_count": liquidity_filtered_count,
-        "wait_count": wait_count,
-        "d1_error_count": d1_error_count,
-        "insufficient_history_count": insufficient_history_count,
-        "d1_candidate_count": confirmed_count + early_count,
+        "scanned": len(symbols),
+        "buy_count": count("BUY") + count("EARLY_BUY"),
+        "confirmed_buy_count": count("BUY"),
+        "early_buy_count": count("EARLY_BUY"),
+        "near_buy_count": count("NEAR_BUY"),
+        "wait_count": count("WAIT"),
+        "filtered_count": count("FILTERED"),
+        "liquidity_filtered_count": sum(
+            x.get("signal") == "FILTERED"
+            and "GTGD" in str(x.get("reason", ""))
+            for x in results
+        ),
+        "insufficient_history_count": insufficient,
+        "d1_error_count": d1_errors,
+        "d1_candidate_count": count("BUY") + count("EARLY_BUY"),
         "error_count": len(errors),
-        "errors": errors,
+        "errors": errors
     }
