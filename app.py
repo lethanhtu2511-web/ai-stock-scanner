@@ -158,7 +158,7 @@ def render_intraday_analysis(symbol):
     st.subheader("Phân tích cổ phiếu theo thời gian thực")
 
     st.caption(
-        "Khung phân tích: 5 phút | Nguồn dữ liệu: VCI | "
+        "Khung phân tích: 5 phút | Nguồn dữ liệu: KBS | "
         "Tự cập nhật mỗi 45 giây."
     )
 
@@ -198,7 +198,7 @@ def render_intraday_analysis(symbol):
 
         st.caption(
             "Nguồn dữ liệu: "
-            + str(candles.attrs.get("source", "VCI"))
+            + str(candles.attrs.get("source", "KBS"))
         )
 
         signal = result["signal"]
@@ -289,7 +289,7 @@ def render_intraday_analysis(symbol):
         # BIỂU ĐỒ
         # -----------------------------
 
-        st.subheader("Biểu đồ nến 5 phút và đường kỹ thuật")
+        st.subheader("Biểu đồ giá 5 phút và đường kỹ thuật")
 
         chart_data = result["candles"].copy()
 
@@ -334,7 +334,6 @@ def render_intraday_analysis(symbol):
         with st.expander("Xem dữ liệu 5 phút gần nhất"):
 
             display_columns = [
-                "Date",
                 "Open",
                 "High",
                 "Low",
@@ -385,7 +384,7 @@ def intraday_panel(symbol):
 
 
 # =====================================================
-# PHẦN HIỂN THỊ CHI TIẾT D1 CHO QUÉT THỊ TRƯỜNG
+# HIỂN THỊ KẾT QUẢ QUÉT THỊ TRƯỜNG D1
 # =====================================================
 
 def render_market_results(output, meta):
@@ -724,7 +723,7 @@ st.caption(
 )
 
 st.caption(
-    "Phân tích đơn lẻ: nến 5 phút từ VCI. "
+    "Phân tích đơn lẻ: nến 5 phút từ KBS. "
     "Quét thị trường: D1 từ vn-market-data. "
     "Không tự động đặt lệnh."
 )
