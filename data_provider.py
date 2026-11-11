@@ -21,19 +21,32 @@ HISTORY_CACHE_MAX_ITEMS = 500
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DAILY_CANDLE_READY_TIME = dt_time(15, 30)
 
+# Nguồn danh sách mã ưu tiên: KBS
+KBS_LISTING_URL = (
+    "https://kbbuddywts.kbsec.com.vn/"
+    "iis-server/investment/stock/search/data"
+)
+
+# Nguồn dự phòng: Vietcap
 VIETCAP_LISTING_URL = (
     "https://trading.vietcap.com.vn/api/price/symbols/getAll"
 )
 
-VIETCAP_HEADERS = {
+LISTING_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
+}
+
+VIETCAP_HEADERS = {
+    **LISTING_HEADERS,
     "Referer": "https://trading.vietcap.com.vn/",
     "Origin": "https://trading.vietcap.com.vn",
 }
+
 
 # =========================================================
 # BỘ NHỚ TẠM
@@ -361,8 +374,38 @@ def fetch_stock_quote(symbol):
 
 
 # =========================================================
-# DANH SÁCH MÃ HOSE / HNX
+# XỬ LÝ DANH SÁCH MÃ
 # =========================================================
+
+def _unwrap_listing_response(data):
+    """
+    Chuẩn hóa các dạng phản hồi phổ biến:
+    - JSON array
+    - {"data": [...]}
+    - {"stocks": [...]}
+    - {"result": [...]}
+    """
+
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in (
+            "data",
+            "stocks",
+            "result",
+            "items",
+            "content",
+        ):
+            value = data.get(key)
+
+            if isinstance(value, list):
+                return value
+
+    raise ValueError(
+        "Cấu trúc dữ liệu danh sách mã không hợp lệ."
+    )
+
 
 def _extract_symbols(rows, exchange):
     symbols = []
@@ -372,26 +415,56 @@ def _extract_symbols(rows, exchange):
             continue
 
         board = str(
-            row.get("board", "")
+            row.get(
+                "exchange",
+                row.get(
+                    "board",
+                    row.get(
+                        "market",
+                        row.get("EX", ""),
+                    ),
+                ),
+            )
         ).strip().upper()
 
         instrument_type = str(
-            row.get("type", "")
+            row.get(
+                "type",
+                row.get(
+                    "instrument_type",
+                    row.get("stockType", "stock"),
+                ),
+            )
         ).strip().upper()
 
         symbol = str(
-            row.get("symbol", "")
+            row.get(
+                "symbol",
+                row.get(
+                    "code",
+                    row.get("SB", ""),
+                ),
+            )
         ).strip().upper()
 
-        if exchange == "HOSE":
-            valid_board = board == "HSX"
-        else:
-            valid_board = board == "HNX"
+        # Chuẩn hóa tên sàn
+        if board in ("HSX", "HOSE", "HS"):
+            board = "HOSE"
+        elif board in ("HNX",):
+            board = "HNX"
 
-        if not valid_board:
+        # Chỉ lấy cổ phiếu cơ sở
+        valid_types = {
+            "STOCK",
+            "ST",
+            "COMMON",
+            "COMMON STOCK",
+        }
+
+        if board != exchange:
             continue
 
-        if instrument_type != "STOCK":
+        if instrument_type not in valid_types:
             continue
 
         try:
@@ -404,64 +477,7 @@ def _extract_symbols(rows, exchange):
     return sorted(set(symbols))
 
 
-def _fetch_vietcap_listing():
-    errors = []
-
-    for attempt in range(3):
-        try:
-            with httpx.Client(
-                headers=VIETCAP_HEADERS,
-                timeout=15.0,
-                follow_redirects=True,
-            ) as client:
-
-                response = client.get(
-                    VIETCAP_LISTING_URL
-                )
-
-                response.raise_for_status()
-
-                data = response.json()
-
-                if not isinstance(data, list):
-                    raise ValueError(
-                        "Dữ liệu danh sách mã không đúng định dạng."
-                    )
-
-                if not data:
-                    raise ValueError(
-                        "Danh sách mã trả về rỗng."
-                    )
-
-                return data
-
-        except Exception as exc:
-            errors.append(str(exc))
-
-            if attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
-
-    raise RuntimeError(
-        "Không lấy được danh sách mã từ Vietcap: "
-        + " | ".join(errors)
-    )
-
-
-def fetch_exchange_symbols(force_refresh=False):
-    global _SYMBOL_CACHE
-    global _SYMBOL_CACHE_AT
-
-    now = time.monotonic()
-
-    if (
-        not force_refresh
-        and _SYMBOL_CACHE is not None
-        and now - _SYMBOL_CACHE_AT < SYMBOL_CACHE_SECONDS
-    ):
-        return list(_SYMBOL_CACHE)
-
-    rows = _fetch_vietcap_listing()
-
+def _build_exchange_symbols(rows, source):
     hose = _extract_symbols(
         rows,
         "HOSE",
@@ -474,12 +490,12 @@ def fetch_exchange_symbols(force_refresh=False):
 
     if not hose:
         raise RuntimeError(
-            "Danh sách HOSE rỗng."
+            f"{source}: danh sách HOSE rỗng."
         )
 
     if not hnx:
         raise RuntimeError(
-            "Danh sách HNX rỗng."
+            f"{source}: danh sách HNX rỗng."
         )
 
     symbols = sorted(
@@ -488,23 +504,207 @@ def fetch_exchange_symbols(force_refresh=False):
 
     if not symbols:
         raise RuntimeError(
-            "Không có mã cổ phiếu hợp lệ."
+            f"{source}: không có mã cổ phiếu hợp lệ."
         )
 
-    _SYMBOL_CACHE = symbols
-    _SYMBOL_CACHE_AT = time.monotonic()
-
-    fetch_exchange_symbols.last_stats = {
+    stats = {
         "hose_count": len(hose),
         "hnx_count": len(hnx),
         "unique_count": len(symbols),
         "duplicate_count": (
             len(hose) + len(hnx) - len(symbols)
         ),
-        "source": "Vietcap public listing",
+        "source": source,
     }
 
-    return list(symbols)
+    return symbols, stats
+
+
+# =========================================================
+# NGUỒN 1: KBS
+# =========================================================
+
+def _fetch_kbs_listing():
+    errors = []
+
+    for attempt in range(2):
+        try:
+            with httpx.Client(
+                headers=LISTING_HEADERS,
+                timeout=20.0,
+                follow_redirects=True,
+            ) as client:
+
+                response = client.get(
+                    KBS_LISTING_URL
+                )
+
+                response.raise_for_status()
+
+                data = response.json()
+
+                rows = _unwrap_listing_response(data)
+
+                if not rows:
+                    raise ValueError(
+                        "KBS trả về danh sách rỗng."
+                    )
+
+                return rows
+
+        except Exception as exc:
+            errors.append(str(exc))
+
+            if attempt == 0:
+                time.sleep(1.5)
+
+    raise RuntimeError(
+        "Không lấy được danh sách mã từ KBS: "
+        + " | ".join(errors)
+    )
+
+
+# =========================================================
+# NGUỒN 2: VIETCAP DỰ PHÒNG
+# =========================================================
+
+def _fetch_vietcap_listing():
+    errors = []
+
+    for attempt in range(2):
+        try:
+            with httpx.Client(
+                headers=VIETCAP_HEADERS,
+                timeout=20.0,
+                follow_redirects=True,
+            ) as client:
+
+                response = client.get(
+                    VIETCAP_LISTING_URL
+                )
+
+                response.raise_for_status()
+
+                data = response.json()
+
+                rows = _unwrap_listing_response(data)
+
+                if not rows:
+                    raise ValueError(
+                        "Vietcap trả về danh sách rỗng."
+                    )
+
+                return rows
+
+        except Exception as exc:
+            errors.append(str(exc))
+
+            if attempt == 0:
+                time.sleep(1.5)
+
+    raise RuntimeError(
+        "Không lấy được danh sách mã từ Vietcap: "
+        + " | ".join(errors)
+    )
+
+
+# =========================================================
+# LẤY DANH SÁCH HOSE + HNX
+# =========================================================
+
+def fetch_exchange_symbols(force_refresh=False):
+    global _SYMBOL_CACHE
+    global _SYMBOL_CACHE_AT
+
+    now = time.monotonic()
+
+    # Dùng cache nếu còn hạn
+    if (
+        not force_refresh
+        and _SYMBOL_CACHE is not None
+        and now - _SYMBOL_CACHE_AT < SYMBOL_CACHE_SECONDS
+    ):
+        return list(_SYMBOL_CACHE)
+
+    errors = []
+
+    # -----------------------------------------------------
+    # Thử KBS trước
+    # -----------------------------------------------------
+
+    try:
+        rows = _fetch_kbs_listing()
+
+        symbols, stats = _build_exchange_symbols(
+            rows,
+            "KBS public listing",
+        )
+
+        _SYMBOL_CACHE = symbols
+        _SYMBOL_CACHE_AT = time.monotonic()
+
+        fetch_exchange_symbols.last_stats = stats
+
+        return list(symbols)
+
+    except Exception as exc:
+        errors.append(
+            f"KBS: {exc}"
+        )
+
+    # -----------------------------------------------------
+    # KBS lỗi thì chuyển sang Vietcap
+    # -----------------------------------------------------
+
+    try:
+        rows = _fetch_vietcap_listing()
+
+        symbols, stats = _build_exchange_symbols(
+            rows,
+            "Vietcap fallback",
+        )
+
+        _SYMBOL_CACHE = symbols
+        _SYMBOL_CACHE_AT = time.monotonic()
+
+        fetch_exchange_symbols.last_stats = stats
+
+        return list(symbols)
+
+    except Exception as exc:
+        errors.append(
+            f"Vietcap: {exc}"
+        )
+
+    # -----------------------------------------------------
+    # Cả hai nguồn lỗi: dùng cache cũ nếu có
+    # -----------------------------------------------------
+
+    if _SYMBOL_CACHE:
+        fetch_exchange_symbols.last_stats = {
+            "hose_count": None,
+            "hnx_count": None,
+            "unique_count": len(_SYMBOL_CACHE),
+            "duplicate_count": None,
+            "source": "Cache cũ - hai nguồn dữ liệu đang lỗi",
+            "warning": " | ".join(errors),
+        }
+
+        return list(_SYMBOL_CACHE)
+
+    # -----------------------------------------------------
+    # Không có cache và cả hai nguồn đều lỗi
+    # -----------------------------------------------------
+
+    fetch_exchange_symbols.last_stats = {
+        "source": "Không lấy được dữ liệu",
+        "error": " | ".join(errors),
+    }
+
+    raise RuntimeError(
+        "Không lấy được danh sách mã HOSE/HNX. "
+        + " | ".join(errors)
+    )
 
 
 fetch_exchange_symbols.last_stats = {}
