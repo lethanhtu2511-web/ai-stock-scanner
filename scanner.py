@@ -2,7 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from strategy_engine import analyze_stock, STRATEGIES
+from strategy_engine import (
+    analyze_stock as analyze_strategy_stock,
+    STRATEGIES,
+)
 
 # =====================================================
 # AI STOCK SCANNER 2.0 - D1 MULTI STRATEGY
@@ -101,7 +104,6 @@ def _risk_plan(price, atr, resistance):
 
     stop = round(price - 1.5 * atr)
 
-    # Ưu tiên kháng cự gần nhất nếu nằm phía trên giá.
     if resistance > price:
         target = round(resistance)
     else:
@@ -125,7 +127,9 @@ def _strategy_signal(result, risk_plan):
 
     if signal == "MUA":
         if risk_plan is None:
-            blockers.append("Không xác định được kế hoạch cắt lỗ/mục tiêu")
+            blockers.append(
+                "Không xác định được kế hoạch cắt lỗ/mục tiêu"
+            )
             return "CHỜ XÁC NHẬN", blockers
 
         if risk_plan["reward_risk"] < MIN_RR:
@@ -184,13 +188,13 @@ def analyze_stock(df, symbol=None):
             "reason": message,
         } for strategy in STRATEGIES]
 
-    # Thanh khoản tính trên 20 phiên trước phiên hiện tại,
-    # tránh dùng chính phiên đang được đánh giá.
     turnover = d["Close"] * d["Volume"]
     previous_turnover = turnover.shift(1).dropna().tail(20)
 
     if len(previous_turnover) < 20:
-        raise ValueError("Không đủ 20 phiên để đánh giá thanh khoản.")
+        raise ValueError(
+            "Không đủ 20 phiên để đánh giá thanh khoản."
+        )
 
     avg_turnover = float(previous_turnover.mean())
     median_turnover = float(previous_turnover.median())
@@ -207,8 +211,8 @@ def analyze_stock(df, symbol=None):
             "GTGD trung vị 20 phiên dưới 3 tỷ"
         )
 
-    # Bộ phân tích độc lập cho 3 chiến lược.
-    analysis = analyze_stock(symbol, d)
+    # Gọi bộ phân tích 3 chiến lược, không gọi lại hàm này.
+    analysis = analyze_strategy_stock(symbol, d)
 
     atr = _number(analysis.get("atr"))
     resistance = _number(analysis.get("resistance"))
@@ -272,7 +276,6 @@ def analyze_stock(df, symbol=None):
             "atr_pct": analysis.get("atr_pct"),
         }
 
-        # Chỉ đưa kế hoạch giao dịch ra kết quả khi có kế hoạch hợp lệ.
         if risk_plan is not None:
             row["stop_loss"] = risk_plan["stop_loss"]
             row["target_price"] = risk_plan["target_price"]
@@ -416,10 +419,7 @@ def scan_market(
         "watch_count": count("WATCH"),
         "skip_count": count("SKIP"),
         "filtered_count": count("FILTERED"),
-        "liquidity_filtered_count": sum(
-            item.get("signal") == "FILTERED"
-            for item in results
-        ),
+        "liquidity_filtered_count": count("FILTERED"),
         "insufficient_history_count": insufficient,
         "d1_error_count": d1_errors,
         "error_count": len(errors),
