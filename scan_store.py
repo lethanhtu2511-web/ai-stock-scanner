@@ -10,6 +10,20 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 DEFAULT_DB_PATH = "data/stock_scanner.sqlite3"
 
+SIGNAL_PRIORITY = {
+    "BUY": 5,
+    "WAIT": 4,
+    "WATCH": 3,
+    "SKIP": 2,
+    "FILTERED": 1,
+}
+
+STRATEGY_PRIORITY = {
+    "SWING": 1,
+    "REVERSAL": 2,
+    "PULLBACK": 3,
+}
+
 
 def connect(db_path=DEFAULT_DB_PATH):
     folder = os.path.dirname(db_path)
@@ -101,14 +115,22 @@ def save_scan_results(
             item.get("symbol", "")
         ).strip().upper()
 
+        strategy = str(
+            item.get("strategy", "CORE")
+        ).strip().upper()
+
+        signal = str(
+            item.get("signal", "WAIT")
+        ).strip().upper()
+
         if not symbol:
             continue
 
         rows.append((
             scanned_at,
             symbol,
-            str(item.get("strategy", "CORE")),
-            str(item.get("signal", "WAIT")),
+            strategy,
+            signal,
             _safe_number(item.get("score")),
             _safe_number(item.get("price")),
             _safe_number(item.get("stop_loss")),
@@ -139,6 +161,12 @@ def save_scan_results(
 
 
 def get_latest_scan(db_path=DEFAULT_DB_PATH):
+    """
+    Lấy kết quả mới nhất của từng cặp mã + chiến lược.
+    Mỗi mã có thể xuất hiện tối đa 3 lần:
+    SWING, REVERSAL, PULLBACK.
+    """
+
     init_scan_db(db_path)
 
     with connect(db_path) as conn:
@@ -157,13 +185,19 @@ def get_latest_scan(db_path=DEFAULT_DB_PATH):
             ORDER BY
                 CASE s.signal
                     WHEN 'BUY' THEN 5
-                    WHEN 'EARLY_BUY' THEN 4
-                    WHEN 'NEAR_BUY' THEN 3
-                    WHEN 'WAIT' THEN 2
+                    WHEN 'WAIT' THEN 4
+                    WHEN 'WATCH' THEN 3
+                    WHEN 'SKIP' THEN 2
                     WHEN 'FILTERED' THEN 1
                     ELSE 0
                 END DESC,
                 COALESCE(s.score, 0) DESC,
+                CASE s.strategy
+                    WHEN 'SWING' THEN 1
+                    WHEN 'REVERSAL' THEN 2
+                    WHEN 'PULLBACK' THEN 3
+                    ELSE 4
+                END ASC,
                 s.symbol ASC
         """).fetchall()
 
