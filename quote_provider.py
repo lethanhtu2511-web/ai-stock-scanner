@@ -6,11 +6,6 @@ from zoneinfo import ZoneInfo
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Giá được xem là mới nếu cập nhật trong vòng 180 giây.
-MAX_QUOTE_AGE_SECONDS = 180
-
-# Endpoint lịch sử giao dịch KBS.
-# Đây là nguồn thử nghiệm, có thể thay đổi hoặc ngừng hoạt động.
 KBS_TRADE_URL = (
     "https://iboard-query.kbsec.com.vn/"
     "api/Market/TradeHistory"
@@ -32,18 +27,13 @@ def _to_float(value):
 
         result = float(value)
 
-        if result <= 0:
-            return None
-
-        return result
+        return result if result > 0 else None
 
     except (TypeError, ValueError):
         return None
 
 
 def _extract_price(data):
-    """Thử nhận diện giá từ các cấu trúc JSON phổ biến."""
-
     if isinstance(data, list):
         for item in reversed(data):
             price = _extract_price(item)
@@ -51,7 +41,7 @@ def _extract_price(data):
                 return price
 
     elif isinstance(data, dict):
-        preferred_keys = [
+        keys = [
             "matchPrice",
             "matchedPrice",
             "tradePrice",
@@ -60,7 +50,7 @@ def _extract_price(data):
             "close",
         ]
 
-        for key in preferred_keys:
+        for key in keys:
             if key in data:
                 price = _to_float(data[key])
                 if price:
@@ -77,9 +67,10 @@ def _extract_price(data):
 
 def fetch_latest_trade(symbol, timeout=5):
     """
-    Lấy giá giao dịch gần nhất nếu endpoint còn hoạt động.
+    Lấy giá ứng viên từ KBS.
 
-    Trả về None nếu không lấy được dữ liệu đáng tin cậy.
+    Không xác nhận realtime vì chưa xác minh được
+    timestamp giao dịch do nguồn cung cấp.
     """
 
     symbol = str(symbol).upper().strip()
@@ -96,68 +87,75 @@ def fetch_latest_trade(symbol, timeout=5):
         )
 
         response.raise_for_status()
-        data = response.json()
 
+        data = response.json()
         price = _extract_price(data)
 
-        if not price:
+        if price is None:
             return None
 
         return {
             "symbol": symbol,
             "price": price,
             "source": "KBS",
-            "timestamp": time.time(),
-            "updated_at": datetime.now(VN_TZ).isoformat(
-                timespec="seconds"
-            ),
+            "received_at": time.time(),
+            "updated_at": datetime.now(
+                VN_TZ
+            ).isoformat(timespec="seconds"),
             "is_realtime": False,
-            "status": "CHƯA XÁC MINH THỜI GIAN DỮ LIỆU",
+            "status": "GIÁ KBS - CHƯA XÁC MINH THỜI GIAN KHỚP",
         }
 
-    except (requests.RequestException, ValueError, TypeError):
+    except (
+        requests.RequestException,
+        ValueError,
+        TypeError,
+    ):
         return None
 
 
 def get_quote(symbol, daily_price=None):
     """
-    Ưu tiên giá giao dịch gần nhất.
-    Nếu không có, dùng giá đóng cửa D1 và đánh dấu dữ liệu cũ.
+    Ưu tiên giá D1 đã có ngày dữ liệu rõ ràng.
 
-    daily_price: giá đóng cửa D1 từ data_provider.py.
+    Giá KBS chưa xác minh timestamp chỉ được trả về
+    dưới dạng thông tin tham khảo, không coi là realtime.
     """
 
     symbol = str(symbol).upper().strip()
 
-    quote = fetch_latest_trade(symbol)
-
-    if quote:
-        age = time.time() - quote["timestamp"]
-
-        if age <= MAX_QUOTE_AGE_SECONDS:
-            quote["is_realtime"] = True
-            quote["status"] = "GIÁ MỚI - CẦN ĐỐI CHIẾU NGUỒN"
-            return quote
+    kbs_quote = fetch_latest_trade(symbol)
 
     fallback_price = _to_float(daily_price)
 
-    if fallback_price is None:
+    if fallback_price is not None:
         return {
             "symbol": symbol,
-            "price": None,
-            "source": None,
+            "price": fallback_price,
+            "source": "D1",
             "timestamp": None,
             "updated_at": None,
             "is_realtime": False,
-            "status": "KHÔNG CÓ DỮ LIỆU GIÁ",
+            "status": "GIÁ ĐÓNG CỬA D1 - CẦN KIỂM TRA NGÀY DỮ LIỆU",
+            "unverified_kbs_price": (
+                kbs_quote["price"] if kbs_quote else None
+            ),
+        }
+
+    if kbs_quote:
+        return {
+            **kbs_quote,
+            "timestamp": None,
+            "status": "GIÁ KBS CHƯA XÁC MINH - KHÔNG DÙNG LÀM GIÁ REALTIME",
         }
 
     return {
         "symbol": symbol,
-        "price": fallback_price,
-        "source": "D1",
+        "price": None,
+        "source": None,
         "timestamp": None,
         "updated_at": None,
         "is_realtime": False,
-        "status": "GIÁ ĐÓNG CỬA D1 - DỮ LIỆU CÓ THỂ CŨ",
+        "status": "KHÔNG CÓ DỮ LIỆU GIÁ",
+        "unverified_kbs_price": None,
     }
