@@ -1,0 +1,28 @@
+
+services:
+  app:
+    build: .
+    container_name: ai-stock-scanner-app
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      DATABASE_PATH: /app/data/stock_scanner.sqlite3
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - stock_data:/app/data
+
+  worker:
+    build: .
+    container_name: ai-stock-scanner-worker
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    environment:
+      DATABASE_PATH: /app/data/stock_scanner.sqlite3
+      SCAN_INTERVAL: "300"
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - stock_data:/app/data
+
+volumes:
+  stock_data:
