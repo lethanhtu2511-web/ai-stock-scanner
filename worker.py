@@ -11,10 +11,18 @@ from scan_store import save_scan_results, get_scan_summary
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Dữ liệu phân tích là nến ngày D1, không phải dữ liệu realtime.
-SCAN_INTERVAL = max(60, int(os.getenv("SCAN_INTERVAL", "300")))
-MAX_SYMBOLS = max(0, int(os.getenv("MAX_SYMBOLS", "0")))
+# Kiểm tra lịch chạy định kỳ, nhưng chỉ phân tích nến ngày D1.
+SCAN_INTERVAL = max(
+    60,
+    int(os.getenv("SCAN_INTERVAL", "300"))
+)
 
+MAX_SYMBOLS = max(
+    0,
+    int(os.getenv("MAX_SYMBOLS", "0"))
+)
+
+# Chờ nến ngày hoàn tất trước khi quét.
 DAILY_SCAN_TIME = dt_time(15, 35)
 
 DB_PATH = os.getenv(
@@ -22,7 +30,10 @@ DB_PATH = os.getenv(
     "data/stock_scanner.sqlite3"
 )
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.getenv(
+    "LOG_LEVEL",
+    "INFO"
+).upper()
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -32,16 +43,17 @@ logging.basicConfig(
 logger = logging.getLogger("stock_scanner_worker")
 
 
-def is_trading_day():
-    now = datetime.now(VN_TZ)
-    return now.weekday() < 5
+STRATEGY_NAMES = {
+    "SWING": "Lướt sóng 2–5 phiên",
+    "REVERSAL": "Đảo chiều 5–10 phiên",
+    "PULLBACK": "Pullback 3–7 phiên",
+}
 
 
 def should_run_daily_scan():
     """
-    Chỉ quét sau khi nến D1 hoàn tất.
-    Nếu đã có lượt quét thành công sau 15:35 hôm nay
-    thì không quét lặp lại.
+    Chỉ quét từ 15:35 các ngày giao dịch.
+    Nếu đã có kết quả sau 15:35 hôm nay thì không quét lại.
     """
 
     now = datetime.now(VN_TZ)
@@ -61,11 +73,14 @@ def should_run_daily_scan():
 
         latest_time = datetime.fromisoformat(latest)
 
-        # Chỉ coi là đã quét hôm nay nếu lượt quét
-        # diễn ra sau thời điểm nến D1 hoàn tất.
+        if latest_time.tzinfo is None:
+            latest_time = latest_time.replace(tzinfo=VN_TZ)
+
+        latest_time = latest_time.astimezone(VN_TZ)
+
         if (
-            latest_time.astimezone(VN_TZ).date() == now.date()
-            and latest_time.astimezone(VN_TZ).time() >= DAILY_SCAN_TIME
+            latest_time.date() == now.date()
+            and latest_time.time() >= DAILY_SCAN_TIME
         ):
             return False
 
@@ -74,7 +89,7 @@ def should_run_daily_scan():
     except Exception:
         logger.exception(
             "Không kiểm tra được lịch sử quét. "
-            "Sẽ thử thực hiện lượt quét."
+            "Worker sẽ thử quét."
         )
         return True
 
@@ -86,13 +101,18 @@ def get_symbols():
         )
 
         if not symbols:
-            logger.warning("Danh sách mã cổ phiếu rỗng.")
+            logger.warning(
+                "Danh sách mã cổ phiếu rỗng."
+            )
             return []
 
         result = sorted({
             str(symbol).strip().upper()
             for symbol in symbols
-            if symbol and str(symbol).strip().isalnum()
+            if (
+                symbol
+                and str(symbol).strip().isalnum()
+            )
         })
 
         if MAX_SYMBOLS > 0:
@@ -121,9 +141,9 @@ def get_symbols():
 
 def convert_results(scan_results):
     """
-    Chỉ lưu tín hiệu tổng hợp CORE từ scanner.py.
-    Không giả lập điểm riêng cho Swing, Reversal, Pullback
-    khi chưa có bộ phân tích riêng cho từng chiến lược.
+    Chuyển kết quả scanner thành các dòng lưu SQLite.
+    Mỗi mã có tối đa 3 dòng:
+    SWING, REVERSAL, PULLBACK.
     """
 
     rows = []
@@ -133,12 +153,16 @@ def convert_results(scan_results):
             item.get("symbol", "")
         ).strip().upper()
 
-        if not symbol:
+        strategy = str(
+            item.get("strategy", "")
+        ).strip().upper()
+
+        if not symbol or strategy not in STRATEGY_NAMES:
             continue
 
         rows.append({
             "symbol": symbol,
-            "strategy": "CORE",
+            "strategy": strategy,
             "signal": item.get("signal", "WAIT"),
             "score": item.get("score"),
             "price": item.get("price"),
@@ -154,18 +178,21 @@ def run_scan():
     started = time.time()
 
     logger.info(
-        "Bắt đầu quét thị trường bằng dữ liệu D1."
+        "Bắt đầu quét HOSE/HNX bằng dữ liệu nến D1."
     )
 
     symbols = get_symbols()
 
     if not symbols:
-        logger.error("Không có mã để quét.")
+        logger.error(
+            "Không có mã cổ phiếu để quét."
+        )
         return 0
 
     logger.info(
-        "Chuẩn bị quét %s mã.",
-        len(symbols)
+        "Chuẩn bị phân tích %s mã, tối đa %s kết quả chiến lược.",
+        len(symbols),
+        len(symbols) * 3
     )
 
     def progress(current, total):
@@ -201,27 +228,49 @@ def run_scan():
 
         logger.info(
             "Hoàn thành quét D1 | "
-            "Tổng mã: %s | "
-            "BUY: %s | "
-            "EARLY_BUY: %s | "
-            "NEAR_BUY: %s | "
-            "WAIT: %s | "
-            "FILTERED: %s | "
+            "Mã đã xử lý: %s | "
+            "Tổng dòng kết quả: %s | "
+            "MUA: %s | "
+            "CHỜ: %s | "
+            "THEO DÕI: %s | "
+            "BỎ QUA: %s | "
+            "BỊ LỌC: %s | "
             "Thiếu lịch sử: %s | "
             "Lỗi dữ liệu: %s | "
             "Đã lưu: %s | "
             "Thời gian: %s giây",
             report.get("scanned", 0),
+            report.get("result_count", len(results)),
             report.get("confirmed_buy_count", 0),
-            report.get("early_buy_count", 0),
-            report.get("near_buy_count", 0),
             report.get("wait_count", 0),
+            report.get("watch_count", 0),
+            report.get("skip_count", 0),
             report.get("filtered_count", 0),
             report.get("insufficient_history_count", 0),
             report.get("d1_error_count", 0),
             saved,
             elapsed,
         )
+
+        strategy_counts = report.get(
+            "strategy_counts",
+            {}
+        )
+
+        for strategy, name in STRATEGY_NAMES.items():
+            stats = strategy_counts.get(strategy, {})
+
+            logger.info(
+                "%s | MUA: %s | CHỜ: %s | "
+                "THEO DÕI: %s | BỎ QUA: %s | "
+                "BỊ LỌC: %s",
+                name,
+                stats.get("buy", 0),
+                stats.get("wait", 0),
+                stats.get("watch", 0),
+                stats.get("skip", 0),
+                stats.get("filtered", 0),
+            )
 
         errors = report.get("errors", [])
 
@@ -242,7 +291,9 @@ def run_scan():
         return saved
 
     except Exception:
-        logger.exception("Lượt quét thất bại.")
+        logger.exception(
+            "Lượt quét D1 thất bại."
+        )
         return 0
 
 
@@ -250,11 +301,20 @@ def run_worker():
     logger.info(
         "AI Stock Scanner Worker đã khởi động."
     )
-    logger.info("Khung phân tích: D1.")
+
+    logger.info(
+        "Khung phân tích: D1."
+    )
+
+    logger.info(
+        "Ba chiến lược: SWING, REVERSAL, PULLBACK."
+    )
+
     logger.info(
         "Thời điểm quét tự động: sau %s.",
         DAILY_SCAN_TIME.strftime("%H:%M")
     )
+
     logger.info(
         "Chu kỳ kiểm tra: %s giây.",
         SCAN_INTERVAL
@@ -271,7 +331,7 @@ def run_worker():
 
                 if saved > 0:
                     logger.info(
-                        "Đã lưu %s kết quả. "
+                        "Đã lưu %s kết quả chiến lược. "
                         "Không quét lặp lại trong ngày.",
                         saved
                     )
@@ -283,7 +343,8 @@ def run_worker():
 
             else:
                 logger.info(
-                    "Chưa đến giờ quét D1 hoặc hôm nay đã quét."
+                    "Chưa đến giờ quét D1 "
+                    "hoặc hôm nay đã quét."
                 )
 
         except Exception:
