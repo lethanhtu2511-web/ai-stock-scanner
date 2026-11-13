@@ -254,7 +254,7 @@ def display_scan_table(rows):
         "Mục tiêu tham khảo",
         "Tỷ lệ lời/lỗ",
         "Lý do",
-        "scanned_at",
+        "Thời gian quét",
     ]
 
     columns = [
