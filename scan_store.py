@@ -1,24 +1,38 @@
 
 import os
 import sqlite3
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
+DEFAULT_DB_PATH = "data/stock_scanner.sqlite3"
 
-def connect(db_path="data/stock_scanner.sqlite3"):
+
+def connect(db_path=DEFAULT_DB_PATH):
     folder = os.path.dirname(db_path)
 
     if folder:
         os.makedirs(folder, exist_ok=True)
 
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(
+        db_path,
+        timeout=30,
+        check_same_thread=False,
+    )
+
     conn.row_factory = sqlite3.Row
+
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+
     return conn
 
 
-def init_scan_db(db_path="data/stock_scanner.sqlite3"):
+def init_scan_db(db_path=DEFAULT_DB_PATH):
     with connect(db_path) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scan_results (
@@ -40,8 +54,37 @@ def init_scan_db(db_path="data/stock_scanner.sqlite3"):
             ON scan_results(symbol, scanned_at)
         """)
 
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scan_strategy_symbol
+            ON scan_results(strategy, symbol, id)
+        """)
 
-def save_scan_results(results, db_path="data/stock_scanner.sqlite3"):
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scan_time
+            ON scan_results(scanned_at)
+        """)
+
+
+def _safe_number(value):
+    if value is None:
+        return None
+
+    try:
+        result = float(value)
+
+        if not math.isfinite(result):
+            return None
+
+        return result
+
+    except (TypeError, ValueError):
+        return None
+
+
+def save_scan_results(
+    results,
+    db_path=DEFAULT_DB_PATH
+):
     if not results:
         return 0
 
@@ -54,23 +97,40 @@ def save_scan_results(results, db_path="data/stock_scanner.sqlite3"):
     rows = []
 
     for item in results:
+        symbol = str(
+            item.get("symbol", "")
+        ).strip().upper()
+
+        if not symbol:
+            continue
+
         rows.append((
             scanned_at,
-            str(item.get("symbol", "")).upper(),
-            str(item.get("strategy", "DEFAULT")),
+            symbol,
+            str(item.get("strategy", "CORE")),
             str(item.get("signal", "WAIT")),
-            float(item.get("score", 0) or 0),
-            float(item.get("price", 0) or 0),
-            float(item.get("stop_loss", 0) or 0),
-            float(item.get("target_price", 0) or 0),
+            _safe_number(item.get("score")),
+            _safe_number(item.get("price")),
+            _safe_number(item.get("stop_loss")),
+            _safe_number(item.get("target_price")),
             str(item.get("reason", ""))[:1000],
         ))
+
+    if not rows:
+        return 0
 
     with connect(db_path) as conn:
         conn.executemany("""
             INSERT INTO scan_results (
-                scanned_at, symbol, strategy, signal,
-                score, price, stop_loss, target_price, reason
+                scanned_at,
+                symbol,
+                strategy,
+                signal,
+                score,
+                price,
+                stop_loss,
+                target_price,
+                reason
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
@@ -78,19 +138,33 @@ def save_scan_results(results, db_path="data/stock_scanner.sqlite3"):
     return len(rows)
 
 
-def get_latest_scan(db_path="data/stock_scanner.sqlite3"):
+def get_latest_scan(db_path=DEFAULT_DB_PATH):
     init_scan_db(db_path)
 
     with connect(db_path) as conn:
         rows = conn.execute("""
             SELECT s.*
-            FROM scan_results s
+            FROM scan_results AS s
             INNER JOIN (
-                SELECT symbol, strategy, MAX(id) AS latest_id
+                SELECT
+                    symbol,
+                    strategy,
+                    MAX(id) AS latest_id
                 FROM scan_results
                 GROUP BY symbol, strategy
-            ) latest ON s.id = latest.latest_id
-            ORDER BY s.score DESC
+            ) AS latest
+            ON s.id = latest.latest_id
+            ORDER BY
+                CASE s.signal
+                    WHEN 'BUY' THEN 5
+                    WHEN 'EARLY_BUY' THEN 4
+                    WHEN 'NEAR_BUY' THEN 3
+                    WHEN 'WAIT' THEN 2
+                    WHEN 'FILTERED' THEN 1
+                    ELSE 0
+                END DESC,
+                COALESCE(s.score, 0) DESC,
+                s.symbol ASC
         """).fetchall()
 
     return [dict(row) for row in rows]
@@ -99,7 +173,7 @@ def get_latest_scan(db_path="data/stock_scanner.sqlite3"):
 def get_scan_history(
     symbol=None,
     limit=100,
-    db_path="data/stock_scanner.sqlite3"
+    db_path=DEFAULT_DB_PATH
 ):
     init_scan_db(db_path)
 
@@ -113,7 +187,11 @@ def get_scan_history(
                 WHERE symbol = ?
                 ORDER BY id DESC
                 LIMIT ?
-            """, (str(symbol).upper(), limit)).fetchall()
+            """, (
+                str(symbol).strip().upper(),
+                limit
+            )).fetchall()
+
         else:
             rows = conn.execute("""
                 SELECT *
@@ -127,16 +205,39 @@ def get_scan_history(
 
 def clear_old_scan_results(
     days=30,
-    db_path="data/stock_scanner.sqlite3"
+    db_path=DEFAULT_DB_PATH
 ):
     init_scan_db(db_path)
 
     days = max(1, int(days))
 
+    cutoff = (
+        datetime.now(VN_TZ) - timedelta(days=days)
+    ).isoformat(timespec="seconds")
+
     with connect(db_path) as conn:
         cursor = conn.execute("""
             DELETE FROM scan_results
-            WHERE scanned_at < datetime('now', ?)
-        """, (f"-{days} days",))
+            WHERE scanned_at < ?
+        """, (cutoff,))
 
         return cursor.rowcount
+
+
+def get_scan_summary(db_path=DEFAULT_DB_PATH):
+    init_scan_db(db_path)
+
+    with connect(db_path) as conn:
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS total_rows,
+                COUNT(DISTINCT symbol) AS total_symbols,
+                MAX(scanned_at) AS latest_scan_at
+            FROM scan_results
+        """).fetchone()
+
+    return {
+        "total_rows": row["total_rows"],
+        "total_symbols": row["total_symbols"],
+        "latest_scan_at": row["latest_scan_at"],
+    }
