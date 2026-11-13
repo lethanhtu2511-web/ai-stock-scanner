@@ -7,12 +7,15 @@ from zoneinfo import ZoneInfo
 
 from data_provider import fetch_exchange_symbols
 from scanner import scan_market
-from scan_store import save_scan_results
+from scan_store import save_scan_results, get_scan_summary
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
+# Dữ liệu phân tích là nến ngày D1, không phải dữ liệu realtime.
 SCAN_INTERVAL = max(60, int(os.getenv("SCAN_INTERVAL", "300")))
 MAX_SYMBOLS = max(0, int(os.getenv("MAX_SYMBOLS", "0")))
+
+DAILY_SCAN_TIME = dt_time(15, 35)
 
 DB_PATH = os.getenv(
     "DATABASE_PATH",
@@ -29,23 +32,58 @@ logging.basicConfig(
 logger = logging.getLogger("stock_scanner_worker")
 
 
-def is_trading_time():
+def is_trading_day():
+    now = datetime.now(VN_TZ)
+    return now.weekday() < 5
+
+
+def should_run_daily_scan():
+    """
+    Chỉ quét sau khi nến D1 hoàn tất.
+    Nếu đã có lượt quét thành công sau 15:35 hôm nay
+    thì không quét lặp lại.
+    """
+
     now = datetime.now(VN_TZ)
 
     if now.weekday() >= 5:
         return False
 
-    current = now.time()
+    if now.time() < DAILY_SCAN_TIME:
+        return False
 
-    return (
-        dt_time(9, 0) <= current <= dt_time(11, 30)
-        or dt_time(13, 0) <= current <= dt_time(14, 45)
-    )
+    try:
+        summary = get_scan_summary(DB_PATH)
+        latest = summary.get("latest_scan_at")
+
+        if not latest:
+            return True
+
+        latest_time = datetime.fromisoformat(latest)
+
+        # Chỉ coi là đã quét hôm nay nếu lượt quét
+        # diễn ra sau thời điểm nến D1 hoàn tất.
+        if (
+            latest_time.astimezone(VN_TZ).date() == now.date()
+            and latest_time.astimezone(VN_TZ).time() >= DAILY_SCAN_TIME
+        ):
+            return False
+
+        return True
+
+    except Exception:
+        logger.exception(
+            "Không kiểm tra được lịch sử quét. "
+            "Sẽ thử thực hiện lượt quét."
+        )
+        return True
 
 
 def get_symbols():
     try:
-        symbols = fetch_exchange_symbols(force_refresh=False)
+        symbols = fetch_exchange_symbols(
+            force_refresh=False
+        )
 
         if not symbols:
             logger.warning("Danh sách mã cổ phiếu rỗng.")
@@ -75,23 +113,25 @@ def get_symbols():
         return result
 
     except Exception:
-        logger.exception("Không lấy được danh sách HOSE/HNX.")
+        logger.exception(
+            "Không lấy được danh sách HOSE/HNX."
+        )
         return []
 
 
 def convert_results(scan_results):
     """
-    Chuẩn hóa kết quả scanner.py sang cấu trúc scan_store.py.
-
-    Chỉ lưu tín hiệu tổng hợp của scanner.
-    Không giả lập ba chiến lược Swing, Reversal, Pullback
-    khi bộ phân tích chưa tạo ra điểm riêng cho từng chiến lược.
+    Chỉ lưu tín hiệu tổng hợp CORE từ scanner.py.
+    Không giả lập điểm riêng cho Swing, Reversal, Pullback
+    khi chưa có bộ phân tích riêng cho từng chiến lược.
     """
 
     rows = []
 
     for item in scan_results:
-        symbol = str(item.get("symbol", "")).strip().upper()
+        symbol = str(
+            item.get("symbol", "")
+        ).strip().upper()
 
         if not symbol:
             continue
@@ -100,8 +140,8 @@ def convert_results(scan_results):
             "symbol": symbol,
             "strategy": "CORE",
             "signal": item.get("signal", "WAIT"),
-            "score": item.get("score", 0),
-            "price": item.get("price", 0),
+            "score": item.get("score"),
+            "price": item.get("price"),
             "stop_loss": item.get("stop_loss"),
             "target_price": item.get("target_price"),
             "reason": item.get("reason", ""),
@@ -113,7 +153,9 @@ def convert_results(scan_results):
 def run_scan():
     started = time.time()
 
-    logger.info("Bắt đầu quét thị trường bằng dữ liệu D1.")
+    logger.info(
+        "Bắt đầu quét thị trường bằng dữ liệu D1."
+    )
 
     symbols = get_symbols()
 
@@ -121,7 +163,10 @@ def run_scan():
         logger.error("Không có mã để quét.")
         return 0
 
-    logger.info("Chuẩn bị quét %s mã.", len(symbols))
+    logger.info(
+        "Chuẩn bị quét %s mã.",
+        len(symbols)
+    )
 
     def progress(current, total):
         if current % 50 == 0 or current == total:
@@ -139,15 +184,20 @@ def run_scan():
         )
 
         results = report.get("results", [])
-
         rows = convert_results(results)
 
-        saved = save_scan_results(
-            rows,
-            db_path=DB_PATH
-        ) if rows else 0
+        saved = (
+            save_scan_results(
+                rows,
+                db_path=DB_PATH
+            )
+            if rows else 0
+        )
 
-        elapsed = round(time.time() - started, 2)
+        elapsed = round(
+            time.time() - started,
+            2
+        )
 
         logger.info(
             "Hoàn thành quét D1 | "
@@ -197,21 +247,49 @@ def run_scan():
 
 
 def run_worker():
-    logger.info("AI Stock Scanner Worker đã khởi động.")
+    logger.info(
+        "AI Stock Scanner Worker đã khởi động."
+    )
     logger.info("Khung phân tích: D1.")
-    logger.info("Chu kỳ kiểm tra: %s giây.", SCAN_INTERVAL)
+    logger.info(
+        "Thời điểm quét tự động: sau %s.",
+        DAILY_SCAN_TIME.strftime("%H:%M")
+    )
+    logger.info(
+        "Chu kỳ kiểm tra: %s giây.",
+        SCAN_INTERVAL
+    )
 
     while True:
         try:
-            if is_trading_time():
-                run_scan()
+            if should_run_daily_scan():
+                logger.info(
+                    "Đến thời điểm quét D1 trong ngày."
+                )
+
+                saved = run_scan()
+
+                if saved > 0:
+                    logger.info(
+                        "Đã lưu %s kết quả. "
+                        "Không quét lặp lại trong ngày.",
+                        saved
+                    )
+                else:
+                    logger.warning(
+                        "Chưa lưu được kết quả. "
+                        "Worker sẽ thử lại ở chu kỳ tiếp theo."
+                    )
+
             else:
                 logger.info(
-                    "Ngoài giờ giao dịch. Worker đang chờ."
+                    "Chưa đến giờ quét D1 hoặc hôm nay đã quét."
                 )
 
         except Exception:
-            logger.exception("Worker gặp lỗi không dự kiến.")
+            logger.exception(
+                "Worker gặp lỗi không dự kiến."
+            )
 
         time.sleep(SCAN_INTERVAL)
 
