@@ -13,6 +13,7 @@ from realtime_provider import (
 )
 from scan_store import save_scan_results, get_scan_summary
 
+
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 SCAN_INTERVAL = max(
@@ -152,12 +153,18 @@ def convert_results(scan_results):
         "blockers",
         "reasons",
         "penalties",
+
+        # Dữ liệu giá.
         "d1_close",
         "realtime_price",
+        "kbs_quote_price",
         "realtime_volume",
+        "quote_source_time",
         "quote_fetched_at",
+        "quote_age_seconds",
         "quote_source",
         "price_data_status",
+        "price_data_message",
     ]
 
     for item in scan_results:
@@ -213,16 +220,17 @@ def run_scan(progress_callback=None):
     """
     Một lượt quét gồm hai giai đoạn:
 
-    1. Lấy giá trong phiên từ nguồn realtime.
+    1. Lấy bảng giá KBS.
     2. Phân tích chỉ báo trên dữ liệu nến D1.
 
-    Không dùng giá D1 thay thế rồi gắn nhãn realtime.
+    Chỉ giá có timestamp nguồn hợp lệ, mới và trong giờ giao dịch
+    mới được scanner chấp nhận là giá realtime.
     """
 
     started = time.time()
 
     logger.info(
-        "Bắt đầu quét HOSE/HNX: giá trong phiên + phân tích D1."
+        "Bắt đầu quét HOSE/HNX: bảng giá KBS + phân tích D1."
     )
 
     _emit_progress(
@@ -254,7 +262,7 @@ def run_scan(progress_callback=None):
     )
 
     # -------------------------------------------------
-    # GIAI ĐOẠN 1: LẤY GIÁ TRONG PHIÊN
+    # GIAI ĐOẠN 1: LẤY BẢNG GIÁ
     # -------------------------------------------------
 
     realtime_quotes = {}
@@ -262,7 +270,7 @@ def run_scan(progress_callback=None):
     _emit_progress(
         progress_callback,
         2,
-        f"Đang lấy giá trong phiên cho {total} mã..."
+        f"Đang lấy bảng giá cho {total} mã..."
     )
 
     def quote_progress(current, quote_total):
@@ -273,7 +281,7 @@ def run_scan(progress_callback=None):
         _emit_progress(
             progress_callback,
             percent,
-            f"Đang lấy giá trong phiên: "
+            f"Đang lấy bảng giá: "
             f"{current}/{quote_total} mã"
         )
 
@@ -291,33 +299,47 @@ def run_scan(progress_callback=None):
 
         quote_count = len(realtime_quotes)
 
+        verified_count = sum(
+            1
+            for quote in realtime_quotes.values()
+            if (
+                isinstance(quote, dict)
+                and quote.get("quote_is_fresh") is True
+            )
+        )
+
         coverage = (
             quote_count / total * 100
             if total else 0
         )
 
         logger.info(
-            "Lấy được giá trong phiên: %s/%s mã (%.1f%%).",
+            "Nhận phản hồi bảng giá: %s/%s mã (%.1f%%).",
             quote_count,
             total,
             coverage
         )
 
+        logger.info(
+            "Nguồn đánh dấu giá mới: %s mã. "
+            "Scanner sẽ tự kiểm tra lại timestamp trước khi chấp nhận.",
+            verified_count
+        )
+
         if quote_count < total:
             logger.warning(
-                "Một số mã chưa có giá trong phiên. "
-                "Các mã này sẽ không được xác nhận BUY."
+                "Một số mã không có dữ liệu bảng giá."
             )
 
     except RealtimeDataError as exc:
         logger.warning(
-            "Nguồn giá trong phiên không khả dụng: %s",
+            "Nguồn giá KBS không khả dụng: %s",
             exc
         )
 
     except Exception:
         logger.exception(
-            "Lỗi khi lấy dữ liệu giá trong phiên."
+            "Lỗi khi lấy dữ liệu bảng giá."
         )
 
     quote_count = len(realtime_quotes)
@@ -325,7 +347,7 @@ def run_scan(progress_callback=None):
     _emit_progress(
         progress_callback,
         30,
-        f"Đã lấy giá trong phiên cho {quote_count}/{total} mã. "
+        f"Đã nhận dữ liệu bảng giá cho {quote_count}/{total} mã. "
         "Bắt đầu phân tích D1..."
     )
 
@@ -380,7 +402,10 @@ def run_scan(progress_callback=None):
             "Hoàn thành quét | "
             "Mã xử lý: %s | "
             "Dòng kết quả: %s | "
-            "Giá trong phiên: %s/%s | "
+            "Nhận bảng giá: %s/%s | "
+            "Realtime xác minh: %s | "
+            "Giá phiên gần nhất: %s | "
+            "Chưa xác minh: %s | "
             "MUA: %s | "
             "CHỜ: %s | "
             "THEO DÕI: %s | "
@@ -394,6 +419,9 @@ def run_scan(progress_callback=None):
             report.get("result_count", len(results)),
             quote_count,
             total,
+            report.get("realtime_count", 0),
+            report.get("last_session_count", 0),
+            report.get("unverified_quote_count", 0),
             report.get("confirmed_buy_count", 0),
             report.get("wait_count", 0),
             report.get("watch_count", 0),
@@ -473,7 +501,7 @@ def run_worker():
     )
 
     logger.info(
-        "Giá xác nhận: dữ liệu trong phiên nếu nguồn cung cấp."
+        "Giá xác nhận: chỉ dùng giá có timestamp nguồn hợp lệ."
     )
 
     logger.info(
