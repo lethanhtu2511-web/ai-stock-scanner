@@ -40,13 +40,17 @@ EXTRA_COLUMNS = {
     "reasons": "TEXT",
     "penalties": "TEXT",
 
-    # Dữ liệu giá trong phiên
+    # Giá và trạng thái dữ liệu.
     "d1_close": "REAL",
     "realtime_price": "REAL",
+    "kbs_quote_price": "REAL",
     "realtime_volume": "REAL",
+    "quote_source_time": "TEXT",
     "quote_fetched_at": "TEXT",
+    "quote_age_seconds": "REAL",
     "quote_source": "TEXT",
     "price_data_status": "TEXT",
+    "price_data_message": "TEXT",
 }
 
 
@@ -233,10 +237,14 @@ def save_scan_results(
 
             _safe_number(item.get("d1_close")),
             _safe_number(item.get("realtime_price")),
+            _safe_number(item.get("kbs_quote_price")),
             _safe_number(item.get("realtime_volume")),
+            _safe_text(item.get("quote_source_time"), 80),
             _safe_text(item.get("quote_fetched_at"), 50),
+            _safe_number(item.get("quote_age_seconds")),
             _safe_text(item.get("quote_source"), 100),
             _safe_text(item.get("price_data_status"), 30),
+            _safe_text(item.get("price_data_message"), 500),
         ))
 
     if not rows:
@@ -268,15 +276,19 @@ def save_scan_results(
                 penalties,
                 d1_close,
                 realtime_price,
+                kbs_quote_price,
                 realtime_volume,
+                quote_source_time,
                 quote_fetched_at,
+                quote_age_seconds,
                 quote_source,
-                price_data_status
+                price_data_status,
+                price_data_message
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """, rows)
 
