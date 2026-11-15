@@ -30,14 +30,12 @@ DB_PATH = os.getenv(
     "data/stock_scanner.sqlite3"
 )
 
-
 st.set_page_config(
-    page_title="AI Stock Scanner 2.0",
+    page_title="AI Stock Scanner 2.1",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 
 init_db(DB_PATH)
 init_scan_db(DB_PATH)
@@ -49,8 +47,6 @@ SIGNAL_NAMES = {
     "WATCH": "THEO DÕI",
     "SKIP": "BỎ QUA",
     "FILTERED": "BỊ LOẠI",
-    "EARLY_BUY": "MUA SỚM - CHỜ XÁC NHẬN",
-    "NEAR_BUY": "SÁT ĐIỂM MUA",
 }
 
 SIGNAL_ORDER = [
@@ -75,9 +71,13 @@ STRATEGY_ORDER = [
 ]
 
 
+# =====================================================
+# FORMAT
+# =====================================================
+
 def money(value):
     try:
-        if value is None:
+        if value is None or pd.isna(value):
             return "N/A"
 
         return f"{float(value):,.0f} đ"
@@ -88,7 +88,7 @@ def money(value):
 
 def number(value, digits=2):
     try:
-        if value is None:
+        if value is None or pd.isna(value):
             return "N/A"
 
         return f"{float(value):,.{digits}f}"
@@ -96,6 +96,24 @@ def number(value, digits=2):
     except (TypeError, ValueError):
         return "N/A"
 
+
+def safe_list(value):
+    if isinstance(value, list):
+        return value
+
+    return []
+
+
+def current_strategy_rows(rows):
+    return [
+        row for row in rows
+        if row.get("strategy") in STRATEGY_ORDER
+    ]
+
+
+# =====================================================
+# STOCK QUOTES
+# =====================================================
 
 def extract_price(raw):
     if raw is None:
@@ -151,6 +169,10 @@ def get_daily_quote(symbol):
         }
 
 
+# =====================================================
+# PORTFOLIO
+# =====================================================
+
 def load_positions_with_prices():
     positions = get_positions(DB_PATH)
 
@@ -180,7 +202,8 @@ def load_positions_with_prices():
 
         pnl_percent = (
             unrealized_pnl / cost_value * 100
-            if unrealized_pnl is not None and cost_value > 0
+            if unrealized_pnl is not None
+            and cost_value > 0
             else None
         )
 
@@ -188,6 +211,7 @@ def load_positions_with_prices():
             "Mã": symbol,
             "Khối lượng": quantity,
             "Giá vốn bình quân": position["avg_cost"],
+            "Tổng giá vốn": cost_value,
             "Giá đóng cửa D1": current_price,
             "Ngày dữ liệu": quote["quote_date"],
             "Giá trị thị trường": market_value,
@@ -198,21 +222,61 @@ def load_positions_with_prices():
     return rows
 
 
-def current_strategy_rows(rows):
-    """
-    Chỉ lấy ba chiến lược mới.
-    Không đưa kết quả CORE cũ vào thống kê mới.
-    """
+def show_portfolio_summary():
+    summary = get_portfolio_summary(DB_PATH)
+    positions = load_positions_with_prices()
 
-    return [
-        row for row in rows
-        if row.get("strategy") in STRATEGY_ORDER
-    ]
+    total_market_value = sum(
+        row["Giá trị thị trường"] or 0
+        for row in positions
+    )
 
+    total_unrealized = sum(
+        row["Lãi/lỗ tạm tính"] or 0
+        for row in positions
+    )
+
+    st.subheader("Tổng quan tài sản")
+
+    col1, col2 = st.columns(2)
+
+    col1.metric(
+        "Tổng giá vốn còn nắm giữ",
+        money(summary["total_cost"]),
+    )
+
+    col2.metric(
+        "Giá trị thị trường",
+        money(total_market_value),
+    )
+
+    col3, col4 = st.columns(2)
+
+    col3.metric(
+        "Lãi/lỗ tạm tính",
+        money(total_unrealized),
+    )
+
+    col4.metric(
+        "Lãi/lỗ đã thực hiện",
+        money(summary["realized_pnl"]),
+    )
+
+    st.metric(
+        "Số cổ phiếu đang nắm giữ",
+        f"{summary['open_quantity']:,}",
+    )
+
+    return positions
+
+
+# =====================================================
+# SCAN RESULT DISPLAY
+# =====================================================
 
 def display_scan_table(rows):
     if not rows:
-        st.info("Chưa có kết quả quét.")
+        st.info("Không có kết quả.")
         return
 
     df = pd.DataFrame(rows)
@@ -233,13 +297,21 @@ def display_scan_table(rows):
 
     rename = {
         "symbol": "Mã",
-        "score": "Điểm",
+        "score": "Điểm kỹ thuật",
         "price": "Giá D1",
-        "stop_loss": "Cắt lỗ tham khảo",
-        "target_price": "Mục tiêu tham khảo",
-        "reward_risk": "Tỷ lệ lời/lỗ",
+        "stop_loss": "Cắt lỗ",
+        "target_price": "Mục tiêu",
+        "reward_risk": "RR sau phí",
         "reason": "Lý do",
         "scanned_at": "Thời gian quét",
+        "data_date": "Ngày dữ liệu",
+        "stop_distance_pct": "Rủi ro %",
+        "target_distance_pct": "Tiềm năng %",
+        "atr_pct": "ATR %",
+        "relative_strength": "Sức mạnh vs VN-Index %",
+        "market_context": "Bối cảnh thị trường",
+        "avg_turnover_20d": "GTGD TB 20 phiên",
+        "median_turnover_20d": "GTGD trung vị 20 phiên",
     }
 
     df = df.rename(columns=rename)
@@ -248,11 +320,15 @@ def display_scan_table(rows):
         "Mã",
         "Chiến lược",
         "Tín hiệu",
-        "Điểm",
+        "Điểm kỹ thuật",
         "Giá D1",
-        "Cắt lỗ tham khảo",
-        "Mục tiêu tham khảo",
-        "Tỷ lệ lời/lỗ",
+        "Cắt lỗ",
+        "Mục tiêu",
+        "RR sau phí",
+        "Rủi ro %",
+        "Tiềm năng %",
+        "Ngày dữ liệu",
+        "GTGD TB 20 phiên",
         "Lý do",
         "Thời gian quét",
     ]
@@ -274,7 +350,7 @@ def display_scan_table(rows):
 
 def show_strategy_metrics(df):
     if df.empty:
-        st.info("Chưa có kết quả của ba chiến lược mới.")
+        st.info("Chưa có kết quả.")
         return
 
     st.subheader("Thống kê theo chiến lược")
@@ -300,7 +376,7 @@ def show_strategy_metrics(df):
 
         cols[index].metric(
             STRATEGY_NAMES[strategy],
-            f"{buy_count} mã MUA"
+            f"{buy_count} mã MUA",
         )
 
         cols[index].caption(
@@ -308,64 +384,93 @@ def show_strategy_metrics(df):
         )
 
 
-def show_dashboard():
-    st.title("📈 AI STOCK SCANNER 2.0")
-
-    st.caption(
-        "Phân tích cổ phiếu HOSE/HNX bằng dữ liệu D1 "
-        "và quản lý danh mục đầu tư."
+def show_signal_explanation(row):
+    st.subheader(
+        f"Phân tích chi tiết: {row.get('symbol', '')}"
     )
 
-    settings = get_settings(DB_PATH)
-    summary = get_portfolio_summary(DB_PATH)
-
-    positions = load_positions_with_prices()
-
-    total_market_value = sum(
-        row["Giá trị thị trường"] or 0
-        for row in positions
+    st.write(
+        f"**Chiến lược:** "
+        f"{STRATEGY_NAMES.get(row.get('strategy'), row.get('strategy'))}"
     )
 
-    total_unrealized = sum(
-        row["Lãi/lỗ tạm tính"] or 0
-        for row in positions
+    st.write(
+        f"**Tín hiệu:** "
+        f"{SIGNAL_NAMES.get(row.get('signal'), row.get('signal'))}"
     )
 
-    col1, col2 = st.columns(2)
+    st.write(
+        f"**Điểm kỹ thuật:** "
+        f"{number(row.get('score'), 0)}/100"
+    )
+
+    st.write(
+        f"**Giá D1:** {money(row.get('price'))}"
+    )
+
+    st.write(
+        f"**Ngày dữ liệu:** "
+        f"{row.get('data_date') or 'Không có dữ liệu'}"
+    )
+
+    col1, col2, col3 = st.columns(3)
 
     col1.metric(
-        "Vốn cấu hình",
-        money(settings["capital"])
+        "Cắt lỗ",
+        money(row.get("stop_loss")),
     )
 
     col2.metric(
-        "Tổng giá vốn còn nắm giữ",
-        money(summary["total_cost"])
+        "Mục tiêu",
+        money(row.get("target_price")),
     )
-
-    col3, col4 = st.columns(2)
 
     col3.metric(
-        "Giá trị thị trường",
-        money(total_market_value)
+        "RR sau phí",
+        number(row.get("reward_risk")),
     )
 
-    col4.metric(
-        "Lãi/lỗ tạm tính",
-        money(total_unrealized)
+    blockers = safe_list(row.get("blockers"))
+    reasons = safe_list(row.get("reasons"))
+    penalties = safe_list(row.get("penalties"))
+
+    if reasons:
+        st.markdown("**Điều kiện đã đạt**")
+
+        for item in reasons:
+            st.write(f"✓ {item}")
+
+    if blockers:
+        st.markdown("**Điều kiện chưa đạt**")
+
+        for item in blockers:
+            st.write(f"• {item}")
+
+    if penalties:
+        st.markdown("**Điểm cần thận trọng**")
+
+        for item in penalties:
+            st.write(f"• {item}")
+
+    st.caption(
+        "Điểm kỹ thuật không phải xác suất thắng. "
+        "Tín hiệu MUA không bảo đảm lợi nhuận."
     )
 
-    col5, col6 = st.columns(2)
 
-    col5.metric(
-        "Lãi/lỗ đã thực hiện",
-        money(summary["realized_pnl"])
+# =====================================================
+# DASHBOARD
+# =====================================================
+
+def show_dashboard():
+    st.title("📈 AI STOCK SCANNER 2.1")
+
+    st.caption(
+        "Phân tích HOSE/HNX bằng dữ liệu nến ngày D1 "
+        "và quản lý danh mục."
     )
 
-    col6.metric(
-        "Số cổ phiếu đang nắm giữ",
-        f"{summary['open_quantity']:,}"
-    )
+    positions = show_portfolio_summary()
 
     st.divider()
 
@@ -379,8 +484,8 @@ def show_dashboard():
         )
 
         st.caption(
-            "Giá tham chiếu lấy từ nến ngày D1 gần nhất. "
-            "Không phải giá realtime."
+            "Giá tham chiếu lấy từ nến ngày D1 gần nhất, "
+            "không phải giá realtime."
         )
 
     else:
@@ -410,53 +515,56 @@ def show_dashboard():
         )
 
 
+# =====================================================
+# SCANNER
+# =====================================================
+
 def show_scanner():
     st.title("🔎 QUÉT CỔ PHIẾU")
 
     st.info(
-        "Phân tích ba chiến lược độc lập bằng nến ngày D1: "
-        "Swing 2–5 phiên, Đảo chiều 5–10 phiên "
-        "và Pullback 3–7 phiên."
+        "Ba chiến lược độc lập: Swing 2–5 phiên, "
+        "Đảo chiều 5–10 phiên và Pullback 3–7 phiên."
     )
 
     st.caption(
-        "Bộ lọc yêu cầu tối thiểu 200 phiên lịch sử, "
-        "thanh khoản bình quân và trung vị đạt ngưỡng. "
-        "Tín hiệu MUA còn phải đạt tỷ lệ lời/lỗ tối thiểu 2."
+        "Yêu cầu tối thiểu 200 phiên lịch sử và thanh khoản đạt ngưỡng. "
+        "Mỗi chiến lược có kế hoạch cắt lỗ/mục tiêu riêng. "
+        "MUA cần RR sau phí tối thiểu 2."
     )
 
     st.warning(
-        "Tín hiệu kỹ thuật không bảo đảm lợi nhuận. "
-        "Giá, điểm cắt lỗ và mục tiêu đều là tham khảo từ dữ liệu D1."
+        "Điểm kỹ thuật không phải xác suất thắng. "
+        "VN-Index chưa được đưa vào mô hình nếu dữ liệu chỉ số "
+        "chưa được kết nối."
     )
 
     if st.button(
         "🚀 QUÉT THỊ TRƯỜNG NGAY",
         use_container_width=True,
     ):
-        with st.spinner(
-            "Đang quét HOSE/HNX bằng dữ liệu D1. "
-            "Quá trình có thể mất vài phút..."
-        ):
-            try:
+        try:
+            with st.spinner(
+                "Đang quét HOSE/HNX bằng dữ liệu D1. "
+                "Quá trình có thể mất vài phút..."
+            ):
                 saved = run_scan()
 
-                if saved > 0:
-                    st.success(
-                        f"Đã hoàn thành. Lưu {saved} kết quả chiến lược."
-                    )
-                    get_daily_quote.clear()
+            get_daily_quote.clear()
 
-                else:
-                    st.warning(
-                        "Lượt quét chưa lưu được kết quả. "
-                        "Kiểm tra nhật ký worker hoặc nguồn dữ liệu."
-                    )
+            if saved > 0:
+                st.success(
+                    f"Hoàn thành lượt quét. "
+                    f"Đã lưu {saved:,} kết quả chiến lược."
+                )
+            else:
+                st.warning(
+                    "Lượt quét không lưu được kết quả. "
+                    "Vui lòng kiểm tra Cloud logs."
+                )
 
-                st.rerun()
-
-            except Exception as exc:
-                st.error(f"Quét thất bại: {exc}")
+        except Exception as exc:
+            st.error(f"Quét thất bại: {exc}")
 
     st.divider()
 
@@ -486,15 +594,92 @@ def show_scanner():
     for index, signal in enumerate(SIGNAL_ORDER):
         cols[index].metric(
             SIGNAL_NAMES[signal],
-            int(signal_counts.get(signal, 0))
+            int(signal_counts.get(signal, 0)),
         )
 
     st.caption(
-        "Thống kê tính theo số dòng chiến lược, "
+        "Thống kê theo số dòng chiến lược, "
         "không phải số mã cổ phiếu duy nhất."
     )
 
     st.divider()
+
+    # -------------------------------------------------
+    # SHORTLIST
+    # -------------------------------------------------
+
+    st.subheader("⭐ Danh sách ưu tiên theo dõi")
+
+    candidates = df[
+        df["signal"].isin(["BUY", "WAIT"])
+    ].copy()
+
+    if not candidates.empty:
+        candidates["_signal_rank"] = (
+            candidates["signal"]
+            .map({"BUY": 0, "WAIT": 1})
+        )
+
+        candidates["_rr"] = pd.to_numeric(
+            candidates["reward_risk"],
+            errors="coerce",
+        )
+
+        candidates = candidates.sort_values(
+            [
+                "_signal_rank",
+                "score",
+                "_rr",
+            ],
+            ascending=[True, False, False],
+            na_position="last",
+        )
+
+        display_scan_table(
+            candidates.head(15).drop(
+                columns=["_signal_rank", "_rr"]
+            ).to_dict("records")
+        )
+
+        st.markdown("**Xem lý do của từng mã**")
+
+        candidate_options = [
+            (
+                f"{row['symbol']} - "
+                f"{STRATEGY_NAMES.get(row['strategy'], row['strategy'])} "
+                f"- {SIGNAL_NAMES.get(row['signal'], row['signal'])} "
+                f"- {row.get('score', 0)} điểm"
+            )
+            for _, row in candidates.head(30).iterrows()
+        ]
+
+        selected_candidate = st.selectbox(
+            "Chọn mã cần phân tích chi tiết",
+            candidate_options,
+            key="candidate_detail",
+        )
+
+        selected_index = candidate_options.index(
+            selected_candidate
+        )
+
+        selected_row = candidates.head(30).iloc[
+            selected_index
+        ].to_dict()
+
+        show_signal_explanation(selected_row)
+
+    else:
+        st.info(
+            "Hiện chưa có mã MUA hoặc CHỜ. "
+            "Không có tín hiệu cũng là một kết quả hợp lệ."
+        )
+
+    st.divider()
+
+    # -------------------------------------------------
+    # FILTERS
+    # -------------------------------------------------
 
     st.subheader("Lọc kết quả")
 
@@ -552,13 +737,12 @@ def show_scanner():
         step=5,
     )
 
-    if "score" in filtered.columns:
-        filtered = filtered[
-            pd.to_numeric(
-                filtered["score"],
-                errors="coerce"
-            ).fillna(0) >= min_score
-        ]
+    filtered = filtered[
+        pd.to_numeric(
+            filtered["score"],
+            errors="coerce",
+        ).fillna(0) >= min_score
+    ]
 
     if filtered.empty:
         st.info("Không có kết quả phù hợp bộ lọc.")
@@ -573,6 +757,10 @@ def show_scanner():
 
     st.divider()
 
+    # -------------------------------------------------
+    # HISTORY
+    # -------------------------------------------------
+
     st.subheader("Lịch sử quét")
 
     history = get_scan_history(
@@ -583,17 +771,14 @@ def show_scanner():
     history = current_strategy_rows(history)
 
     if history:
-        history_df = pd.DataFrame(history)
-
-        display_scan_table(
-            history_df.to_dict("records")
-        )
-
+        display_scan_table(history)
     else:
-        st.info(
-            "Chưa có lịch sử của ba chiến lược mới."
-        )
+        st.info("Chưa có lịch sử của ba chiến lược mới.")
 
+
+# =====================================================
+# PORTFOLIO
+# =====================================================
 
 def show_portfolio():
     st.title("💼 QUẢN LÝ DANH MỤC")
@@ -602,6 +787,12 @@ def show_portfolio():
         "Bot chỉ ghi nhận giao dịch do bạn nhập. "
         "Không tự động đặt lệnh mua hoặc bán."
     )
+
+    st.subheader("Tổng quan danh mục")
+
+    positions = show_portfolio_summary()
+
+    st.divider()
 
     st.subheader("Ghi nhận giao dịch")
 
@@ -763,26 +954,28 @@ def show_portfolio():
             use_container_width=True,
             hide_index=True,
         )
-
     else:
         st.info("Chưa có giao dịch nào được ghi nhận.")
 
+
+# =====================================================
+# SETTINGS
+# =====================================================
 
 def show_settings():
     st.title("⚙️ CÀI ĐẶT HỆ THỐNG")
 
     settings = get_settings(DB_PATH)
 
-    st.subheader("Quản lý vốn và rủi ro")
+    st.subheader("Quản lý rủi ro")
+
+    st.caption(
+        "Không sử dụng vốn mặc định cố định. "
+        "Giá vốn danh mục được tính từ giá trị còn lại "
+        "của các cổ phiếu đang nắm giữ."
+    )
 
     with st.form("settings_form"):
-        capital = st.number_input(
-            "Tổng vốn đầu tư (đồng)",
-            min_value=1_000_000,
-            value=int(settings["capital"]),
-            step=1_000_000,
-        )
-
         risk_pct = st.number_input(
             "Rủi ro tối đa mỗi giao dịch (%)",
             min_value=0.1,
@@ -824,7 +1017,6 @@ def show_settings():
 
     if saved:
         save_settings({
-            "capital": capital,
             "risk_pct": risk_pct,
             "fee_buy": fee_buy / 100,
             "fee_sell": fee_sell / 100,
@@ -843,12 +1035,16 @@ def show_settings():
 
     st.subheader("Thông tin hệ thống")
 
-    st.write("Phiên bản: AI Stock Scanner 2.0")
+    st.write("Phiên bản: AI Stock Scanner 2.1")
     st.write("Thị trường: HOSE / HNX")
     st.write("Khung phân tích: D1")
     st.write("Chiến lược: Swing / Reversal / Pullback")
     st.write("Tự động đặt lệnh: Không")
 
+
+# =====================================================
+# MAIN
+# =====================================================
 
 def main():
     with st.sidebar:
@@ -866,7 +1062,7 @@ def main():
 
         st.divider()
 
-        st.caption("AI Stock Scanner 2.0")
+        st.caption("AI Stock Scanner 2.1")
         st.caption("Phân tích kỹ thuật D1")
 
     if page == "Tổng quan":
