@@ -7,11 +7,14 @@ from zoneinfo import ZoneInfo
 
 from data_provider import fetch_exchange_symbols
 from scanner import scan_market
+from realtime_provider import (
+    fetch_realtime_quotes,
+    RealtimeDataError,
+)
 from scan_store import save_scan_results, get_scan_summary
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Kiểm tra lịch chạy định kỳ, nhưng chỉ phân tích nến ngày D1.
 SCAN_INTERVAL = max(
     60,
     int(os.getenv("SCAN_INTERVAL", "300"))
@@ -22,7 +25,6 @@ MAX_SYMBOLS = max(
     int(os.getenv("MAX_SYMBOLS", "0"))
 )
 
-# Chờ nến ngày hoàn tất trước khi quét.
 DAILY_SCAN_TIME = dt_time(15, 35)
 
 DB_PATH = os.getenv(
@@ -51,10 +53,7 @@ STRATEGY_NAMES = {
 
 
 def should_run_daily_scan():
-    """
-    Chỉ quét từ 15:35 các ngày giao dịch.
-    Nếu đã có kết quả sau 15:35 hôm nay thì không quét lại.
-    """
+    """Chỉ quét tự động sau 15:35 các ngày trong tuần."""
 
     now = datetime.now(VN_TZ)
 
@@ -78,18 +77,14 @@ def should_run_daily_scan():
 
         latest_time = latest_time.astimezone(VN_TZ)
 
-        if (
+        return not (
             latest_time.date() == now.date()
             and latest_time.time() >= DAILY_SCAN_TIME
-        ):
-            return False
-
-        return True
+        )
 
     except Exception:
         logger.exception(
-            "Không kiểm tra được lịch sử quét. "
-            "Worker sẽ thử quét."
+            "Không kiểm tra được lịch sử quét."
         )
         return True
 
@@ -140,13 +135,30 @@ def get_symbols():
 
 
 def convert_results(scan_results):
-    """
-    Chuyển kết quả scanner thành các dòng lưu SQLite.
-    Mỗi mã có tối đa 3 dòng:
-    SWING, REVERSAL, PULLBACK.
-    """
+    """Chuẩn hóa kết quả trước khi lưu SQLite."""
 
     rows = []
+
+    fields = [
+        "data_date",
+        "reward_risk",
+        "stop_distance_pct",
+        "target_distance_pct",
+        "atr_pct",
+        "relative_strength",
+        "avg_turnover_20d",
+        "median_turnover_20d",
+        "market_context",
+        "blockers",
+        "reasons",
+        "penalties",
+        "d1_close",
+        "realtime_price",
+        "realtime_volume",
+        "quote_fetched_at",
+        "quote_source",
+        "price_data_status",
+    ]
 
     for item in scan_results:
         symbol = str(
@@ -160,7 +172,7 @@ def convert_results(scan_results):
         if not symbol or strategy not in STRATEGY_NAMES:
             continue
 
-        rows.append({
+        row = {
             "symbol": symbol,
             "strategy": strategy,
             "signal": item.get("signal", "WAIT"),
@@ -169,16 +181,54 @@ def convert_results(scan_results):
             "stop_loss": item.get("stop_loss"),
             "target_price": item.get("target_price"),
             "reason": item.get("reason", ""),
-        })
+        }
+
+        for field in fields:
+            if field in item:
+                row[field] = item[field]
+
+        rows.append(row)
 
     return rows
 
 
-def run_scan():
+def _emit_progress(callback, percent, message):
+    """Gửi tiến độ cho giao diện; lỗi giao diện không làm hỏng lượt quét."""
+
+    if callback is None:
+        return
+
+    try:
+        callback(
+            max(0, min(100, int(percent))),
+            str(message),
+        )
+    except Exception:
+        logger.exception(
+            "Không cập nhật được tiến độ giao diện."
+        )
+
+
+def run_scan(progress_callback=None):
+    """
+    Một lượt quét gồm hai giai đoạn:
+
+    1. Lấy giá trong phiên từ nguồn realtime.
+    2. Phân tích chỉ báo trên dữ liệu nến D1.
+
+    Không dùng giá D1 thay thế rồi gắn nhãn realtime.
+    """
+
     started = time.time()
 
     logger.info(
-        "Bắt đầu quét HOSE/HNX bằng dữ liệu nến D1."
+        "Bắt đầu quét HOSE/HNX: giá trong phiên + phân tích D1."
+    )
+
+    _emit_progress(
+        progress_callback,
+        0,
+        "Đang lấy danh sách cổ phiếu..."
     )
 
     symbols = get_symbols()
@@ -187,30 +237,130 @@ def run_scan():
         logger.error(
             "Không có mã cổ phiếu để quét."
         )
+
+        _emit_progress(
+            progress_callback,
+            100,
+            "Không lấy được danh sách cổ phiếu."
+        )
+
         return 0
 
+    total = len(symbols)
+
     logger.info(
-        "Chuẩn bị phân tích %s mã, tối đa %s kết quả chiến lược.",
-        len(symbols),
-        len(symbols) * 3
+        "Chuẩn bị quét %s mã.",
+        total
     )
 
-    def progress(current, total):
-        if current % 50 == 0 or current == total:
+    # -------------------------------------------------
+    # GIAI ĐOẠN 1: LẤY GIÁ TRONG PHIÊN
+    # -------------------------------------------------
+
+    realtime_quotes = {}
+
+    _emit_progress(
+        progress_callback,
+        2,
+        f"Đang lấy giá trong phiên cho {total} mã..."
+    )
+
+    def quote_progress(current, quote_total):
+        percent = (
+            5 + 25 * current / max(quote_total, 1)
+        )
+
+        _emit_progress(
+            progress_callback,
+            percent,
+            f"Đang lấy giá trong phiên: "
+            f"{current}/{quote_total} mã"
+        )
+
+    try:
+        realtime_quotes = fetch_realtime_quotes(
+            symbols,
+            progress_callback=quote_progress,
+        )
+
+        realtime_quotes = (
+            realtime_quotes
+            if isinstance(realtime_quotes, dict)
+            else {}
+        )
+
+        quote_count = len(realtime_quotes)
+
+        coverage = (
+            quote_count / total * 100
+            if total else 0
+        )
+
+        logger.info(
+            "Lấy được giá trong phiên: %s/%s mã (%.1f%%).",
+            quote_count,
+            total,
+            coverage
+        )
+
+        if quote_count < total:
+            logger.warning(
+                "Một số mã chưa có giá trong phiên. "
+                "Các mã này sẽ không được xác nhận BUY."
+            )
+
+    except RealtimeDataError as exc:
+        logger.warning(
+            "Nguồn giá trong phiên không khả dụng: %s",
+            exc
+        )
+
+    except Exception:
+        logger.exception(
+            "Lỗi khi lấy dữ liệu giá trong phiên."
+        )
+
+    quote_count = len(realtime_quotes)
+
+    _emit_progress(
+        progress_callback,
+        30,
+        f"Đã lấy giá trong phiên cho {quote_count}/{total} mã. "
+        "Bắt đầu phân tích D1..."
+    )
+
+    # -------------------------------------------------
+    # GIAI ĐOẠN 2: PHÂN TÍCH D1
+    # -------------------------------------------------
+
+    def d1_progress(current, d1_total):
+        percent = (
+            30 + 70 * current / max(d1_total, 1)
+        )
+
+        _emit_progress(
+            progress_callback,
+            percent,
+            f"Đang phân tích D1: {current}/{d1_total} mã"
+        )
+
+        if current % 50 == 0 or current == d1_total:
             logger.info(
-                "Tiến độ: %s/%s mã",
+                "Tiến độ phân tích D1: %s/%s mã",
                 current,
-                total
+                d1_total
             )
 
     try:
         report = scan_market(
             max_symbols=None,
-            progress_callback=progress,
+            progress_callback=d1_progress,
             symbols=symbols,
+            realtime_quotes=realtime_quotes,
         )
 
         results = report.get("results", [])
+
         rows = convert_results(results)
 
         saved = (
@@ -227,20 +377,23 @@ def run_scan():
         )
 
         logger.info(
-            "Hoàn thành quét D1 | "
-            "Mã đã xử lý: %s | "
-            "Tổng dòng kết quả: %s | "
+            "Hoàn thành quét | "
+            "Mã xử lý: %s | "
+            "Dòng kết quả: %s | "
+            "Giá trong phiên: %s/%s | "
             "MUA: %s | "
             "CHỜ: %s | "
             "THEO DÕI: %s | "
             "BỎ QUA: %s | "
             "BỊ LỌC: %s | "
             "Thiếu lịch sử: %s | "
-            "Lỗi dữ liệu: %s | "
+            "Lỗi D1: %s | "
             "Đã lưu: %s | "
             "Thời gian: %s giây",
             report.get("scanned", 0),
             report.get("result_count", len(results)),
+            quote_count,
+            total,
             report.get("confirmed_buy_count", 0),
             report.get("wait_count", 0),
             report.get("watch_count", 0),
@@ -288,12 +441,25 @@ def run_scan():
                 len(errors) - 10
             )
 
+        _emit_progress(
+            progress_callback,
+            100,
+            f"Hoàn thành: đã lưu {saved} dòng kết quả."
+        )
+
         return saved
 
     except Exception:
         logger.exception(
-            "Lượt quét D1 thất bại."
+            "Lượt quét thất bại."
         )
+
+        _emit_progress(
+            progress_callback,
+            100,
+            "Quét thất bại. Hãy kiểm tra nhật ký lỗi."
+        )
+
         return 0
 
 
@@ -303,7 +469,11 @@ def run_worker():
     )
 
     logger.info(
-        "Khung phân tích: D1."
+        "Chỉ báo kỹ thuật: D1."
+    )
+
+    logger.info(
+        "Giá xác nhận: dữ liệu trong phiên nếu nguồn cung cấp."
     )
 
     logger.info(
@@ -324,14 +494,14 @@ def run_worker():
         try:
             if should_run_daily_scan():
                 logger.info(
-                    "Đến thời điểm quét D1 trong ngày."
+                    "Đến thời điểm quét tự động trong ngày."
                 )
 
                 saved = run_scan()
 
                 if saved > 0:
                     logger.info(
-                        "Đã lưu %s kết quả chiến lược. "
+                        "Đã lưu %s kết quả. "
                         "Không quét lặp lại trong ngày.",
                         saved
                     )
@@ -343,8 +513,7 @@ def run_worker():
 
             else:
                 logger.info(
-                    "Chưa đến giờ quét D1 "
-                    "hoặc hôm nay đã quét."
+                    "Chưa đến giờ quét hoặc hôm nay đã quét."
                 )
 
         except Exception:
