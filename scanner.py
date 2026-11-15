@@ -8,7 +8,7 @@ from strategy_engine import (
 )
 
 # =====================================================
-# AI STOCK SCANNER 2.1 - D1 MULTI STRATEGY
+# AI STOCK SCANNER 2.2 - D1 + REALTIME PRICE
 # =====================================================
 
 MIN_HISTORY = 200
@@ -25,7 +25,6 @@ BLOCKED = {
     "NVB": "Mã bị chặn thủ công",
 }
 
-# Mỗi chiến lược có kế hoạch quản trị rủi ro riêng.
 RISK_CONFIG = {
     "SWING": {
         "stop_atr": 1.5,
@@ -41,6 +40,10 @@ RISK_CONFIG = {
     },
 }
 
+
+# =====================================================
+# UTILITIES
+# =====================================================
 
 def _number(value, default=0.0):
     try:
@@ -115,6 +118,40 @@ def _validate_history(df):
     return d
 
 
+# =====================================================
+# REALTIME QUOTE VALIDATION
+# =====================================================
+
+def _validate_realtime_quote(symbol, quote):
+    if not isinstance(quote, dict):
+        return None
+
+    quote_symbol = str(
+        quote.get("symbol", "")
+    ).strip().upper()
+
+    if quote_symbol and quote_symbol != symbol:
+        return None
+
+    price = _number(
+        quote.get("price"),
+        default=0.0,
+    )
+
+    if price <= 0:
+        return None
+
+    return {
+        **quote,
+        "symbol": symbol,
+        "price": price,
+    }
+
+
+# =====================================================
+# RISK / REWARD
+# =====================================================
+
 def _net_rr(price, stop, target):
     """
     Tính tỷ lệ lợi nhuận/rủi ro sau phí,
@@ -143,14 +180,6 @@ def _net_rr(price, stop, target):
 
 
 def _risk_plan(price, atr, resistance, strategy):
-    """
-    Xây dựng kế hoạch rủi ro riêng cho từng chiến lược.
-
-    Kháng cự gần được ưu tiên làm mục tiêu.
-    Nếu kháng cự quá gần khiến RR không đạt,
-    tín hiệu sẽ không được xác nhận MUA.
-    """
-
     config = RISK_CONFIG.get(strategy)
 
     if not config or price <= 0 or atr <= 0:
@@ -195,6 +224,10 @@ def _risk_plan(price, atr, resistance, strategy):
     }
 
 
+# =====================================================
+# SIGNAL
+# =====================================================
+
 def _strategy_signal(detail, risk_plan):
     signal = detail.get(
         "signal",
@@ -203,10 +236,6 @@ def _strategy_signal(detail, risk_plan):
 
     blockers = list(
         detail.get("blockers", [])
-    )
-
-    penalties = list(
-        detail.get("penalties", [])
     )
 
     if signal == "MUA":
@@ -277,7 +306,15 @@ def _make_reason(signal, blockers, reasons, penalties):
     )
 
 
-def analyze_stock(df, symbol=None):
+# =====================================================
+# ANALYZE ONE STOCK
+# =====================================================
+
+def analyze_stock(
+    df,
+    symbol=None,
+    realtime_quote=None,
+):
     symbol = str(
         symbol or ""
     ).strip().upper()
@@ -297,10 +334,12 @@ def analyze_stock(df, symbol=None):
     d = _validate_history(df)
 
     last = d.iloc[-1]
-    price = float(last["Close"])
+
+    d1_close = float(last["Close"])
     data_date = pd.Timestamp(last["Date"])
 
     today = pd.Timestamp.now().normalize()
+
     age = (
         today - data_date.normalize()
     ).days
@@ -315,11 +354,42 @@ def analyze_stock(df, symbol=None):
             "strategy": strategy,
             "signal": "WAIT",
             "score": 0,
-            "price": round(price),
+            "price": round(d1_close),
+            "d1_close": round(d1_close),
             "data_date": data_date.strftime("%d/%m/%Y"),
+            "price_data_status": "D1_STALE",
             "reason": message,
             "blockers": [message],
         } for strategy in STRATEGIES]
+
+    # Kiểm tra giá trong phiên.
+    quote = _validate_realtime_quote(
+        symbol,
+        realtime_quote,
+    )
+
+    has_realtime = quote is not None
+
+    realtime_price = (
+        quote["price"]
+        if has_realtime
+        else None
+    )
+
+    # Nếu có giá trong phiên thì dùng giá đó.
+    # Nếu không có thì tạm tính bằng giá D1,
+    # nhưng không xác nhận tín hiệu BUY.
+    price = (
+        realtime_price
+        if has_realtime
+        else d1_close
+    )
+
+    price_data_status = (
+        "REALTIME"
+        if has_realtime
+        else "D1_ONLY"
+    )
 
     turnover = (
         d["Close"] * d["Volume"]
@@ -354,7 +424,7 @@ def analyze_stock(df, symbol=None):
             "GTGD trung vị 20 phiên dưới 3 tỷ"
         )
 
-    # Phân tích ba chiến lược độc lập.
+    # Các chỉ báo kỹ thuật vẫn tính trên D1.
     analysis = analyze_strategy_stock(
         symbol,
         d,
@@ -414,6 +484,15 @@ def analyze_stock(df, symbol=None):
                 signal_blockers
             )
 
+        # Không xác nhận BUY nếu không có giá trong phiên.
+        if signal == "BUY" and not has_realtime:
+            signal = "WAIT"
+
+            blockers.append(
+                "Chưa lấy được giá trong phiên; "
+                "chưa xác nhận điều kiện mua hiện tại"
+            )
+
         blockers = list(
             dict.fromkeys(blockers)
         )
@@ -434,31 +513,61 @@ def analyze_stock(df, symbol=None):
             ),
             "signal": signal,
             "score": score,
+
+            # Giá được dùng để lập kế hoạch rủi ro.
             "price": round(price),
+
+            # Giá tham chiếu D1 và giá trong phiên.
+            "d1_close": round(d1_close),
+            "realtime_price": (
+                round(realtime_price)
+                if has_realtime else None
+            ),
+            "realtime_volume": (
+                quote.get("volume")
+                if has_realtime else None
+            ),
+            "quote_fetched_at": (
+                quote.get("fetched_at")
+                if has_realtime else None
+            ),
+            "quote_source": (
+                quote.get("source")
+                if has_realtime else None
+            ),
+            "price_data_status": price_data_status,
+
             "data_date": data_date.strftime(
                 "%d/%m/%Y"
             ),
+
             "stop_loss": None,
             "target_price": None,
             "reward_risk": None,
             "stop_distance_pct": None,
             "target_distance_pct": None,
+
             "reason": reason,
             "blockers": blockers,
             "reasons": reasons,
             "penalties": penalties,
+
             "relative_strength": analysis.get(
                 "relative_strength"
             ),
+
             "avg_turnover_20d": round(
                 avg_turnover
             ),
+
             "median_turnover_20d": round(
                 median_turnover
             ),
+
             "atr_pct": analysis.get(
                 "atr_pct"
             ),
+
             "market_context": (
                 "Có dữ liệu VN-Index"
                 if analysis.get("relative_strength") is not None
@@ -466,7 +575,7 @@ def analyze_stock(df, symbol=None):
             ),
         }
 
-        # Chỉ công bố kế hoạch giao dịch khi hợp lệ.
+        # Công bố kế hoạch khi có thể tính toán.
         if (
             risk_plan is not None
             and signal in ("BUY", "WAIT", "WATCH")
@@ -488,10 +597,15 @@ def analyze_stock(df, symbol=None):
     return rows
 
 
+# =====================================================
+# SCAN MARKET
+# =====================================================
+
 def scan_market(
     max_symbols=None,
     progress_callback=None,
     symbols=None,
+    realtime_quotes=None,
 ):
     from data_provider import (
         fetch_exchange_symbols,
@@ -513,6 +627,8 @@ def scan_market(
             :max(0, int(max_symbols))
         ]
 
+    realtime_quotes = realtime_quotes or {}
+
     results = []
     errors = []
 
@@ -529,6 +645,7 @@ def scan_market(
             stock_results = analyze_stock(
                 history,
                 symbol,
+                realtime_quote=realtime_quotes.get(symbol),
             )
 
             results.extend(stock_results)
