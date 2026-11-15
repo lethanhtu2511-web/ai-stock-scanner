@@ -11,8 +11,8 @@ DEFAULT_DB_PATH = "data/stock_scanner.sqlite3"
 DEFAULTS = {
     "capital": 10_000_000,
     "risk_pct": 2.0,
-    "fee_buy": 0.001,
-    "fee_sell": 0.001,
+    "fee_buy": 0.0015,
+    "fee_sell": 0.0015,
     "sell_tax": 0.001,
 }
 
@@ -88,7 +88,9 @@ def _validate_settings(values):
 
         elif key == "risk_pct":
             if not 0 < number <= 10:
-                raise ValueError("Rủi ro mỗi lệnh phải lớn hơn 0 và không quá 10%.")
+                raise ValueError(
+                    "Rủi ro mỗi lệnh phải lớn hơn 0 và không quá 10%."
+                )
 
         else:
             if not 0 <= number <= 0.1:
