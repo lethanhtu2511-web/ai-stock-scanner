@@ -97,8 +97,15 @@ def _parse_source_time(value):
     Chuyển thời gian do nguồn dữ liệu cung cấp thành datetime
     có múi giờ Việt Nam.
 
-    Không sử dụng fetched_at để thay thế source_time.
-    Nếu nguồn không cung cấp thời gian có thể xác minh,
+    Chỉ chấp nhận:
+    - Unix timestamp dạng giây hoặc mili giây.
+    - ISO datetime có đầy đủ ngày và giờ.
+
+    Không chấp nhận:
+    - Chỉ có giờ HH:MM:SS hoặc HH:MM.
+    - Thời gian lấy từ fetched_at thay thế source_time.
+
+    Nếu nguồn không cung cấp thời điểm đầy đủ và có thể xác minh,
     hàm trả về None.
     """
 
@@ -111,6 +118,7 @@ def _parse_source_time(value):
 
         if isinstance(value, (int, float)):
             numeric = float(value)
+
         elif isinstance(value, str):
             raw = value.strip()
 
@@ -134,11 +142,18 @@ def _parse_source_time(value):
 
         raw = value.strip()
 
-        # ISO datetime hoặc định dạng ngày giờ phổ biến.
+        if not raw:
+            return None
+
+        # Chỉ chấp nhận ISO datetime có đầy đủ ngày và giờ.
         normalized = raw.replace("Z", "+00:00")
 
         try:
             parsed = datetime.fromisoformat(normalized)
+
+            # ISO datetime phải có cả ngày và giờ.
+            if parsed.date() is None:
+                return None
 
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=VN_TZ)
@@ -148,38 +163,16 @@ def _parse_source_time(value):
             return parsed
 
         except ValueError:
-            pass
-
-        # Một số bảng giá chỉ trả giờ HH:MM:SS.
-        # Chỉ gắn ngày hiện tại; bước kiểm tra phiên giao dịch
-        # sẽ ngăn việc coi giờ cũ vào ngày nghỉ là giá realtime.
-        for fmt in ("%H:%M:%S", "%H:%M"):
-            try:
-                parsed_time = datetime.strptime(
-                    raw,
-                    fmt,
-                ).time()
-
-                now = datetime.now(VN_TZ)
-
-                return datetime.combine(
-                    now.date(),
-                    parsed_time,
-                    tzinfo=VN_TZ,
-                )
-
-            except ValueError:
-                continue
+            return None
 
     except (TypeError, ValueError, OverflowError, OSError):
         return None
-
-    return None
 
 
 def _is_market_session(now=None):
     """
     Kiểm tra khung giờ giao dịch thông thường của HOSE/HNX.
+
     Đây chỉ là điều kiện cần, không thay thế xác minh timestamp
     thực tế từ nguồn dữ liệu.
     """
@@ -219,23 +212,29 @@ def _quote_freshness(source_time, now=None):
             "source_time_parsed": None,
             "age_seconds": None,
             "status": "UNKNOWN",
-            "message": "Nguồn không cung cấp thời điểm cập nhật hợp lệ.",
+            "message": (
+                "Nguồn không cung cấp thời điểm cập nhật "
+                "đầy đủ ngày và giờ."
+            ),
         }
 
     age_seconds = (
         now - parsed_time
     ).total_seconds()
 
-    # Không nhận timestamp ở tương lai hoặc quá cũ.
+    # Không nhận timestamp ở tương lai.
     if age_seconds < -30:
         return {
             "is_fresh": False,
             "source_time_parsed": parsed_time.isoformat(),
             "age_seconds": round(age_seconds, 1),
             "status": "INVALID_TIME",
-            "message": "Thời điểm cập nhật từ nguồn nằm trong tương lai.",
+            "message": (
+                "Thời điểm cập nhật từ nguồn nằm trong tương lai."
+            ),
         }
 
+    # Không nhận dữ liệu quá cũ.
     if age_seconds > MAX_QUOTE_AGE_SECONDS:
         return {
             "is_fresh": False,
@@ -245,6 +244,7 @@ def _quote_freshness(source_time, now=None):
             "message": "Giá từ nguồn đã cũ quá 5 phút.",
         }
 
+    # Kiểm tra thời điểm hiện tại có trong phiên hay không.
     if not _is_market_session(now):
         return {
             "is_fresh": False,
@@ -254,13 +254,16 @@ def _quote_freshness(source_time, now=None):
             "message": "Hiện không nằm trong khung giờ giao dịch.",
         }
 
+    # Kiểm tra timestamp nguồn có trong phiên hay không.
     if not _is_market_session(parsed_time):
         return {
             "is_fresh": False,
             "source_time_parsed": parsed_time.isoformat(),
             "age_seconds": round(age_seconds, 1),
             "status": "OUTSIDE_SESSION",
-            "message": "Thời điểm cập nhật không thuộc khung giờ giao dịch.",
+            "message": (
+                "Thời điểm cập nhật không thuộc khung giờ giao dịch."
+            ),
         }
 
     return {
@@ -415,8 +418,9 @@ def fetch_realtime_quotes(
 
     Lưu ý quan trọng:
     - fetched_at chỉ là thời điểm bot nhận phản hồi.
-    - Chỉ quote có source_time hợp lệ, còn mới và thuộc
-      khung giờ giao dịch mới được đánh dấu quote_is_fresh=True.
+    - Chỉ quote có source_time đầy đủ, hợp lệ, còn mới
+      và thuộc khung giờ giao dịch mới được đánh dấu
+      quote_is_fresh=True.
     - Không tự thay giá thiếu bằng giá đóng cửa D1.
     - Dữ liệu không xác minh được vẫn được trả về để hiển thị,
       nhưng scanner không được dùng làm giá realtime xác nhận mua.
@@ -437,6 +441,7 @@ def fetch_realtime_quotes(
     )
 
     total = len(normalized)
+
     batches = [
         normalized[index:index + batch_size]
         for index in range(0, total, batch_size)
@@ -496,6 +501,7 @@ def fetch_realtime_quotes(
 def get_quote_freshness(quote):
     """
     Trả trạng thái xác minh độ mới của báo giá.
+
     Không xem fetched_at là thời điểm khớp lệnh.
     """
 
@@ -507,7 +513,6 @@ def get_quote_freshness(quote):
         }
 
     source_time = quote.get("source_time")
-
     result = _quote_freshness(source_time)
 
     return {
