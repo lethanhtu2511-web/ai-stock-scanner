@@ -31,7 +31,7 @@ DB_PATH = os.getenv(
 )
 
 st.set_page_config(
-    page_title="AI Stock Scanner 2.1",
+    page_title="AI Stock Scanner 2.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -109,6 +109,14 @@ def current_strategy_rows(rows):
         row for row in rows
         if row.get("strategy") in STRATEGY_ORDER
     ]
+
+
+def price_status_name(status):
+    return {
+        "REALTIME": "Giá trong phiên",
+        "D1_ONLY": "Chỉ có giá D1",
+        "D1_STALE": "Dữ liệu D1 cũ",
+    }.get(status, "Không rõ")
 
 
 # =====================================================
@@ -295,16 +303,32 @@ def display_scan_table(rows):
             .fillna(df["strategy"])
         )
 
+    if "price_data_status" in df.columns:
+        df["Trạng thái giá"] = (
+            df["price_data_status"]
+            .map({
+                "REALTIME": "Giá trong phiên",
+                "D1_ONLY": "Chỉ có giá D1",
+                "D1_STALE": "Dữ liệu D1 cũ",
+            })
+            .fillna("Không rõ")
+        )
+
     rename = {
         "symbol": "Mã",
         "score": "Điểm kỹ thuật",
-        "price": "Giá D1",
+        "price": "Giá dùng phân tích",
+        "d1_close": "Giá đóng cửa D1",
+        "realtime_price": "Giá trong phiên",
+        "realtime_volume": "Khối lượng trong phiên",
+        "quote_fetched_at": "Thời điểm lấy giá",
+        "quote_source": "Nguồn giá",
         "stop_loss": "Cắt lỗ",
         "target_price": "Mục tiêu",
         "reward_risk": "RR sau phí",
         "reason": "Lý do",
         "scanned_at": "Thời gian quét",
-        "data_date": "Ngày dữ liệu",
+        "data_date": "Ngày dữ liệu D1",
         "stop_distance_pct": "Rủi ro %",
         "target_distance_pct": "Tiềm năng %",
         "atr_pct": "ATR %",
@@ -321,13 +345,18 @@ def display_scan_table(rows):
         "Chiến lược",
         "Tín hiệu",
         "Điểm kỹ thuật",
-        "Giá D1",
+        "Trạng thái giá",
+        "Giá trong phiên",
+        "Giá đóng cửa D1",
+        "Giá dùng phân tích",
         "Cắt lỗ",
         "Mục tiêu",
         "RR sau phí",
         "Rủi ro %",
         "Tiềm năng %",
-        "Ngày dữ liệu",
+        "Ngày dữ liệu D1",
+        "Thời điểm lấy giá",
+        "Nguồn giá",
         "GTGD TB 20 phiên",
         "Lý do",
         "Thời gian quét",
@@ -404,12 +433,49 @@ def show_signal_explanation(row):
         f"{number(row.get('score'), 0)}/100"
     )
 
-    st.write(
-        f"**Giá D1:** {money(row.get('price'))}"
+    status = row.get("price_data_status")
+
+    if status == "REALTIME":
+        st.success("Đã nhận được giá trong phiên.")
+    elif status == "D1_ONLY":
+        st.warning(
+            "Chưa nhận được giá trong phiên. "
+            "Tín hiệu MUA chưa được xác nhận."
+        )
+    elif status == "D1_STALE":
+        st.error("Dữ liệu D1 đã cũ.")
+    else:
+        st.info("Chưa xác định trạng thái dữ liệu giá.")
+
+    col1, col2 = st.columns(2)
+
+    col1.metric(
+        "Giá trong phiên",
+        money(row.get("realtime_price")),
+    )
+
+    col2.metric(
+        "Giá đóng cửa D1",
+        money(row.get("d1_close")),
     )
 
     st.write(
-        f"**Ngày dữ liệu:** "
+        f"**Giá dùng lập kế hoạch:** "
+        f"{money(row.get('price'))}"
+    )
+
+    st.write(
+        f"**Thời điểm lấy giá:** "
+        f"{row.get('quote_fetched_at') or 'Không có'}"
+    )
+
+    st.write(
+        f"**Nguồn giá:** "
+        f"{row.get('quote_source') or 'Không có'}"
+    )
+
+    st.write(
+        f"**Ngày dữ liệu D1:** "
         f"{row.get('data_date') or 'Không có dữ liệu'}"
     )
 
@@ -463,11 +529,11 @@ def show_signal_explanation(row):
 # =====================================================
 
 def show_dashboard():
-    st.title("📈 AI STOCK SCANNER 2.1")
+    st.title("📈 AI STOCK SCANNER 2.2")
 
     st.caption(
-        "Phân tích HOSE/HNX bằng dữ liệu nến ngày D1 "
-        "và quản lý danh mục."
+        "Phân tích HOSE/HNX bằng chỉ báo D1, "
+        "giá trong phiên và quản lý danh mục."
     )
 
     positions = show_portfolio_summary()
@@ -484,7 +550,7 @@ def show_dashboard():
         )
 
         st.caption(
-            "Giá tham chiếu lấy từ nến ngày D1 gần nhất, "
+            "Giá tham chiếu danh mục lấy từ dữ liệu D1, "
             "không phải giá realtime."
         )
 
@@ -503,6 +569,25 @@ def show_dashboard():
         df = pd.DataFrame(latest)
 
         show_strategy_metrics(df)
+
+        realtime_count = int(
+            (df.get(
+                "price_data_status",
+                pd.Series(dtype=str)
+            ) == "REALTIME").sum()
+        )
+
+        unique_symbols = (
+            df["symbol"].nunique()
+            if "symbol" in df.columns
+            else 0
+        )
+
+        st.caption(
+            f"Có giá trong phiên: {realtime_count} dòng chiến lược "
+            f"trên tổng {len(df)} dòng. "
+            f"Số mã: {unique_symbols}."
+        )
 
         st.divider()
 
@@ -529,33 +614,51 @@ def show_scanner():
 
     st.caption(
         "Yêu cầu tối thiểu 200 phiên lịch sử và thanh khoản đạt ngưỡng. "
-        "Mỗi chiến lược có kế hoạch cắt lỗ/mục tiêu riêng. "
-        "MUA cần RR sau phí tối thiểu 2."
+        "Chỉ báo kỹ thuật tính trên D1. Giá trong phiên dùng để "
+        "kiểm tra tín hiệu và lập kế hoạch giao dịch."
     )
 
     st.warning(
         "Điểm kỹ thuật không phải xác suất thắng. "
-        "VN-Index chưa được đưa vào mô hình nếu dữ liệu chỉ số "
-        "chưa được kết nối."
+        "Nếu không lấy được giá trong phiên, bot không xác nhận BUY."
     )
 
     if st.button(
         "🚀 QUÉT THỊ TRƯỜNG NGAY",
         use_container_width=True,
+        type="primary",
     ):
+        progress_bar = st.progress(
+            0,
+            text="Chuẩn bị quét thị trường..."
+        )
+
+        progress_text = st.empty()
+
         try:
-            with st.spinner(
-                "Đang quét HOSE/HNX bằng dữ liệu D1. "
-                "Quá trình có thể mất vài phút..."
-            ):
-                saved = run_scan()
+            def update_progress(percent, message):
+                percent = max(
+                    0,
+                    min(100, int(percent))
+                )
+
+                progress_bar.progress(
+                    percent,
+                    text=f"{percent}%"
+                )
+
+                progress_text.caption(message)
+
+            saved = run_scan(
+                progress_callback=update_progress
+            )
 
             get_daily_quote.clear()
 
             if saved > 0:
                 st.success(
                     f"Hoàn thành lượt quét. "
-                    f"Đã lưu {saved:,} kết quả chiến lược."
+                    f"Đã lưu {saved:,} dòng kết quả chiến lược."
                 )
             else:
                 st.warning(
@@ -565,6 +668,9 @@ def show_scanner():
 
         except Exception as exc:
             st.error(f"Quét thất bại: {exc}")
+
+        finally:
+            progress_bar.empty()
 
     st.divider()
 
@@ -581,9 +687,59 @@ def show_scanner():
 
     df = pd.DataFrame(latest)
 
+    # -------------------------------------------------
+    # DATA COVERAGE
+    # -------------------------------------------------
+
+    st.subheader("Tình trạng dữ liệu giá")
+
+    if "price_data_status" in df.columns:
+        realtime_count = int(
+            (df["price_data_status"] == "REALTIME").sum()
+        )
+
+        d1_only_count = int(
+            (df["price_data_status"] == "D1_ONLY").sum()
+        )
+
+        stale_count = int(
+            (df["price_data_status"] == "D1_STALE").sum()
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Có giá trong phiên",
+            realtime_count,
+        )
+
+        col2.metric(
+            "Chỉ có giá D1",
+            d1_only_count,
+        )
+
+        col3.metric(
+            "D1 cũ",
+            stale_count,
+        )
+
+        st.caption(
+            "Đây là số dòng chiến lược, không phải số mã duy nhất. "
+            "Mỗi mã có thể xuất hiện trong ba chiến lược."
+        )
+
+    else:
+        st.info(
+            "Kết quả cũ chưa có thông tin trạng thái giá."
+        )
+
     show_strategy_metrics(df)
 
     st.divider()
+
+    # -------------------------------------------------
+    # SIGNAL STATISTICS
+    # -------------------------------------------------
 
     st.subheader("Thống kê tín hiệu")
 
@@ -790,7 +946,7 @@ def show_portfolio():
 
     st.subheader("Tổng quan danh mục")
 
-    positions = show_portfolio_summary()
+    show_portfolio_summary()
 
     st.divider()
 
@@ -1035,9 +1191,10 @@ def show_settings():
 
     st.subheader("Thông tin hệ thống")
 
-    st.write("Phiên bản: AI Stock Scanner 2.1")
+    st.write("Phiên bản: AI Stock Scanner 2.2")
     st.write("Thị trường: HOSE / HNX")
-    st.write("Khung phân tích: D1")
+    st.write("Khung chỉ báo kỹ thuật: D1")
+    st.write("Giá xác nhận: dữ liệu trong phiên nếu có")
     st.write("Chiến lược: Swing / Reversal / Pullback")
     st.write("Tự động đặt lệnh: Không")
 
@@ -1062,8 +1219,8 @@ def main():
 
         st.divider()
 
-        st.caption("AI Stock Scanner 2.1")
-        st.caption("Phân tích kỹ thuật D1")
+        st.caption("AI Stock Scanner 2.2")
+        st.caption("Chỉ báo kỹ thuật D1")
 
     if page == "Tổng quan":
         show_dashboard()
