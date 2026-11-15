@@ -1,6 +1,8 @@
 
 import numpy as np
 import pandas as pd
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from strategy_engine import (
     analyze_stock as analyze_strategy_stock,
@@ -8,8 +10,10 @@ from strategy_engine import (
 )
 
 # =====================================================
-# AI STOCK SCANNER 2.2 - D1 + REALTIME PRICE
+# AI STOCK SCANNER 2.3 - D1 + VERIFIED REALTIME
 # =====================================================
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 MIN_HISTORY = 200
 MIN_AVG_TURNOVER = 5_000_000_000
@@ -20,6 +24,8 @@ BUY_FEE = 0.0015
 SELL_FEE = 0.0015
 SELL_TAX = 0.001
 SLIPPAGE = 0.002
+
+MAX_QUOTE_AGE_SECONDS = 300
 
 BLOCKED = {
     "NVB": "Mã bị chặn thủ công",
@@ -51,6 +57,93 @@ def _number(value, default=0.0):
         return result if np.isfinite(result) else default
     except (TypeError, ValueError):
         return default
+
+
+def _parse_datetime(value):
+    if value is None:
+        return None
+
+    try:
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+
+            if numeric > 10_000_000_000:
+                numeric /= 1000.0
+
+            return datetime.fromtimestamp(
+                numeric,
+                tz=VN_TZ,
+            )
+
+        if isinstance(value, str):
+            raw = value.strip()
+
+            if not raw:
+                return None
+
+            if raw.isdigit():
+                numeric = float(raw)
+
+                if numeric > 10_000_000_000:
+                    numeric /= 1000.0
+
+                return datetime.fromtimestamp(
+                    numeric,
+                    tz=VN_TZ,
+                )
+
+            parsed = datetime.fromisoformat(
+                raw.replace("Z", "+00:00")
+            )
+
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=VN_TZ)
+            else:
+                parsed = parsed.astimezone(VN_TZ)
+
+            return parsed
+
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+    return None
+
+
+def _is_market_session(now):
+    if now.weekday() >= 5:
+        return False
+
+    current_time = now.time()
+
+    morning = (
+        current_time.hour > 9
+        or (
+            current_time.hour == 9
+            and current_time.minute >= 0
+        )
+    ) and (
+        current_time.hour < 11
+        or (
+            current_time.hour == 11
+            and current_time.minute <= 30
+        )
+    )
+
+    afternoon = (
+        current_time.hour > 13
+        or (
+            current_time.hour == 13
+            and current_time.minute >= 0
+        )
+    ) and (
+        current_time.hour < 15
+        or (
+            current_time.hour == 15
+            and current_time.minute == 0
+        )
+    )
+
+    return morning or afternoon
 
 
 def _validate_history(df):
@@ -123,6 +216,20 @@ def _validate_history(df):
 # =====================================================
 
 def _validate_realtime_quote(symbol, quote):
+    """
+    Chỉ xác nhận realtime khi:
+    - Mã cổ phiếu trùng khớp.
+    - Giá hợp lệ.
+    - Nguồn đánh dấu quote_is_fresh=True.
+    - Có source_time hợp lệ.
+    - Timestamp không quá 5 phút.
+    - Timestamp không nằm trong tương lai.
+    - Hiện tại và timestamp đều thuộc khung giờ giao dịch.
+
+    fetched_at chỉ là thời điểm bot nhận dữ liệu,
+    không được dùng thay source_time.
+    """
+
     if not isinstance(quote, dict):
         return None
 
@@ -130,7 +237,7 @@ def _validate_realtime_quote(symbol, quote):
         quote.get("symbol", "")
     ).strip().upper()
 
-    if quote_symbol and quote_symbol != symbol:
+    if quote_symbol != symbol:
         return None
 
     price = _number(
@@ -141,11 +248,82 @@ def _validate_realtime_quote(symbol, quote):
     if price <= 0:
         return None
 
+    # Bắt buộc nguồn phải xác nhận độ mới.
+    if quote.get("quote_is_fresh") is not True:
+        return None
+
+    source_time = _parse_datetime(
+        quote.get("source_time_parsed")
+        or quote.get("source_time")
+    )
+
+    if source_time is None:
+        return None
+
+    now = datetime.now(VN_TZ)
+
+    age_seconds = (
+        now - source_time
+    ).total_seconds()
+
+    if age_seconds < -30:
+        return None
+
+    if age_seconds > MAX_QUOTE_AGE_SECONDS:
+        return None
+
+    if not _is_market_session(now):
+        return None
+
+    if not _is_market_session(source_time):
+        return None
+
     return {
         **quote,
         "symbol": symbol,
         "price": price,
+        "source_time_parsed": source_time.isoformat(),
+        "quote_age_seconds": round(age_seconds, 1),
+        "quote_is_fresh": True,
     }
+
+
+def _quote_display_status(quote):
+    """
+    Trạng thái hiển thị dữ liệu giá.
+    """
+
+    if not isinstance(quote, dict):
+        return (
+            "D1_ONLY",
+            "Không có báo giá KBS hợp lệ; đang dùng giá D1.",
+        )
+
+    freshness = quote.get("quote_freshness")
+
+    if freshness == "OUTSIDE_SESSION":
+        return (
+            "LAST_SESSION",
+            "Giá bảng KBS ngoài giờ giao dịch; "
+            "không xác nhận là giá realtime.",
+        )
+
+    if freshness == "STALE":
+        return (
+            "LAST_SESSION",
+            "Báo giá KBS đã cũ; không xác nhận là giá realtime.",
+        )
+
+    if freshness in ("UNKNOWN", "INVALID_TIME"):
+        return (
+            "UNVERIFIED",
+            "Không xác minh được thời điểm cập nhật từ KBS.",
+        )
+
+    return (
+        "UNVERIFIED",
+        "Báo giá KBS chưa đáp ứng điều kiện xác nhận realtime.",
+    )
 
 
 # =====================================================
@@ -338,7 +516,9 @@ def analyze_stock(
     d1_close = float(last["Close"])
     data_date = pd.Timestamp(last["Date"])
 
-    today = pd.Timestamp.now().normalize()
+    today = pd.Timestamp.now(
+        tz=VN_TZ
+    ).normalize().tz_localize(None)
 
     age = (
         today - data_date.normalize()
@@ -358,11 +538,12 @@ def analyze_stock(
             "d1_close": round(d1_close),
             "data_date": data_date.strftime("%d/%m/%Y"),
             "price_data_status": "D1_STALE",
+            "price_data_message": message,
             "reason": message,
             "blockers": [message],
         } for strategy in STRATEGIES]
 
-    # Kiểm tra giá trong phiên.
+    # Chỉ nhận quote đã được xác minh.
     quote = _validate_realtime_quote(
         symbol,
         realtime_quote,
@@ -370,26 +551,36 @@ def analyze_stock(
 
     has_realtime = quote is not None
 
-    realtime_price = (
-        quote["price"]
-        if has_realtime
+    # Quote chưa xác minh chỉ dùng để hiển thị đối chiếu.
+    raw_quote = (
+        realtime_quote
+        if isinstance(realtime_quote, dict)
         else None
     )
 
-    # Nếu có giá trong phiên thì dùng giá đó.
-    # Nếu không có thì tạm tính bằng giá D1,
-    # nhưng không xác nhận tín hiệu BUY.
-    price = (
-        realtime_price
-        if has_realtime
-        else d1_close
-    )
+    raw_quote_price = None
 
-    price_data_status = (
-        "REALTIME"
-        if has_realtime
-        else "D1_ONLY"
-    )
+    if raw_quote:
+        candidate = _number(
+            raw_quote.get("price"),
+            default=0.0,
+        )
+
+        if candidate > 0:
+            raw_quote_price = candidate
+
+    if has_realtime:
+        price = quote["price"]
+        price_data_status = "REALTIME"
+        price_data_message = (
+            "Giá realtime đã xác minh từ KBS."
+        )
+    else:
+        price = d1_close
+
+        price_data_status, price_data_message = (
+            _quote_display_status(raw_quote)
+        )
 
     turnover = (
         d["Close"] * d["Volume"]
@@ -484,13 +675,13 @@ def analyze_stock(
                 signal_blockers
             )
 
-        # Không xác nhận BUY nếu không có giá trong phiên.
+        # Không xác nhận BUY nếu không có quote realtime hợp lệ.
         if signal == "BUY" and not has_realtime:
             signal = "WAIT"
 
             blockers.append(
-                "Chưa lấy được giá trong phiên; "
-                "chưa xác nhận điều kiện mua hiện tại"
+                "Chưa xác minh được giá realtime từ nguồn; "
+                "không xác nhận tín hiệu mua"
             )
 
         blockers = list(
@@ -514,28 +705,48 @@ def analyze_stock(
             "signal": signal,
             "score": score,
 
-            # Giá được dùng để lập kế hoạch rủi ro.
+            # Giá dùng tính kế hoạch rủi ro.
             "price": round(price),
 
-            # Giá tham chiếu D1 và giá trong phiên.
+            # Giá D1 và giá KBS được lưu riêng.
             "d1_close": round(d1_close),
             "realtime_price": (
-                round(realtime_price)
+                round(price)
                 if has_realtime else None
+            ),
+            "kbs_quote_price": (
+                round(raw_quote_price)
+                if raw_quote_price is not None
+                else None
             ),
             "realtime_volume": (
                 quote.get("volume")
                 if has_realtime else None
             ),
+            "quote_source_time": (
+                quote.get("source_time_parsed")
+                if has_realtime else (
+                    raw_quote.get("source_time")
+                    if raw_quote else None
+                )
+            ),
             "quote_fetched_at": (
-                quote.get("fetched_at")
-                if has_realtime else None
+                raw_quote.get("fetched_at")
+                if raw_quote else None
+            ),
+            "quote_age_seconds": (
+                quote.get("quote_age_seconds")
+                if has_realtime else (
+                    raw_quote.get("quote_age_seconds")
+                    if raw_quote else None
+                )
             ),
             "quote_source": (
-                quote.get("source")
-                if has_realtime else None
+                raw_quote.get("source")
+                if raw_quote else None
             ),
             "price_data_status": price_data_status,
+            "price_data_message": price_data_message,
 
             "data_date": data_date.strftime(
                 "%d/%m/%Y"
@@ -575,7 +786,6 @@ def analyze_stock(
             ),
         }
 
-        # Công bố kế hoạch khi có thể tính toán.
         if (
             risk_plan is not None
             and signal in ("BUY", "WAIT", "WATCH")
@@ -739,6 +949,21 @@ def scan_market(
             ),
         }
 
+    realtime_count = sum(
+        item.get("price_data_status") == "REALTIME"
+        for item in results
+    )
+
+    last_session_count = sum(
+        item.get("price_data_status") == "LAST_SESSION"
+        for item in results
+    )
+
+    unverified_count = sum(
+        item.get("price_data_status") == "UNVERIFIED"
+        for item in results
+    )
+
     return {
         "results": results,
         "scanned": len(symbols),
@@ -752,6 +977,9 @@ def scan_market(
         "insufficient_history_count": insufficient,
         "d1_error_count": d1_errors,
         "error_count": len(errors),
+        "realtime_count": realtime_count,
+        "last_session_count": last_session_count,
+        "unverified_quote_count": unverified_count,
         "strategy_counts": strategy_counts,
         "errors": errors,
     }
