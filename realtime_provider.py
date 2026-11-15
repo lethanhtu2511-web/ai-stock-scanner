@@ -103,6 +103,7 @@ def _parse_source_time(value):
 
     Không chấp nhận:
     - Chỉ có giờ HH:MM:SS hoặc HH:MM.
+    - ISO chỉ có ngày.
     - Thời gian lấy từ fetched_at thay thế source_time.
 
     Nếu nguồn không cung cấp thời điểm đầy đủ và có thể xác minh,
@@ -145,15 +146,15 @@ def _parse_source_time(value):
         if not raw:
             return None
 
-        # Chỉ chấp nhận ISO datetime có đầy đủ ngày và giờ.
         normalized = raw.replace("Z", "+00:00")
+
+        # Bắt buộc có thành phần giờ.
+        # Từ chối chuỗi chỉ có ngày, ví dụ: 2026-11-15.
+        if "T" not in normalized and " " not in normalized:
+            return None
 
         try:
             parsed = datetime.fromisoformat(normalized)
-
-            # ISO datetime phải có cả ngày và giờ.
-            if parsed.date() is None:
-                return None
 
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=VN_TZ)
