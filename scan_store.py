@@ -26,7 +26,6 @@ STRATEGY_PRIORITY = {
     "PULLBACK": 3,
 }
 
-# Các trường bổ sung của phiên bản Scanner 2.1.
 EXTRA_COLUMNS = {
     "data_date": "TEXT",
     "reward_risk": "REAL",
@@ -40,6 +39,14 @@ EXTRA_COLUMNS = {
     "blockers": "TEXT",
     "reasons": "TEXT",
     "penalties": "TEXT",
+
+    # Dữ liệu giá trong phiên
+    "d1_close": "REAL",
+    "realtime_price": "REAL",
+    "realtime_volume": "REAL",
+    "quote_fetched_at": "TEXT",
+    "quote_source": "TEXT",
+    "price_data_status": "TEXT",
 }
 
 
@@ -223,6 +230,13 @@ def save_scan_results(
             _safe_json(item.get("blockers")),
             _safe_json(item.get("reasons")),
             _safe_json(item.get("penalties")),
+
+            _safe_number(item.get("d1_close")),
+            _safe_number(item.get("realtime_price")),
+            _safe_number(item.get("realtime_volume")),
+            _safe_text(item.get("quote_fetched_at"), 50),
+            _safe_text(item.get("quote_source"), 100),
+            _safe_text(item.get("price_data_status"), 30),
         ))
 
     if not rows:
@@ -251,11 +265,18 @@ def save_scan_results(
                 market_context,
                 blockers,
                 reasons,
-                penalties
+                penalties,
+                d1_close,
+                realtime_price,
+                realtime_volume,
+                quote_fetched_at,
+                quote_source,
+                price_data_status
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?
             )
         """, rows)
 
@@ -281,10 +302,7 @@ def _format_row(row):
 
 
 def get_latest_scan(db_path=DEFAULT_DB_PATH):
-    """
-    Lấy kết quả mới nhất của từng cặp mã + chiến lược.
-    Mỗi mã có thể xuất hiện tối đa 3 lần.
-    """
+    """Lấy kết quả mới nhất của từng cặp mã + chiến lược."""
 
     init_scan_db(db_path)
 
