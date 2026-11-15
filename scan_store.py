@@ -2,6 +2,8 @@
 import os
 import sqlite3
 import math
+import json
+
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -22,6 +24,22 @@ STRATEGY_PRIORITY = {
     "SWING": 1,
     "REVERSAL": 2,
     "PULLBACK": 3,
+}
+
+# Các trường bổ sung của phiên bản Scanner 2.1.
+EXTRA_COLUMNS = {
+    "data_date": "TEXT",
+    "reward_risk": "REAL",
+    "stop_distance_pct": "REAL",
+    "target_distance_pct": "REAL",
+    "atr_pct": "REAL",
+    "relative_strength": "REAL",
+    "avg_turnover_20d": "REAL",
+    "median_turnover_20d": "REAL",
+    "market_context": "TEXT",
+    "blockers": "TEXT",
+    "reasons": "TEXT",
+    "penalties": "TEXT",
 }
 
 
@@ -46,6 +64,56 @@ def connect(db_path=DEFAULT_DB_PATH):
     return conn
 
 
+def _safe_number(value):
+    if value is None:
+        return None
+
+    try:
+        result = float(value)
+
+        if not math.isfinite(result):
+            return None
+
+        return result
+
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_text(value, limit=2000):
+    if value is None:
+        return ""
+
+    return str(value)[:limit]
+
+
+def _safe_json(value):
+    if value is None:
+        value = []
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        return "[]"
+
+
+def _decode_json(value):
+    if not value:
+        return []
+
+    try:
+        result = json.loads(value)
+
+        return result if isinstance(result, list) else []
+
+    except (TypeError, ValueError):
+        return []
+
+
 def init_scan_db(db_path=DEFAULT_DB_PATH):
     with connect(db_path) as conn:
         conn.execute("""
@@ -63,6 +131,22 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
             )
         """)
 
+        # Tự bổ sung cột còn thiếu.
+        # Không xóa hoặc ghi đè dữ liệu cũ.
+        existing_columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(scan_results)"
+            ).fetchall()
+        }
+
+        for column, column_type in EXTRA_COLUMNS.items():
+            if column not in existing_columns:
+                conn.execute(
+                    f"ALTER TABLE scan_results "
+                    f"ADD COLUMN {column} {column_type}"
+                )
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_scan_symbol_time
             ON scan_results(symbol, scanned_at)
@@ -78,35 +162,24 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
             ON scan_results(scanned_at)
         """)
 
-
-def _safe_number(value):
-    if value is None:
-        return None
-
-    try:
-        result = float(value)
-
-        if not math.isfinite(result):
-            return None
-
-        return result
-
-    except (TypeError, ValueError):
-        return None
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scan_signal_score
+            ON scan_results(signal, score)
+        """)
 
 
 def save_scan_results(
     results,
-    db_path=DEFAULT_DB_PATH
+    db_path=DEFAULT_DB_PATH,
 ):
     if not results:
         return 0
 
     init_scan_db(db_path)
 
-    scanned_at = datetime.now(VN_TZ).isoformat(
-        timespec="seconds"
-    )
+    scanned_at = datetime.now(
+        VN_TZ
+    ).isoformat(timespec="seconds")
 
     rows = []
 
@@ -135,7 +208,21 @@ def save_scan_results(
             _safe_number(item.get("price")),
             _safe_number(item.get("stop_loss")),
             _safe_number(item.get("target_price")),
-            str(item.get("reason", ""))[:1000],
+            _safe_text(item.get("reason"), 2000),
+
+            _safe_text(item.get("data_date"), 30),
+            _safe_number(item.get("reward_risk")),
+            _safe_number(item.get("stop_distance_pct")),
+            _safe_number(item.get("target_distance_pct")),
+            _safe_number(item.get("atr_pct")),
+            _safe_number(item.get("relative_strength")),
+            _safe_number(item.get("avg_turnover_20d")),
+            _safe_number(item.get("median_turnover_20d")),
+            _safe_text(item.get("market_context"), 200),
+
+            _safe_json(item.get("blockers")),
+            _safe_json(item.get("reasons")),
+            _safe_json(item.get("penalties")),
         ))
 
     if not rows:
@@ -152,19 +239,51 @@ def save_scan_results(
                 price,
                 stop_loss,
                 target_price,
-                reason
+                reason,
+                data_date,
+                reward_risk,
+                stop_distance_pct,
+                target_distance_pct,
+                atr_pct,
+                relative_strength,
+                avg_turnover_20d,
+                median_turnover_20d,
+                market_context,
+                blockers,
+                reasons,
+                penalties
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
         """, rows)
 
     return len(rows)
 
 
+def _format_row(row):
+    item = dict(row)
+
+    item["blockers"] = _decode_json(
+        item.get("blockers")
+    )
+
+    item["reasons"] = _decode_json(
+        item.get("reasons")
+    )
+
+    item["penalties"] = _decode_json(
+        item.get("penalties")
+    )
+
+    return item
+
+
 def get_latest_scan(db_path=DEFAULT_DB_PATH):
     """
     Lấy kết quả mới nhất của từng cặp mã + chiến lược.
-    Mỗi mã có thể xuất hiện tối đa 3 lần:
-    SWING, REVERSAL, PULLBACK.
+    Mỗi mã có thể xuất hiện tối đa 3 lần.
     """
 
     init_scan_db(db_path)
@@ -201,17 +320,23 @@ def get_latest_scan(db_path=DEFAULT_DB_PATH):
                 s.symbol ASC
         """).fetchall()
 
-    return [dict(row) for row in rows]
+    return [
+        _format_row(row)
+        for row in rows
+    ]
 
 
 def get_scan_history(
     symbol=None,
     limit=100,
-    db_path=DEFAULT_DB_PATH
+    db_path=DEFAULT_DB_PATH,
 ):
     init_scan_db(db_path)
 
-    limit = max(1, min(int(limit), 2000))
+    limit = max(
+        1,
+        min(int(limit), 2000),
+    )
 
     with connect(db_path) as conn:
         if symbol:
@@ -223,7 +348,7 @@ def get_scan_history(
                 LIMIT ?
             """, (
                 str(symbol).strip().upper(),
-                limit
+                limit,
             )).fetchall()
 
         else:
@@ -234,19 +359,23 @@ def get_scan_history(
                 LIMIT ?
             """, (limit,)).fetchall()
 
-    return [dict(row) for row in rows]
+    return [
+        _format_row(row)
+        for row in rows
+    ]
 
 
 def clear_old_scan_results(
     days=30,
-    db_path=DEFAULT_DB_PATH
+    db_path=DEFAULT_DB_PATH,
 ):
     init_scan_db(db_path)
 
     days = max(1, int(days))
 
     cutoff = (
-        datetime.now(VN_TZ) - timedelta(days=days)
+        datetime.now(VN_TZ)
+        - timedelta(days=days)
     ).isoformat(timespec="seconds")
 
     with connect(db_path) as conn:
