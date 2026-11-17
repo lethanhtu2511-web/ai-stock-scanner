@@ -12,7 +12,7 @@ MIN_HISTORY = 200
 MIN_AVG_TURNOVER = 5_000_000_000
 MIN_MEDIAN_TURNOVER = 3_000_000_000
 
-# Ngưỡng điểm chỉ là điểm kỹ thuật, không phải xác suất thắng.
+# Điểm kỹ thuật, không phải xác suất thắng.
 BUY_SCORE = 78
 WAIT_SCORE = 60
 WATCH_SCORE = 40
@@ -387,7 +387,6 @@ def _score_pullback(m):
     else:
         blockers.append("Giá chưa ở vùng pullback hợp lý")
 
-    # Điều kiện bắt buộc: giá phải đóng cửa trên EMA20.
     if m["close"] > m["ema20"]:
         score += 10
         reasons.append("Giá đóng cửa trên EMA20")
