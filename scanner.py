@@ -10,7 +10,7 @@ from strategy_engine import (
 )
 
 # =====================================================
-# AI STOCK SCANNER 2.3 - D1 + VERIFIED REALTIME
+# AI STOCK SCANNER 3.0 - D1 + VERIFIED REALTIME
 # =====================================================
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -248,7 +248,6 @@ def _validate_realtime_quote(symbol, quote):
     if price <= 0:
         return None
 
-    # Bắt buộc nguồn phải xác nhận độ mới.
     if quote.get("quote_is_fresh") is not True:
         return None
 
@@ -289,10 +288,6 @@ def _validate_realtime_quote(symbol, quote):
 
 
 def _quote_display_status(quote):
-    """
-    Trạng thái hiển thị dữ liệu giá.
-    """
-
     if not isinstance(quote, dict):
         return (
             "D1_ONLY",
@@ -464,7 +459,7 @@ def _make_reason(signal, blockers, reasons, penalties):
         )
 
     if signal == "WATCH":
-        items = reasons[:3] or blockers[:3]
+        items = reasons[:3]
 
         return (
             "Theo dõi thêm: "
@@ -492,6 +487,7 @@ def analyze_stock(
     df,
     symbol=None,
     realtime_quote=None,
+    market_df=None,
 ):
     symbol = str(
         symbol or ""
@@ -543,7 +539,6 @@ def analyze_stock(
             "blockers": [message],
         } for strategy in STRATEGIES]
 
-    # Chỉ nhận quote đã được xác minh.
     quote = _validate_realtime_quote(
         symbol,
         realtime_quote,
@@ -551,7 +546,6 @@ def analyze_stock(
 
     has_realtime = quote is not None
 
-    # Quote chưa xác minh chỉ dùng để hiển thị đối chiếu.
     raw_quote = (
         realtime_quote
         if isinstance(realtime_quote, dict)
@@ -615,10 +609,10 @@ def analyze_stock(
             "GTGD trung vị 20 phiên dưới 3 tỷ"
         )
 
-    # Các chỉ báo kỹ thuật vẫn tính trên D1.
     analysis = analyze_strategy_stock(
         symbol,
         d,
+        market_df=market_df,
     )
 
     atr = _number(
@@ -675,6 +669,29 @@ def analyze_stock(
                 signal_blockers
             )
 
+        live_change_pct = (
+            (price / d1_close - 1) * 100
+            if has_realtime and d1_close > 0 else None
+        )
+
+        # Chặn mua khi giá đang suy yếu hoặc tăng quá nóng.
+        if signal == "BUY" and live_change_pct is not None:
+            if live_change_pct <= -1.5:
+                signal = "WAIT"
+                blockers.append(
+                    f"Giá realtime giảm {live_change_pct:.2f}% "
+                    "so với giá đóng cửa D1; "
+                    "động lượng trong phiên suy yếu"
+                )
+
+            elif live_change_pct >= 4.0:
+                signal = "WAIT"
+                blockers.append(
+                    f"Giá realtime tăng {live_change_pct:.2f}% "
+                    "so với giá đóng cửa D1; "
+                    "rủi ro mua đuổi"
+                )
+
         # Không xác nhận BUY nếu không có quote realtime hợp lệ.
         if signal == "BUY" and not has_realtime:
             signal = "WAIT"
@@ -705,24 +722,25 @@ def analyze_stock(
             "signal": signal,
             "score": score,
 
-            # Giá dùng tính kế hoạch rủi ro.
             "price": round(price),
-
-            # Giá D1 và giá KBS được lưu riêng.
             "d1_close": round(d1_close),
+
             "realtime_price": (
                 round(price)
                 if has_realtime else None
             ),
+
             "kbs_quote_price": (
                 round(raw_quote_price)
                 if raw_quote_price is not None
                 else None
             ),
+
             "realtime_volume": (
                 quote.get("volume")
                 if has_realtime else None
             ),
+
             "quote_source_time": (
                 quote.get("source_time_parsed")
                 if has_realtime else (
@@ -730,10 +748,12 @@ def analyze_stock(
                     if raw_quote else None
                 )
             ),
+
             "quote_fetched_at": (
                 raw_quote.get("fetched_at")
                 if raw_quote else None
             ),
+
             "quote_age_seconds": (
                 quote.get("quote_age_seconds")
                 if has_realtime else (
@@ -741,12 +761,24 @@ def analyze_stock(
                     if raw_quote else None
                 )
             ),
+
             "quote_source": (
                 raw_quote.get("source")
                 if raw_quote else None
             ),
+
             "price_data_status": price_data_status,
             "price_data_message": price_data_message,
+
+            "live_change_pct": (
+                round(live_change_pct, 2)
+                if live_change_pct is not None else None
+            ),
+
+            "market_regime": analysis.get(
+                "market_regime",
+                "UNKNOWN",
+            ),
 
             "data_date": data_date.strftime(
                 "%d/%m/%Y"
@@ -780,8 +812,8 @@ def analyze_stock(
             ),
 
             "market_context": (
-                "Có dữ liệu VN-Index"
-                if analysis.get("relative_strength") is not None
+                f"VN-Index: {analysis.get('market_regime', 'UNKNOWN')}"
+                if analysis.get("market_regime") != "UNKNOWN"
                 else "Chưa có dữ liệu VN-Index"
             ),
         }
@@ -839,6 +871,19 @@ def scan_market(
 
     realtime_quotes = realtime_quotes or {}
 
+    # Lấy VN-Index một lần cho toàn bộ lượt quét.
+    market_df = None
+    market_data_error = None
+
+    try:
+        market_df = fetch_stock_history(
+            "VNINDEX",
+            length=260,
+        )
+
+    except Exception as exc:
+        market_data_error = str(exc)
+
     results = []
     errors = []
 
@@ -846,6 +891,7 @@ def scan_market(
     d1_errors = 0
 
     for index, symbol in enumerate(symbols, 1):
+
         try:
             history = fetch_stock_history(
                 symbol,
@@ -856,6 +902,7 @@ def scan_market(
                 history,
                 symbol,
                 realtime_quote=realtime_quotes.get(symbol),
+                market_df=market_df,
             )
 
             results.extend(stock_results)
@@ -920,6 +967,7 @@ def scan_market(
     strategy_counts = {}
 
     for strategy in STRATEGIES:
+
         strategy_rows = [
             item for item in results
             if item.get("strategy") == strategy
@@ -927,22 +975,27 @@ def scan_market(
 
         strategy_counts[strategy] = {
             "total": len(strategy_rows),
+
             "buy": sum(
                 item["signal"] == "BUY"
                 for item in strategy_rows
             ),
+
             "wait": sum(
                 item["signal"] == "WAIT"
                 for item in strategy_rows
             ),
+
             "watch": sum(
                 item["signal"] == "WATCH"
                 for item in strategy_rows
             ),
+
             "skip": sum(
                 item["signal"] == "SKIP"
                 for item in strategy_rows
             ),
+
             "filtered": sum(
                 item["signal"] == "FILTERED"
                 for item in strategy_rows
@@ -968,18 +1021,26 @@ def scan_market(
         "results": results,
         "scanned": len(symbols),
         "result_count": len(results),
+
         "confirmed_buy_count": count("BUY"),
         "wait_count": count("WAIT"),
         "watch_count": count("WATCH"),
         "skip_count": count("SKIP"),
         "filtered_count": count("FILTERED"),
+
         "liquidity_filtered_count": count("FILTERED"),
         "insufficient_history_count": insufficient,
         "d1_error_count": d1_errors,
         "error_count": len(errors),
+
         "realtime_count": realtime_count,
         "last_session_count": last_session_count,
         "unverified_quote_count": unverified_count,
+
         "strategy_counts": strategy_counts,
+
+        "market_data_available": market_df is not None,
+        "market_data_error": market_data_error,
+
         "errors": errors,
     }
