@@ -74,9 +74,29 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
                 quote_age_seconds REAL,
                 quote_source TEXT,
                 price_data_status TEXT,
-                price_data_message TEXT
+                price_data_message TEXT,
+                live_change_pct REAL,
+                market_regime TEXT
             )
         """)
+
+        # Nâng cấp an toàn cho SQLite cũ.
+        existing_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(scan_results)"
+            ).fetchall()
+        }
+
+        if "live_change_pct" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE scan_results ADD COLUMN live_change_pct REAL"
+            )
+
+        if "market_regime" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE scan_results ADD COLUMN market_regime TEXT"
+            )
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS
@@ -202,6 +222,8 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
         "quote_source",
         "price_data_status",
         "price_data_message",
+        "live_change_pct",
+        "market_regime",
     ]
 
     placeholders = ", ".join(["?"] * len(columns))
