@@ -16,18 +16,16 @@ from vn_market_data import get_ohlcv
 
 HISTORY_CACHE_SECONDS = 900
 SYMBOL_CACHE_SECONDS = 21600
-HISTORY_CACHE_MAX_ITEMS = 500
+HISTORY_CACHE_MAX_ITEMS = 1200
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DAILY_CANDLE_READY_TIME = dt_time(15, 30)
 
-# Nguồn danh sách mã ưu tiên: KBS
 KBS_LISTING_URL = (
     "https://kbbuddywts.kbsec.com.vn/"
     "iis-server/investment/stock/search/data"
 )
 
-# Nguồn dự phòng: Vietcap
 VIETCAP_LISTING_URL = (
     "https://trading.vietcap.com.vn/api/price/symbols/getAll"
 )
@@ -251,6 +249,11 @@ def _remove_incomplete_today_candle(df):
     return df.reset_index(drop=True)
 
 
+def clear_history_cache():
+    """Xóa cache D1 để buộc tải lại nến mới nhất sau giờ đóng cửa."""
+    _HISTORY_CACHE.clear()
+
+
 def fetch_stock_history(symbol, length=260):
     symbol = normalize_symbol(symbol)
     length = max(220, int(length))
@@ -375,7 +378,7 @@ def fetch_stock_quote(symbol):
 
 # =========================================================
 # XỬ LÝ DANH SÁCH MÃ
-# =========================================================
+# =====================================================
 
 def _unwrap_listing_response(data):
     """
@@ -447,13 +450,11 @@ def _extract_symbols(rows, exchange):
             )
         ).strip().upper()
 
-        # Chuẩn hóa tên sàn
         if board in ("HSX", "HOSE", "HS"):
             board = "HOSE"
         elif board in ("HNX",):
             board = "HNX"
 
-        # Chỉ lấy cổ phiếu cơ sở
         valid_types = {
             "STOCK",
             "ST",
@@ -618,7 +619,6 @@ def fetch_exchange_symbols(force_refresh=False):
 
     now = time.monotonic()
 
-    # Dùng cache nếu còn hạn
     if (
         not force_refresh
         and _SYMBOL_CACHE is not None
@@ -628,10 +628,7 @@ def fetch_exchange_symbols(force_refresh=False):
 
     errors = []
 
-    # -----------------------------------------------------
     # Thử KBS trước
-    # -----------------------------------------------------
-
     try:
         rows = _fetch_kbs_listing()
 
@@ -652,10 +649,7 @@ def fetch_exchange_symbols(force_refresh=False):
             f"KBS: {exc}"
         )
 
-    # -----------------------------------------------------
     # KBS lỗi thì chuyển sang Vietcap
-    # -----------------------------------------------------
-
     try:
         rows = _fetch_vietcap_listing()
 
@@ -676,10 +670,7 @@ def fetch_exchange_symbols(force_refresh=False):
             f"Vietcap: {exc}"
         )
 
-    # -----------------------------------------------------
     # Cả hai nguồn lỗi: dùng cache cũ nếu có
-    # -----------------------------------------------------
-
     if _SYMBOL_CACHE:
         fetch_exchange_symbols.last_stats = {
             "hose_count": None,
@@ -691,10 +682,6 @@ def fetch_exchange_symbols(force_refresh=False):
         }
 
         return list(_SYMBOL_CACHE)
-
-    # -----------------------------------------------------
-    # Không có cache và cả hai nguồn đều lỗi
-    # -----------------------------------------------------
 
     fetch_exchange_symbols.last_stats = {
         "source": "Không lấy được dữ liệu",
