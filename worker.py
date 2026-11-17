@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
-from data_provider import fetch_exchange_symbols
+from data_provider import fetch_exchange_symbols, clear_history_cache
 from scanner import scan_market
 from realtime_provider import (
     fetch_realtime_quotes,
@@ -51,6 +51,43 @@ STRATEGY_NAMES = {
     "REVERSAL": "Đảo chiều 5–10 phiên",
     "PULLBACK": "Pullback 3–7 phiên",
 }
+
+
+def is_market_session(now=None):
+    now = now or datetime.now(VN_TZ)
+
+    if now.weekday() >= 5:
+        return False
+
+    current = now.time()
+    morning = dt_time(9, 0) <= current <= dt_time(11, 30)
+    afternoon = dt_time(13, 0) <= current <= dt_time(15, 0)
+    return morning or afternoon
+
+
+def should_run_intraday_scan():
+    """Quét lại giá và tín hiệu trong phiên theo chu kỳ 300 giây."""
+    now = datetime.now(VN_TZ)
+    if not is_market_session(now):
+        return False
+
+    try:
+        summary = get_scan_summary(DB_PATH)
+        latest = summary.get("latest_scan_at")
+        if not latest:
+            return True
+
+        latest_time = datetime.fromisoformat(latest)
+        if latest_time.tzinfo is None:
+            latest_time = latest_time.replace(tzinfo=VN_TZ)
+        latest_time = latest_time.astimezone(VN_TZ)
+
+        age = (now - latest_time).total_seconds()
+        return age >= SCAN_INTERVAL - 15
+
+    except Exception:
+        logger.exception("Không kiểm tra được thời điểm quét gần nhất.")
+        return True
 
 
 def should_run_daily_scan():
@@ -153,8 +190,6 @@ def convert_results(scan_results):
         "blockers",
         "reasons",
         "penalties",
-
-        # Dữ liệu giá.
         "d1_close",
         "realtime_price",
         "kbs_quote_price",
@@ -165,6 +200,8 @@ def convert_results(scan_results):
         "quote_source",
         "price_data_status",
         "price_data_message",
+        "live_change_pct",
+        "market_regime",
     ]
 
     for item in scan_results:
@@ -229,6 +266,13 @@ def run_scan(progress_callback=None):
 
     started = time.time()
 
+    now_vn = datetime.now(VN_TZ)
+    if (
+        now_vn.weekday() < 5
+        and now_vn.time() >= DAILY_SCAN_TIME
+    ):
+        clear_history_cache()
+
     logger.info(
         "Bắt đầu quét HOSE/HNX: bảng giá KBS + phân tích D1."
     )
@@ -245,13 +289,11 @@ def run_scan(progress_callback=None):
         logger.error(
             "Không có mã cổ phiếu để quét."
         )
-
         _emit_progress(
             progress_callback,
             100,
             "Không lấy được danh sách cổ phiếu."
         )
-
         return 0
 
     total = len(symbols)
@@ -261,9 +303,7 @@ def run_scan(progress_callback=None):
         total
     )
 
-    # -------------------------------------------------
     # GIAI ĐOẠN 1: LẤY BẢNG GIÁ
-    # -------------------------------------------------
 
     realtime_quotes = {}
 
@@ -277,12 +317,10 @@ def run_scan(progress_callback=None):
         percent = (
             5 + 25 * current / max(quote_total, 1)
         )
-
         _emit_progress(
             progress_callback,
             percent,
-            f"Đang lấy bảng giá: "
-            f"{current}/{quote_total} mã"
+            f"Đang lấy bảng giá: {current}/{quote_total} mã"
         )
 
     try:
@@ -321,8 +359,7 @@ def run_scan(progress_callback=None):
         )
 
         logger.info(
-            "Nguồn đánh dấu giá mới: %s mã. "
-            "Scanner sẽ tự kiểm tra lại timestamp trước khi chấp nhận.",
+            "Nguồn đánh dấu giá mới: %s mã.",
             verified_count
         )
 
@@ -351,9 +388,7 @@ def run_scan(progress_callback=None):
         "Bắt đầu phân tích D1..."
     )
 
-    # -------------------------------------------------
     # GIAI ĐOẠN 2: PHÂN TÍCH D1
-    # -------------------------------------------------
 
     def d1_progress(current, d1_total):
         percent = (
@@ -382,6 +417,13 @@ def run_scan(progress_callback=None):
         )
 
         results = report.get("results", [])
+
+        if not report.get("market_data_available"):
+            logger.warning(
+                "Không lấy được dữ liệu VN-Index: %s. "
+                "Không thể áp dụng đầy đủ bộ lọc thị trường.",
+                report.get("market_data_error"),
+            )
 
         rows = convert_results(results)
 
@@ -509,39 +551,43 @@ def run_worker():
     )
 
     logger.info(
-        "Thời điểm quét tự động: sau %s.",
-        DAILY_SCAN_TIME.strftime("%H:%M")
-    )
-
-    logger.info(
-        "Chu kỳ kiểm tra: %s giây.",
-        SCAN_INTERVAL
+        "Tự động quét trong phiên mỗi %s giây; "
+        "quét D1 cuối ngày sau %s.",
+        SCAN_INTERVAL,
+        DAILY_SCAN_TIME.strftime("%H:%M"),
     )
 
     while True:
+        loop_started = time.monotonic()
+
         try:
-            if should_run_daily_scan():
+            if should_run_intraday_scan():
                 logger.info(
-                    "Đến thời điểm quét tự động trong ngày."
+                    "Đến chu kỳ quét trong phiên."
                 )
 
                 saved = run_scan()
 
-                if saved > 0:
-                    logger.info(
-                        "Đã lưu %s kết quả. "
-                        "Không quét lặp lại trong ngày.",
-                        saved
-                    )
-                else:
-                    logger.warning(
-                        "Chưa lưu được kết quả. "
-                        "Worker sẽ thử lại ở chu kỳ tiếp theo."
-                    )
+                logger.info(
+                    "Hoàn tất quét trong phiên; đã lưu %s dòng.",
+                    saved,
+                )
+
+            elif should_run_daily_scan():
+                logger.info(
+                    "Đến thời điểm quét D1 cuối ngày."
+                )
+
+                saved = run_scan()
+
+                logger.info(
+                    "Hoàn tất quét D1 cuối ngày; đã lưu %s dòng.",
+                    saved,
+                )
 
             else:
                 logger.info(
-                    "Chưa đến giờ quét hoặc hôm nay đã quét."
+                    "Chưa đến chu kỳ quét; đang chờ."
                 )
 
         except Exception:
@@ -549,7 +595,8 @@ def run_worker():
                 "Worker gặp lỗi không dự kiến."
             )
 
-        time.sleep(SCAN_INTERVAL)
+        elapsed = time.monotonic() - loop_started
+        time.sleep(max(10, SCAN_INTERVAL - elapsed))
 
 
 if __name__ == "__main__":
