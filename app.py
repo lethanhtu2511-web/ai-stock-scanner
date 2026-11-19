@@ -797,15 +797,29 @@ def show_portfolio():
         symbol = row.get("symbol")
         if not symbol or symbol in market_by_symbol:
             continue
-        quote_is_verified = row.get("price_data_status") == "REALTIME"
-        market_price = (
-            row.get("realtime_price")
-            if quote_is_verified
-            else row.get("d1_close") or row.get("price")
-        )
+        price_status = row.get("price_data_status")
+        quote_is_verified = price_status == "REALTIME"
+
+        # Không định giá vị thế bằng nến D1 đã bị đánh dấu quá cũ.
+        if price_status == "D1_STALE":
+            market_price = None
+        elif quote_is_verified:
+            market_price = row.get("realtime_price")
+        else:
+            market_price = row.get("d1_close") or row.get("price")
+
         market_by_symbol[symbol] = {
             "price": float(market_price) * 1000 if market_price is not None else None,
-            "source": "Realtime đã xác minh" if quote_is_verified else "D1/giá phiên gần nhất",
+            "source": (
+                "Realtime đã xác minh"
+                if quote_is_verified
+                else (
+                    f"D1/phiên gần nhất · {row.get('data_date') or 'ngày chưa rõ'}"
+                    if market_price is not None
+                    else "Không dùng được: D1 đã cũ"
+                )
+            ),
+            "data_date": row.get("data_date"),
             "signal": row.get("signal"),
             "strategy": STRATEGY_NAMES.get(row.get("strategy"), row.get("strategy")),
             "score": row.get("score"),
@@ -850,6 +864,7 @@ def show_portfolio():
                 "Số lượng": quantity,
                 "Giá vốn TB (nghìn đồng/cp, gồm phí)": round(avg_cost / 1000, 3),
                 "Giá tham chiếu (nghìn đồng/cp)": round(current / 1000, 3) if current is not None else None,
+                "Ngày dữ liệu giá": market.get("data_date") or "—",
                 "Nguồn giá": market.get("source", "Chưa có dữ liệu"),
                 "Lãi/lỗ tạm tính": round(unrealized, 0) if unrealized is not None else None,
                 "Lãi/lỗ (%)": round(pnl_pct, 2) if pnl_pct is not None else None,
@@ -861,8 +876,9 @@ def show_portfolio():
         st.metric("Tổng lãi/lỗ tạm tính sau phí bán và thuế", money(total_unrealized))
         st.caption(
             "Giá tham chiếu ưu tiên realtime chỉ khi timestamp nguồn được xác minh; "
-            "nếu không sẽ dùng giá D1/phiên gần nhất. Đây là số liệu ước tính, "
-            "không phải giá khớp lệnh."
+            "nếu không dùng D1/phiên gần nhất và hiển thị ngày dữ liệu. "
+            "Nếu D1 đã quá cũ, bot không tính lãi/lỗ cho mã đó. "
+            "Đây là số liệu ước tính, không phải giá khớp lệnh."
         )
         st.metric("Giá trị thị trường ròng ước tính", money(total_market_value))
     else:
