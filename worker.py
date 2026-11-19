@@ -586,7 +586,7 @@ def should_run_daily_backup():
     try:
         from pathlib import Path
         backups = sorted(
-            Path(BACKUP_DIR).glob("stock_scanner_*.sqlite3"),
+            Path(BACKUP_DIR).glob(f"{os.path.splitext(os.path.basename(DB_PATH))[0]}_*.sqlite3"),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
