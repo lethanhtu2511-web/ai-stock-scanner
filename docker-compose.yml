@@ -21,9 +21,12 @@ services:
     environment:
       DATABASE_PATH: /app/data/stock_scanner.sqlite3
       SCAN_INTERVAL: "300"
+      BACKUP_DIR: /app/backups
+      BACKUP_RETENTION: "14"
       TZ: Asia/Ho_Chi_Minh
     volumes:
       - stock_data:/app/data
+      - ./backups:/app/backups
 
 volumes:
   stock_data:
