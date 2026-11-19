@@ -833,12 +833,13 @@ def show_portfolio():
     c1.metric("Số mã đang nắm giữ", len(positions))
     c2.metric("Giá trị vốn còn lại", money(summary.get("total_cost", 0)))
     c3.metric("Lãi/lỗ đã thực hiện", money(summary.get("realized_pnl", 0)))
-    c4.metric("Tiền mua ròng", money(cash.get("net_buys", 0) - cash.get("net_sells", 0)))
+    c4.metric("Vốn ròng đã giải ngân", money(cash.get("net_buys", 0) - cash.get("net_sells", 0)))
 
     if positions:
         display_rows = []
         total_market_value = 0.0
         total_unrealized = 0.0
+        priced_positions = 0
         for position in positions:
             symbol = position["symbol"]
             market = market_by_symbol.get(symbol, {})
@@ -854,6 +855,7 @@ def show_portfolio():
                 unrealized = net_value - cost_value
                 total_market_value += net_value
                 total_unrealized += unrealized
+                priced_positions += 1
                 pnl_pct = unrealized / cost_value * 100 if cost_value else 0
             else:
                 unrealized = None
@@ -873,14 +875,15 @@ def show_portfolio():
             })
         st.subheader("Vị thế đang nắm giữ")
         st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
-        st.metric("Tổng lãi/lỗ tạm tính sau phí bán và thuế", money(total_unrealized))
+        st.metric("Lãi/lỗ tạm tính sau phí bán và thuế (các mã có giá)", money(total_unrealized))
+        st.caption(f"Đã định giá {priced_positions}/{len(positions)} mã đang nắm giữ. Các mã chưa có giá hợp lệ không được cộng vào tổng này.")
         st.caption(
             "Giá tham chiếu ưu tiên realtime chỉ khi timestamp nguồn được xác minh; "
             "nếu không dùng D1/phiên gần nhất và hiển thị ngày dữ liệu. "
             "Nếu D1 đã quá cũ, bot không tính lãi/lỗ cho mã đó. "
             "Đây là số liệu ước tính, không phải giá khớp lệnh."
         )
-        st.metric("Giá trị thị trường ròng ước tính", money(total_market_value))
+        st.metric("Giá trị thị trường ròng ước tính (các mã có giá)", money(total_market_value))
     else:
         st.info("Chưa có vị thế. Ghi nhận giao dịch mua đầu tiên ở phần bên dưới.")
 
