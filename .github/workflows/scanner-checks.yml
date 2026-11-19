@@ -1,0 +1,27 @@
+name: Scanner code checks
+
+on:
+  push:
+    branches:
+      - chatgpt/ai-stock-scanner-work
+  pull_request:
+    branches:
+      - main
+      - upgrade/comprehensive-v1
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile Python files
+        run: python -m compileall -q .
+      - name: Test scan lock
+        run: python -m unittest discover -s tests -v
