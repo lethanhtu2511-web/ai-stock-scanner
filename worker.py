@@ -536,6 +536,10 @@ def _run_scan_unlocked(progress_callback=None):
 
 
 
+class ScanAlreadyRunningError(RuntimeError):
+    """Raised when another process currently owns the market scan lock."""
+
+
 def run_scan(progress_callback=None):
     """
     Chạy quét với khóa SQLite dùng chung giữa giao diện và worker.
@@ -543,10 +547,9 @@ def run_scan(progress_callback=None):
     """
     with scan_lock(DB_PATH) as acquired:
         if not acquired:
-            logger.warning(
-                "Bỏ qua lượt quét vì một tiến trình khác đang quét."
+            raise ScanAlreadyRunningError(
+                "Một lượt quét khác đang chạy. Vui lòng đợi lượt đó hoàn tất."
             )
-            return 0
 
         return _run_scan_unlocked(
             progress_callback=progress_callback
