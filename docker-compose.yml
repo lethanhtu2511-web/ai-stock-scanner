@@ -8,6 +8,7 @@ services:
       - "8501:8501"
     environment:
       DATABASE_PATH: /app/data/stock_scanner.sqlite3
+      AUTO_SCAN_ENABLED: "0"
       TZ: Asia/Ho_Chi_Minh
     volumes:
       - stock_data:/app/data
