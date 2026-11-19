@@ -804,7 +804,7 @@ def show_portfolio():
             else row.get("d1_close") or row.get("price")
         )
         market_by_symbol[symbol] = {
-            "price": market_price,
+            "price": float(market_price) * 1000 if market_price is not None else None,
             "source": "Realtime đã xác minh" if quote_is_verified else "D1/giá phiên gần nhất",
             "signal": row.get("signal"),
             "strategy": STRATEGY_NAMES.get(row.get("strategy"), row.get("strategy")),
@@ -848,8 +848,8 @@ def show_portfolio():
             display_rows.append({
                 "Mã": symbol,
                 "Số lượng": quantity,
-                "Giá vốn TB (gồm phí)": round(avg_cost, 2),
-                "Giá tham chiếu": current,
+                "Giá vốn TB (nghìn đồng/cp, gồm phí)": round(avg_cost / 1000, 3),
+                "Giá tham chiếu (nghìn đồng/cp)": round(current / 1000, 3) if current is not None else None,
                 "Nguồn giá": market.get("source", "Chưa có dữ liệu"),
                 "Lãi/lỗ tạm tính": round(unrealized, 0) if unrealized is not None else None,
                 "Lãi/lỗ (%)": round(pnl_pct, 2) if pnl_pct is not None else None,
@@ -876,13 +876,13 @@ def show_portfolio():
         symbol = right.text_input("Mã cổ phiếu", max_chars=10).strip().upper()
         qty_col, price_col = st.columns(2)
         quantity = qty_col.number_input("Số lượng", min_value=100, step=100, value=100)
-        price = price_col.number_input("Giá khớp (đồng/cổ phiếu)", min_value=0.01, step=0.1, value=10.0)
+        price = price_col.number_input("Giá khớp (nghìn đồng/cổ phiếu, ví dụ 24.2)", min_value=0.01, step=0.1, value=10.0)
         note = st.text_input("Ghi chú (không bắt buộc)")
         submitted = st.form_submit_button("LƯU GIAO DỊCH", type="primary", use_container_width=True)
         if submitted:
             try:
                 result = add_transaction(
-                    side, symbol, int(quantity), float(price), note, db_path=DB_PATH
+                    side, symbol, int(quantity), float(price) * 1000, note, db_path=DB_PATH
                 )
                 st.success(
                     f"Đã ghi nhận {side} {symbol}: {int(quantity):,} cp. "
