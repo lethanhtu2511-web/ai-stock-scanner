@@ -787,9 +787,17 @@ def show_portfolio():
     # Lấy một dòng có dữ liệu giá tốt nhất cho mỗi mã.
     market_by_symbol = {}
     signal_rank = {"BUY": 0, "WAIT": 1, "WATCH": 2, "SKIP": 3, "FILTERED": 4}
+    price_rank = {
+        "REALTIME": 0,
+        "LAST_SESSION": 1,
+        "D1_ONLY": 2,
+        "UNVERIFIED": 3,
+        "D1_STALE": 9,
+    }
     for row in sorted(
         latest_rows,
         key=lambda x: (
+            price_rank.get(x.get("price_data_status"), 4),
             signal_rank.get(x.get("signal"), 9),
             -(float(x.get("score") or 0)),
         ),
