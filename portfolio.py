@@ -126,11 +126,15 @@ def _migrate_sqlite_to_supabase(client, db_path):
             client.table("transactions").upsert(
                 payload, on_conflict="legacy_id"
             ).execute()
+        # Import legacy settings only when the key is absent remotely.
+        # A fresh Streamlit instance may contain only local defaults; those
+        # must never overwrite settings already saved by the user in Supabase.
+        remote_settings = client.table("settings").select("key").execute().data or []
+        existing_keys = {item["key"] for item in remote_settings}
         for row in settings_rows:
-            if row["key"] in DEFAULTS:
-                client.table("settings").upsert(
-                    {"key": row["key"], "value": float(row["value"])},
-                    on_conflict="key",
+            if row["key"] in DEFAULTS and row["key"] not in existing_keys:
+                client.table("settings").insert(
+                    {"key": row["key"], "value": float(row["value"])}
                 ).execute()
     except sqlite3.Error as exc:
         raise RuntimeError(f"Không thể đọc dữ liệu SQLite cũ: {exc}") from exc
