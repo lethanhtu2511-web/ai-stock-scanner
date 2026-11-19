@@ -96,26 +96,29 @@ def should_run_intraday_scan():
         return True
 
 
-def should_run_daily_scan():
-    """Chỉ quét tự động sau 15:35 các ngày trong tuần."""
-
-    now = datetime.now(VN_TZ)
-
+def daily_scan_due(now, last_run_date=None):
+    """Quyết định quét D1 dựa trên giờ địa phương và ngày chạy đã lưu."""
     if now.weekday() >= 5 or now.time() < DAILY_SCAN_TIME:
         return False
+    return last_run_date != now.date().isoformat()
 
+
+def should_run_daily_scan():
+    """Chỉ quét tự động sau 15:35 các ngày trong tuần."""
+    now = datetime.now(VN_TZ)
     try:
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
             row = conn.execute(
                 "SELECT run_date FROM worker_daily_runs WHERE job_name = 'd1_scan'"
             ).fetchone()
-        return not row or row[0] != now.date().isoformat()
+        last_run_date = row[0] if row else None
+        return daily_scan_due(now, last_run_date)
     except sqlite3.OperationalError:
         # Bảng chưa tồn tại ở lần chạy đầu.
-        return True
+        return daily_scan_due(now, None)
     except Exception:
         logger.exception("Không kiểm tra được trạng thái quét D1 hằng ngày.")
-        return True
+        return daily_scan_due(now, None)
 
 
 def mark_daily_scan_complete(rows_saved=0):
