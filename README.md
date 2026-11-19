@@ -23,7 +23,7 @@ Mở giao diện tại `http://localhost:8501`.
 
 Compose khởi chạy hai dịch vụ:
 - `app`: giao diện Streamlit.
-- `worker`: quét nền theo chu kỳ 300 giây trong giờ giao dịch và quét D1 cuối ngày sau 15:35 (giờ Việt Nam).
+- `worker`: quét nền theo chu kỳ 300 giây trong giờ giao dịch, quét D1 cuối ngày sau 15:35 và tự sao lưu SQLite sau 15:45 (giờ Việt Nam).
 
 Hai dịch vụ dùng chung volume Docker `stock_data` tại `/app/data`, vì vậy lịch sử quét và danh mục được lưu trong cùng cơ sở dữ liệu SQLite.
 
@@ -42,6 +42,29 @@ docker compose down
 ```
 
 Lệnh trên không xóa volume dữ liệu. Không chạy `docker compose down -v` nếu chưa sao lưu vì lệnh đó xóa volume.
+
+## Sao lưu và phục hồi dữ liệu
+
+- Worker tự tạo bản sao lưu SQLite mỗi ngày giao dịch sau 15:45.
+- Bản sao lưu nằm trong volume dùng chung tại `/app/data/backups`; mặc định giữ 14 bản gần nhất.
+- Sao lưu dùng SQLite Online Backup API và kiểm tra `PRAGMA integrity_check` trước khi công bố file.
+- Bản sao lưu cùng volume giúp khôi phục khi lỗi logic/xóa nhầm dữ liệu, nhưng **không bảo vệ trước mất/hỏng máy chủ hoặc volume**. Cần định kỳ chép bản sao lưu ra máy/nơi lưu trữ độc lập.
+
+Liệt kê bản sao lưu:
+
+```bash
+docker compose exec app ls -lh /app/data/backups
+```
+
+Trước khi phục hồi, dừng cả app và worker, sau đó chép file backup cần dùng thành database chính. Không phục hồi khi app/worker còn đang chạy.
+
+```bash
+docker compose stop app worker
+# Thực hiện restore bằng backup_manager.restore_database(..., confirm=True)
+docker compose up -d
+```
+
+Hàm restore từ chối chạy nếu không truyền xác nhận tường minh và từ chối file backup không vượt qua integrity check.
 
 ## Dữ liệu và giới hạn
 
