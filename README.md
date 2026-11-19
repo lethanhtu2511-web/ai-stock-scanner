@@ -46,14 +46,15 @@ Lệnh trên không xóa volume dữ liệu. Không chạy `docker compose down 
 ## Sao lưu và phục hồi dữ liệu
 
 - Worker tự tạo bản sao lưu SQLite mỗi ngày giao dịch sau 15:45.
-- Bản sao lưu nằm trong volume dùng chung tại `/app/data/backups`; mặc định giữ 14 bản gần nhất.
+- Bản sao lưu nằm trong thư mục `./backups` trên máy chạy Docker (mount vào `/app/backups`); mặc định giữ 14 bản gần nhất.
+- Thư mục backup tách khỏi Docker volume `stock_data`, nên xóa riêng volume dữ liệu không xóa luôn các bản sao lưu trên máy chủ.
 - Sao lưu dùng SQLite Online Backup API và kiểm tra `PRAGMA integrity_check` trước khi công bố file.
-- Bản sao lưu cùng volume giúp khôi phục khi lỗi logic/xóa nhầm dữ liệu, nhưng **không bảo vệ trước mất/hỏng máy chủ hoặc volume**. Cần định kỳ chép bản sao lưu ra máy/nơi lưu trữ độc lập.
+- Thư mục `./backups` tách khỏi volume dữ liệu, giúp khôi phục khi volume SQLite bị xóa/hỏng. Tuy nhiên thư mục vẫn nằm trên cùng máy chủ; cần sao chép định kỳ ra một thiết bị hoặc dịch vụ lưu trữ độc lập để phòng mất máy chủ.
 
-Liệt kê bản sao lưu:
+Liệt kê bản sao lưu trên máy chủ:
 
 ```bash
-docker compose exec app ls -lh /app/data/backups
+ls -lh ./backups
 ```
 
 Trước khi phục hồi, dừng cả app và worker, sau đó chép file backup cần dùng thành database chính. Không phục hồi khi app/worker còn đang chạy.
