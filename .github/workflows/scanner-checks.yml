@@ -9,6 +9,10 @@ on:
       - main
       - upgrade/comprehensive-v1
 
+concurrency:
+  group: scanner-checks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-latest
