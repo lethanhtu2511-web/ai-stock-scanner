@@ -30,7 +30,7 @@ class RealtimeValidationTests(unittest.TestCase):
         self.assertEqual(stale["status"], "STALE")
 
         outside = _quote_freshness(
-            "2026-11-19T10:14:00",
+            "2026-11-19T15:59:00",
             now=datetime(2026, 11, 19, 16, 0, tzinfo=VN_TZ),
         )
         self.assertFalse(outside["is_fresh"])
