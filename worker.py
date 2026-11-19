@@ -2,6 +2,7 @@
 import os
 import time
 import logging
+import sqlite3
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
@@ -100,36 +101,46 @@ def should_run_daily_scan():
 
     now = datetime.now(VN_TZ)
 
-    if now.weekday() >= 5:
-        return False
-
-    if now.time() < DAILY_SCAN_TIME:
+    if now.weekday() >= 5 or now.time() < DAILY_SCAN_TIME:
         return False
 
     try:
-        summary = get_scan_summary(DB_PATH)
-        latest = summary.get("latest_scan_at")
-
-        if not latest:
-            return True
-
-        latest_time = datetime.fromisoformat(latest)
-
-        if latest_time.tzinfo is None:
-            latest_time = latest_time.replace(tzinfo=VN_TZ)
-
-        latest_time = latest_time.astimezone(VN_TZ)
-
-        return not (
-            latest_time.date() == now.date()
-            and latest_time.time() >= DAILY_SCAN_TIME
-        )
-
-    except Exception:
-        logger.exception(
-            "Không kiểm tra được lịch sử quét."
-        )
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            row = conn.execute(
+                "SELECT run_date FROM worker_daily_runs WHERE job_name = 'd1_scan'"
+            ).fetchone()
+        return not row or row[0] != now.date().isoformat()
+    except sqlite3.OperationalError:
+        # Bảng chưa tồn tại ở lần chạy đầu.
         return True
+    except Exception:
+        logger.exception("Không kiểm tra được trạng thái quét D1 hằng ngày.")
+        return True
+
+
+def mark_daily_scan_complete(rows_saved=0):
+    """Ghi nhận đã thử quét D1 hôm nay, kể cả khi không có dòng kết quả."""
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS worker_daily_runs (
+                job_name TEXT PRIMARY KEY,
+                run_date TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                rows_saved INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            INSERT INTO worker_daily_runs(job_name, run_date, completed_at, rows_saved)
+            VALUES ('d1_scan', ?, ?, ?)
+            ON CONFLICT(job_name) DO UPDATE SET
+                run_date = excluded.run_date,
+                completed_at = excluded.completed_at,
+                rows_saved = excluded.rows_saved
+        """, (
+            datetime.now(VN_TZ).date().isoformat(),
+            datetime.now(VN_TZ).isoformat(timespec="seconds"),
+            int(rows_saved or 0),
+        ))
 
 
 def get_symbols():
@@ -637,6 +648,7 @@ def run_worker():
                 )
 
                 saved = run_scan()
+                mark_daily_scan_complete(saved)
 
                 logger.info(
                     "Hoàn tất quét D1 cuối ngày; đã lưu %s dòng.",
