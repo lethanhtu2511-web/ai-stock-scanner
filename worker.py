@@ -12,6 +12,7 @@ from realtime_provider import (
     RealtimeDataError,
 )
 from scan_store import save_scan_results, get_scan_summary
+from scan_lock import scan_lock
 
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -253,7 +254,7 @@ def _emit_progress(callback, percent, message):
         )
 
 
-def run_scan(progress_callback=None):
+def _run_scan_unlocked(progress_callback=None):
     """
     Một lượt quét gồm hai giai đoạn:
 
@@ -531,6 +532,25 @@ def run_scan(progress_callback=None):
         )
 
         return 0
+
+
+
+
+def run_scan(progress_callback=None):
+    """
+    Chạy quét với khóa SQLite dùng chung giữa giao diện và worker.
+    Chỉ một tiến trình được quét tại một thời điểm.
+    """
+    with scan_lock(DB_PATH) as acquired:
+        if not acquired:
+            logger.warning(
+                "Bỏ qua lượt quét vì một tiến trình khác đang quét."
+            )
+            return 0
+
+        return _run_scan_unlocked(
+            progress_callback=progress_callback
+        )
 
 
 def run_worker():
