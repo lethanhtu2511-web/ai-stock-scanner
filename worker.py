@@ -13,6 +13,7 @@ from realtime_provider import (
 )
 from scan_store import save_scan_results, get_scan_summary
 from scan_lock import scan_lock
+from backup_manager import backup_database
 
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -28,6 +29,9 @@ MAX_SYMBOLS = max(
 )
 
 DAILY_SCAN_TIME = dt_time(15, 35)
+DAILY_BACKUP_TIME = dt_time(15, 45)
+BACKUP_DIR = os.getenv("BACKUP_DIR", "/app/data/backups")
+BACKUP_RETENTION = max(1, int(os.getenv("BACKUP_RETENTION", "14")))
 
 DB_PATH = os.getenv(
     "DATABASE_PATH",
@@ -556,6 +560,37 @@ def run_scan(progress_callback=None):
         )
 
 
+def should_run_daily_backup():
+    """Tạo một bản sao lưu SQLite sau khi hoàn tất lượt D1 cuối ngày."""
+    now = datetime.now(VN_TZ)
+    if now.weekday() >= 5 or now.time() < DAILY_BACKUP_TIME:
+        return False
+    try:
+        from pathlib import Path
+        backups = sorted(
+            Path(BACKUP_DIR).glob("stock_scanner_*.sqlite3"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not backups:
+            return True
+        latest = datetime.fromtimestamp(backups[0].stat().st_mtime, VN_TZ)
+        return latest.date() != now.date()
+    except Exception:
+        logger.exception("Không kiểm tra được bản sao lưu gần nhất.")
+        return True
+
+
+def run_daily_backup():
+    path = backup_database(
+        DB_PATH,
+        backup_dir=BACKUP_DIR,
+        keep=BACKUP_RETENTION,
+    )
+    logger.info("Đã tạo bản sao lưu SQLite: %s", path)
+    return path
+
+
 def run_worker():
     logger.info(
         "AI Stock Scanner Worker đã khởi động."
@@ -607,6 +642,9 @@ def run_worker():
                     "Hoàn tất quét D1 cuối ngày; đã lưu %s dòng.",
                     saved,
                 )
+
+            elif should_run_daily_backup():
+                run_daily_backup()
 
             else:
                 logger.info(
