@@ -14,6 +14,15 @@ from scan_store import (
     get_scan_summary,
 )
 from worker import run_scan
+from portfolio import (
+    add_transaction,
+    get_positions,
+    get_transactions,
+    get_portfolio_summary,
+    get_cash_summary,
+    get_settings,
+    save_settings,
+)
 
 
 # =========================================================
@@ -27,7 +36,7 @@ APP_VERSION = "3.0"
 AUTO_REFRESH_SECONDS = 300
 
 AUTO_SCAN_ENABLED = (
-    os.getenv("AUTO_SCAN_ENABLED", "1").strip().lower()
+    os.getenv("AUTO_SCAN_ENABLED", "0").strip().lower()
     not in {"0", "false", "no", "off"}
 )
 
@@ -757,6 +766,161 @@ def show_history():
     )
 
 
+
+# =========================================================
+# PORTFOLIO
+# =========================================================
+
+def show_portfolio():
+    st.title("💼 QUẢN LÝ DANH MỤC")
+
+    st.caption(
+        "Theo dõi vị thế, giá vốn bình quân đã gồm phí mua, "
+        "lãi/lỗ tạm tính sau phí và thuế bán. Bot chỉ tư vấn, "
+        "không tự đặt lệnh."
+    )
+
+    settings = get_settings(DB_PATH)
+    positions = get_positions(DB_PATH)
+    latest_rows = current_strategy_rows(get_latest_scan(DB_PATH))
+
+    # Lấy một dòng có dữ liệu giá tốt nhất cho mỗi mã.
+    market_by_symbol = {}
+    signal_rank = {"BUY": 0, "WAIT": 1, "WATCH": 2, "SKIP": 3, "FILTERED": 4}
+    for row in sorted(
+        latest_rows,
+        key=lambda x: (
+            signal_rank.get(x.get("signal"), 9),
+            -(float(x.get("score") or 0)),
+        ),
+    ):
+        symbol = row.get("symbol")
+        if not symbol or symbol in market_by_symbol:
+            continue
+        quote_is_verified = row.get("price_data_status") == "REALTIME"
+        market_price = (
+            row.get("realtime_price")
+            if quote_is_verified
+            else row.get("d1_close") or row.get("price")
+        )
+        market_by_symbol[symbol] = {
+            "price": market_price,
+            "source": "Realtime đã xác minh" if quote_is_verified else "D1/giá phiên gần nhất",
+            "signal": row.get("signal"),
+            "strategy": STRATEGY_NAMES.get(row.get("strategy"), row.get("strategy")),
+            "score": row.get("score"),
+            "reason": row.get("reason"),
+        }
+
+    st.subheader("Tổng quan")
+    summary = get_portfolio_summary(DB_PATH)
+    cash = get_cash_summary(DB_PATH)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Số mã đang nắm giữ", len(positions))
+    c2.metric("Giá trị vốn còn lại", money(summary.get("total_cost", 0)))
+    c3.metric("Lãi/lỗ đã thực hiện", money(summary.get("realized_pnl", 0)))
+    c4.metric("Tiền mua ròng", money(cash.get("net_buys", 0) - cash.get("net_sells", 0)))
+
+    if positions:
+        display_rows = []
+        total_market_value = 0.0
+        total_unrealized = 0.0
+        for position in positions:
+            symbol = position["symbol"]
+            market = market_by_symbol.get(symbol, {})
+            current = market.get("price")
+            avg_cost = float(position["avg_cost"])
+            quantity = int(position["quantity"])
+            if current is not None:
+                current = float(current)
+                net_value = quantity * current * (
+                    1 - float(settings["fee_sell"]) - float(settings["sell_tax"])
+                )
+                cost_value = quantity * avg_cost
+                unrealized = net_value - cost_value
+                total_market_value += net_value
+                total_unrealized += unrealized
+                pnl_pct = unrealized / cost_value * 100 if cost_value else 0
+            else:
+                unrealized = None
+                pnl_pct = None
+            advice = market.get("signal", "CHƯA CÓ TÍN HIỆU")
+            display_rows.append({
+                "Mã": symbol,
+                "Số lượng": quantity,
+                "Giá vốn TB (gồm phí)": round(avg_cost, 2),
+                "Giá tham chiếu": current,
+                "Nguồn giá": market.get("source", "Chưa có dữ liệu"),
+                "Lãi/lỗ tạm tính": round(unrealized, 0) if unrealized is not None else None,
+                "Lãi/lỗ (%)": round(pnl_pct, 2) if pnl_pct is not None else None,
+                "Tín hiệu mới nhất": SIGNAL_NAMES.get(advice, advice),
+                "Chiến lược": market.get("strategy", "—"),
+            })
+        st.subheader("Vị thế đang nắm giữ")
+        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+        st.metric("Tổng lãi/lỗ tạm tính sau phí bán và thuế", money(total_unrealized))
+        st.caption(
+            "Giá tham chiếu ưu tiên realtime chỉ khi timestamp nguồn được xác minh; "
+            "nếu không sẽ dùng giá D1/phiên gần nhất. Đây là số liệu ước tính, "
+            "không phải giá khớp lệnh."
+        )
+        st.metric("Giá trị thị trường ròng ước tính", money(total_market_value))
+    else:
+        st.info("Chưa có vị thế. Ghi nhận giao dịch mua đầu tiên ở phần bên dưới.")
+
+    st.divider()
+    st.subheader("Ghi nhận giao dịch")
+    with st.form("portfolio_trade_form", clear_on_submit=True):
+        left, right = st.columns(2)
+        side = left.selectbox("Loại giao dịch", ["MUA", "BÁN"])
+        symbol = right.text_input("Mã cổ phiếu", max_chars=10).strip().upper()
+        qty_col, price_col = st.columns(2)
+        quantity = qty_col.number_input("Số lượng", min_value=100, step=100, value=100)
+        price = price_col.number_input("Giá khớp (đồng/cổ phiếu)", min_value=0.01, step=0.1, value=10.0)
+        note = st.text_input("Ghi chú (không bắt buộc)")
+        submitted = st.form_submit_button("LƯU GIAO DỊCH", type="primary", use_container_width=True)
+        if submitted:
+            try:
+                result = add_transaction(
+                    side, symbol, int(quantity), float(price), note, db_path=DB_PATH
+                )
+                st.success(
+                    f"Đã ghi nhận {side} {symbol}: {int(quantity):,} cp. "
+                    f"Phí: {money(result['fee'])}; thuế: {money(result['tax'])}."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Không thể lưu giao dịch: {exc}")
+
+    with st.expander("Cài đặt vốn và phí giao dịch"):
+        with st.form("portfolio_settings_form"):
+            capital = st.number_input("Vốn dự kiến (đồng)", min_value=0.0, value=float(settings["capital"]), step=1000000.0)
+            risk_pct = st.number_input("Rủi ro tối đa mỗi lệnh (%)", min_value=0.1, max_value=10.0, value=float(settings["risk_pct"]), step=0.1)
+            fee_buy = st.number_input("Phí mua (%)", min_value=0.0, max_value=10.0, value=float(settings["fee_buy"]) * 100, step=0.01) / 100
+            fee_sell = st.number_input("Phí bán (%)", min_value=0.0, max_value=10.0, value=float(settings["fee_sell"]) * 100, step=0.01) / 100
+            sell_tax = st.number_input("Thuế bán (%)", min_value=0.0, max_value=10.0, value=float(settings["sell_tax"]) * 100, step=0.01) / 100
+            save = st.form_submit_button("LƯU CÀI ĐẶT")
+            if save:
+                try:
+                    save_settings({
+                        "capital": capital,
+                        "risk_pct": risk_pct,
+                        "fee_buy": fee_buy,
+                        "fee_sell": fee_sell,
+                        "sell_tax": sell_tax,
+                    }, DB_PATH)
+                    st.success("Đã lưu cài đặt.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Không thể lưu cài đặt: {exc}")
+
+    with st.expander("Lịch sử giao dịch"):
+        transactions = get_transactions(DB_PATH)
+        if transactions:
+            st.dataframe(pd.DataFrame(transactions), use_container_width=True, hide_index=True)
+        else:
+            st.info("Chưa có giao dịch được ghi nhận.")
+
 def show_system_info():
 
     st.title("⚙️ THÔNG TIN HỆ THỐNG")
@@ -767,7 +931,7 @@ def show_system_info():
     st.write("Phân tích kỹ thuật: D1")
     st.write("Chiến lược: Swing / Reversal / Pullback")
     st.write("Tự động đặt lệnh: Không")
-    st.write("Quản lý danh mục: Đã tắt")
+    st.write("Quản lý danh mục: Đã bật")
 
     st.warning(
         "Chu kỳ 300 giây là chu kỳ ứng dụng yêu cầu làm mới. "
@@ -794,6 +958,7 @@ def main():
                 "Tổng quan",
                 "Quét cổ phiếu",
                 "Lịch sử quét",
+                "Quản lý danh mục",
                 "Thông tin hệ thống",
             ],
         )
@@ -816,6 +981,9 @@ def main():
 
     elif page == "Lịch sử quét":
         show_history()
+
+    elif page == "Quản lý danh mục":
+        show_portfolio()
 
     else:
         show_system_info()
