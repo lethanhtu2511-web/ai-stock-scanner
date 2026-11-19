@@ -269,6 +269,10 @@ def _emit_progress(callback, percent, message):
         )
 
 
+class ScanExecutionError(RuntimeError):
+    """Raised when a scan could not complete and persist a result batch."""
+
+
 def _run_scan_unlocked(progress_callback=None):
     """
     Một lượt quét gồm hai giai đoạn:
@@ -310,7 +314,7 @@ def _run_scan_unlocked(progress_callback=None):
             100,
             "Không lấy được danh sách cổ phiếu."
         )
-        return 0
+        raise ScanExecutionError("Không lấy được danh sách cổ phiếu; lượt quét chưa hoàn tất.")
 
     total = len(symbols)
 
@@ -546,7 +550,7 @@ def _run_scan_unlocked(progress_callback=None):
             "Quét thất bại. Hãy kiểm tra nhật ký lỗi."
         )
 
-        return 0
+        raise ScanExecutionError("Lượt quét thất bại; chưa ghi nhận hoàn tất.") from None
 
 
 
