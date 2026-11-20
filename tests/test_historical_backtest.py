@@ -7,6 +7,22 @@ import historical_backtest as hb
 
 
 class HistoricalBacktestTests(unittest.TestCase):
+    def test_portfolio_caps_concurrent_positions_and_sizes_equally(self):
+        trades = pd.DataFrame([
+            {'entry_date': '2025-01-02', 'exit_date': '2025-01-06', 'net_return_pct': 10.0},
+            {'entry_date': '2025-01-03', 'exit_date': '2025-01-07', 'net_return_pct': -5.0},
+            {'entry_date': '2025-01-04', 'exit_date': '2025-01-08', 'net_return_pct': 4.0},
+            {'entry_date': '2025-01-05', 'exit_date': '2025-01-09', 'net_return_pct': 2.0},
+            {'entry_date': '2025-01-06', 'exit_date': '2025-01-10', 'net_return_pct': 3.0},
+            {'entry_date': '2025-01-06', 'exit_date': '2025-01-11', 'net_return_pct': 8.0},
+        ])
+        result = hb._simulate_portfolio(trades, initial_capital=10_000_000, max_positions=5)
+        self.assertEqual(result['accepted_trades'], 5)
+        self.assertEqual(result['skipped_capacity'], 1)
+        self.assertEqual(result['max_concurrent_positions'], 5)
+        self.assertGreater(result['ending_equity'], 0)
+        self.assertEqual(result['initial_capital'], 10_000_000)
+
     def test_costs_reduce_gross_return(self):
         gross = 10 / 100
         net = hb._net_return(100, 110, hb.DEFAULT_COSTS)
