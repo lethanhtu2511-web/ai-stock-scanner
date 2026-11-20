@@ -15,7 +15,9 @@ DEFAULT_DB_PATH = os.getenv(
 JSON_FIELDS = {
     "blockers",
     "reasons",
-    "penalties",\n    "early_reasons",\n    "early_risks",
+    "penalties",
+    "early_reasons",
+    "early_risks",
 }
 
 
@@ -76,7 +78,14 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
                 price_data_status TEXT,
                 price_data_message TEXT,
                 live_change_pct REAL,
-                market_regime TEXT
+                market_regime TEXT,
+                early_signal TEXT,
+                early_score REAL,
+                early_reasons TEXT,
+                early_risks TEXT,
+                early_volume_ratio REAL,
+                early_resistance REAL,
+                early_quote_verified INTEGER
             )
         """)
 
@@ -97,6 +106,19 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
             conn.execute(
                 "ALTER TABLE scan_results ADD COLUMN market_regime TEXT"
             )
+
+        early_columns = {
+            "early_signal": "TEXT",
+            "early_score": "REAL",
+            "early_reasons": "TEXT",
+            "early_risks": "TEXT",
+            "early_volume_ratio": "REAL",
+            "early_resistance": "REAL",
+            "early_quote_verified": "INTEGER",
+        }
+        for column, sql_type in early_columns.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {sql_type}")
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS
@@ -224,6 +246,13 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
         "price_data_message",
         "live_change_pct",
         "market_regime",
+        "early_signal",
+        "early_score",
+        "early_reasons",
+        "early_risks",
+        "early_volume_ratio",
+        "early_resistance",
+        "early_quote_verified",
     ]
 
     placeholders = ", ".join(["?"] * len(columns))
