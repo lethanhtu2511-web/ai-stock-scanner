@@ -15,7 +15,7 @@ DEFAULT_DB_PATH = os.getenv(
 JSON_FIELDS = {
     "blockers",
     "reasons",
-    "penalties",
+    "penalties",\n    "early_reasons",\n    "early_risks",
 }
 
 
