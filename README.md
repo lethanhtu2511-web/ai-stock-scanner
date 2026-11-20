@@ -9,6 +9,23 @@ Bot phân tích cổ phiếu HOSE/HNX theo dữ liệu D1, kết hợp bảng gi
 
 Bot chỉ đưa ra phân tích và khuyến nghị. Bot không tự đặt lệnh.
 
+## Worker nền trên Render (khuyến nghị cho Streamlit Community Cloud)
+
+Repository có sẵn `render.yaml` để tạo Background Worker độc lập với giao diện Streamlit.
+Worker chạy theo chu kỳ 300 giây trong giờ giao dịch, đọc/ghi kết quả và danh mục qua Supabase.
+Giao diện Streamlit vẫn chạy tại Streamlit Community Cloud; khi worker có heartbeat mới, giao diện không tự quét trùng.
+
+Thiết lập một lần:
+1. Trong Render, chọn **New → Blueprint** và kết nối repository này, nhánh `main`.
+2. Render đọc `render.yaml` và tạo dịch vụ `ai-stock-scanner-worker`.
+3. Khi được yêu cầu, nhập `SUPABASE_URL` và `SUPABASE_SECRET_KEY` của project hiện có. Chỉ nhập trong Render Dashboard; không commit key vào GitHub.
+4. Chọn tạo dịch vụ và chờ trạng thái Live. Background Worker dùng gói Starter (0.5 CPU / 512 MB), hiện khoảng **7 USD/tháng**; có thể nâng gói nếu bộ quét thiếu bộ nhớ.
+5. Trong Supabase, đặt `runtime_control.mode` thành `continuous` sau khi worker đã Live. Worker sẽ tự gửi heartbeat và quét theo chu kỳ.
+
+Sau khi worker hoạt động, giao diện điện thoại có thể đóng/mở mà không làm dừng quét nền. Nút quét thủ công sẽ gửi yêu cầu cho worker. Nếu worker mất heartbeat, giao diện tự quay lại cơ chế quét dự phòng khi trang đang mở.
+
+**Bảo mật:** dùng secret key server-side trong Render; không dùng publishable/anon key thay thế và không gửi key trong chat. Dữ liệu giao dịch và kết quả quét tiếp tục lưu ở Supabase hiện có.
+
 ## Chạy bằng Docker Compose
 
 Yêu cầu: Docker Engine và Docker Compose plugin.
