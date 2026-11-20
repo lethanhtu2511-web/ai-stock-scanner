@@ -250,6 +250,8 @@ def run_historical_backtest(
                     ].copy()
                     if not foreign_history.empty else pd.DataFrame()
                 )
+                from adaptive_strategy import classify_market_regime
+                market_regime = classify_market_regime(market_asof)
                 analysis = analyze_historical_signal(
                     point_in_time.rename(columns={
                         "date": "Date", "open": "Open", "high": "High",
@@ -307,6 +309,11 @@ def run_historical_backtest(
                         symbol, strategy, d, signal_idx, trade_plan, costs_used
                     )
                     if trade:
+                        trade["market_regime"] = market_regime
+                        if strategy in STRATEGY_HORIZONS:
+                            adaptive_detail = analysis["strategies"][strategy].get("adaptive_research", {})
+                            trade["adaptive_score"] = adaptive_detail.get("score")
+                            trade["adaptive_status"] = adaptive_detail.get("status")
                         all_trades.append(trade)
                         exit_positions = d.index[d["date"] == pd.Timestamp(trade["exit_date"])]
                         if len(exit_positions):
