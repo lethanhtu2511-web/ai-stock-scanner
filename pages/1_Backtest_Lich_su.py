@@ -36,9 +36,10 @@ with st.sidebar:
     )
     strategy = st.selectbox(
         "Chiến lược",
-        ["ALL", "SWING", "REVERSAL", "PULLBACK"],
+        ["ALL", "EARLY", "SWING", "REVERSAL", "PULLBACK"],
         format_func=lambda x: {
-            "ALL": "Tất cả chiến lược",
+            "ALL": "Tất cả chiến lược + tín hiệu sớm",
+            "EARLY": "Tín hiệu sớm: PREPARE / EARLY_BREAKOUT",
             "SWING": "Swing 2–5 phiên",
             "REVERSAL": "Reversal 5–10 phiên",
             "PULLBACK": "Pullback 3–7 phiên",
@@ -95,7 +96,11 @@ if result:
     c3.metric("Lãi/lỗ trung vị", f'{summary["median_return_pct"]:.2f}%')
     c4.metric("Thời gian nắm giữ TB", f'{summary["avg_holding_sessions"]:.1f} phiên')
 
-    st.subheader("Hiệu quả theo chiến lược")
+    st.subheader("Hiệu quả theo chiến lược và tín hiệu sớm")
+    st.caption(
+        "PREPARE và EARLY_BREAKOUT được đo riêng bằng giá đóng cửa sau 5 phiên; "
+        "không giả định có quote realtime hay mức stop/target xác nhận."
+    )
     if result["by_strategy"]:
         strategy_df = pd.DataFrame(result["by_strategy"]).rename(columns={
             "strategy": "Chiến lược",
