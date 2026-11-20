@@ -22,7 +22,9 @@ from portfolio import (
     get_cash_summary,
     get_settings,
     save_settings,
+    supabase_is_configured,
 )
+from runtime_control import get_control, request_manual_scan
 
 
 # =========================================================
@@ -365,7 +367,33 @@ def auto_refresh_panel(show_details=True):
     latest_time = summary.get("latest_scan_at")
     now = datetime.now(VN_TZ)
 
-    if auto_scan_due(now, latest_time):
+    # Khi worker nền trên Render đang hoạt động, để worker độc lập quét
+    # và chỉ đọc kết quả Supabase tại giao diện; tránh hai tiến trình quét trùng.
+    worker_online = False
+    if supabase_is_configured():
+        try:
+            control = get_control()
+            heartbeat = parse_scan_time(control.get("heartbeat_at"))
+            heartbeat_age = (
+                (now - heartbeat).total_seconds()
+                if heartbeat else None
+            )
+            worker_online = (
+                control.get("worker_status") in ("idle", "running")
+                and heartbeat_age is not None
+                and 0 <= heartbeat_age <= 600
+            )
+            if worker_online:
+                st.caption(
+                    f"Worker nền: {control.get('worker_status')} · "
+                    f"nhịp gần nhất {int(heartbeat_age)} giây trước"
+                )
+            else:
+                st.caption("Worker nền chưa hoạt động; giao diện tiếp tục tự quét khi đang mở.")
+        except Exception as exc:
+            st.warning(f"Không đọc được trạng thái worker nền: {exc}")
+
+    if not worker_online and auto_scan_due(now, latest_time):
         try:
             with st.spinner("Đang cập nhật dữ liệu và quét HOSE/HNX..."):
                 saved = run_scan()
@@ -584,9 +612,20 @@ def show_scanner():
 
     if st.button("🔄 LẤY DỮ LIỆU MỚI & QUÉT LẠI", type="primary", use_container_width=True):
         try:
-            with st.spinner("Đang cập nhật dữ liệu và phân tích HOSE/HNX..."):
-                saved = run_scan()
-            st.success(f"Đã hoàn tất lượt quét, lưu {saved:,} dòng kết quả.")
+            control = get_control() if supabase_is_configured() else {}
+            heartbeat = parse_scan_time(control.get("heartbeat_at"))
+            worker_online = (
+                control.get("worker_status") in ("idle", "running")
+                and heartbeat is not None
+                and 0 <= (datetime.now(VN_TZ) - heartbeat).total_seconds() <= 600
+            )
+            if worker_online:
+                request_manual_scan()
+                st.success("Đã gửi yêu cầu quét đến worker nền. Kết quả sẽ tự cập nhật khi hoàn tất.")
+            else:
+                with st.spinner("Đang cập nhật dữ liệu và phân tích HOSE/HNX..."):
+                    saved = run_scan()
+                st.success(f"Đã hoàn tất lượt quét, lưu {saved:,} dòng kết quả.")
             st.rerun()
         except ScanAlreadyRunningError:
             st.info("Một lượt quét khác đang chạy. Bot sẽ cập nhật kết quả khi lượt đó hoàn tất.")
