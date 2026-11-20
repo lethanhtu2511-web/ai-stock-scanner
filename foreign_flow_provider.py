@@ -1,8 +1,4 @@
-"""Foreign investor flow data adapter using vnstock Market.foreign_flow.
-
-Data is optional: missing foreign-flow data never blocks the technical scan.
-The caller must provide an as-of date when using this in a historical test.
-"""
+"""Settled foreign-investor flow adapter from the existing vn-market-data stack."""
 from __future__ import annotations
 
 import time
@@ -10,16 +6,13 @@ import pandas as pd
 
 _CACHE = {}
 CACHE_SECONDS = 900
-SOURCES = ("dnse", "fhsc", "ssi")
 
 
 def _num(value):
     try:
         if value is None or pd.isna(value):
             return 0.0
-        if isinstance(value, str):
-            value = value.replace(",", "").strip()
-        return float(value)
+        return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return 0.0
 
@@ -39,13 +32,19 @@ def normalize_foreign_flow(raw):
         "foreign_buy_volume": "buy_vol", "foreign_buy_value": "buy_val",
         "foreign_sell_volume": "sell_vol", "foreign_sell_value": "sell_val",
         "foreign_net_volume": "net_vol", "foreign_net_value": "net_val",
+        "fr_buy_volume": "buy_vol", "fr_buy_value": "buy_val",
+        "fr_sell_volume": "sell_vol", "fr_sell_value": "sell_val",
+        "fr_net_volume": "net_vol", "fr_net_value": "net_val",
     }
     for old, new in aliases.items():
         if old in d.columns and new not in d.columns:
             d = d.rename(columns={old: new})
     if "time" not in d.columns:
         return pd.DataFrame()
-    d["date"] = pd.to_datetime(d["time"], errors="coerce", utc=True).dt.tz_convert("Asia/Ho_Chi_Minh").dt.tz_localize(None).dt.normalize()
+    parsed = pd.to_datetime(d["time"], errors="coerce")
+    if getattr(parsed.dt, "tz", None) is not None:
+        parsed = parsed.dt.tz_convert("Asia/Ho_Chi_Minh").dt.tz_localize(None)
+    d["date"] = parsed.dt.normalize()
     for col in ("buy_vol", "buy_val", "sell_vol", "sell_val", "net_vol", "net_val"):
         if col not in d.columns:
             d[col] = pd.NA
@@ -62,36 +61,27 @@ def fetch_foreign_flow(symbol: str, start: str | None = None, end: str | None = 
     symbol = str(symbol or "").strip().upper()
     if not symbol:
         return pd.DataFrame()
-    cache_key = (symbol, start, end, int(length))
-    cached = _CACHE.get(cache_key)
-    if not force_refresh and cached and time.monotonic() - cached[0] < CACHE_SECONDS:
-        return cached[1].copy()
-    errors = []
-    try:
-        from vn_market_data import get_foreign_history
-    except Exception as exc:
-        raise RuntimeError(f"Không import được get_foreign_history: {exc}") from exc
-
     if not end:
         end = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").strftime("%Y-%m-%d")
     if not start:
-        # Provider archive is approximately 63 sessions deep; request a
-        # generous calendar window to cover holidays/weekends.
+        # CafeF settled archive is approximately 63 sessions deep.
         start = (pd.Timestamp(end) - pd.Timedelta(days=max(120, int(length) * 2))).strftime("%Y-%m-%d")
+    cache_key = (symbol, start, end)
+    cached = _CACHE.get(cache_key)
+    if not force_refresh and cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+        return cached[1].copy()
     try:
+        from vn_market_data import get_foreign_history
         response = get_foreign_history(symbol, start, end)
         source, rows = response if isinstance(response, tuple) and len(response) == 2 else ("vn-market-data", response)
         result = normalize_foreign_flow(rows)
+        result.attrs["source"] = str(source)
         if not result.empty:
-            result.attrs["source"] = str(source)
             _CACHE[cache_key] = (time.monotonic(), result.copy())
             return result
-        errors.append(f"{source}: không có bản ghi trong khoảng {start} đến {end}")
+        raise RuntimeError(f"{source}: không có dữ liệu trong {start} đến {end}")
     except Exception as exc:
-        errors.append(f"vn-market-data: {exc}")
-    if cached:
-        return cached[1].copy()
-    raise RuntimeError("Không lấy được dữ liệu khối ngoại: " + " | ".join(errors))
+        raise RuntimeError(f"Không lấy được dữ liệu khối ngoại: {exc}") from exc
 
 
 def summarize_foreign_flow(flow: pd.DataFrame, as_of=None, market_turnover_5d=None) -> dict:
@@ -109,8 +99,7 @@ def summarize_foreign_flow(flow: pd.DataFrame, as_of=None, market_turnover_5d=No
         return empty
     d = normalize_foreign_flow(flow)
     if as_of is not None:
-        cutoff = pd.Timestamp(as_of).normalize()
-        d = d[d["date"] <= cutoff]
+        d = d[d["date"] <= pd.Timestamp(as_of).normalize()]
     if d.empty:
         return empty
     row = d.iloc[-1]
@@ -118,14 +107,9 @@ def summarize_foreign_flow(flow: pd.DataFrame, as_of=None, market_turnover_5d=No
     net3 = float(net.tail(3).sum()) if net.tail(3).notna().all() else None
     net5 = float(net.tail(5).sum()) if net.tail(5).notna().all() else None
     net10 = float(net.tail(10).sum()) if net.tail(10).notna().all() else None
-    buy = _num(row["buy_val"])
-    sell = _num(row["sell_val"])
-    net_today = _num(row["net_val"])
-    ratio = (
-        net5 / float(market_turnover_5d)
-        if net5 is not None and market_turnover_5d and float(market_turnover_5d) > 0
-        else None
-    )
+    ratio = net5 / float(market_turnover_5d) if (
+        net5 is not None and market_turnover_5d and float(market_turnover_5d) > 0
+    ) else None
     score = 0
     if ratio is not None:
         if ratio >= 0.02:
@@ -136,14 +120,13 @@ def summarize_foreign_flow(flow: pd.DataFrame, as_of=None, market_turnover_5d=No
             score = -6
         elif ratio <= -0.005:
             score = -3
-    elif net5 is not None and net5 > 0:
-        score = 3 if net_today > 0 else 0
-    elif net5 is not None and net5 < 0:
-        score = -3 if net_today < 0 else 0
+    elif net5 is not None:
+        score = 3 if net5 > 0 else (-3 if net5 < 0 else 0)
     return {
         "foreign_flow_status": "AVAILABLE",
-        "foreign_buy_value": buy, "foreign_sell_value": sell,
-        "foreign_net_value": net_today,
+        "foreign_buy_value": _num(row["buy_val"]),
+        "foreign_sell_value": _num(row["sell_val"]),
+        "foreign_net_value": _num(row["net_val"]),
         "foreign_buy_volume": _num(row["buy_vol"]),
         "foreign_sell_volume": _num(row["sell_vol"]),
         "foreign_net_volume": _num(row["net_vol"]),
