@@ -22,6 +22,8 @@ SLIPPAGE_LOW = 0.0025
 MAX_SYMBOLS = 10
 PILOT_SYMBOLS = ["FPT", "HPG", "SSI", "MBB", "CTG", "VCB", "VNM", "MWG", "TCB", "GAS"]
 TEST_SESSIONS = 250
+TRAIN_SESSIONS = 750
+HISTORY_SESSIONS = TRAIN_SESSIONS + 3 * TEST_SESSIONS
 
 
 def clean(raw):
@@ -101,6 +103,7 @@ def simulate(d, signal_i, candidate):
     realized = 0.0
     exits = []
     first_target_hit = False
+    second_target_hit = False
     highest_high = float(row.high)
     exit_reason = "TIME_EXIT"
     exit_i = last
@@ -145,8 +148,9 @@ def simulate(d, signal_i, candidate):
                 tranche = 1/3 if not first_target_hit else 0
                 realize(tranche, target1, "TARGET_2R", j)
                 first_target_hit = True
-            if remaining > 0 and target2 is not None and float(b.high) >= target2:
+            if remaining > 0 and target2 is not None and not second_target_hit and float(b.high) >= target2:
                 realize(min(1/3, remaining), target2, "TARGET_3R", j)
+                second_target_hit = True
                 first_target_hit = True
         else:
             if remaining > 0 and not first_target_hit and float(b.high) >= target1:
@@ -181,18 +185,18 @@ def main():
     listed=set(fetch_exchange_symbols())
     symbols=[s for s in PILOT_SYMBOLS if s in listed]
     missing=[s for s in PILOT_SYMBOLS if s not in listed]
-    market=clean(fetch_stock_history("VNINDEX",length=900,is_index=True))
+    market=clean(fetch_stock_history("VNINDEX",length=HISTORY_SESSIONS,is_index=True))
     ranked=[]
     histories={}
     errors=[{"symbol":s,"error":"Không có trong danh sách HOSE/HNX hiện tại."} for s in missing]
     for s in symbols:
         try:
-            d=clean(fetch_stock_history(s,length=900))
-            if len(d)<500:
-                errors.append({"symbol":s,"error":f"Chỉ lấy được {len(d)} phiên; cần 500 phiên cho warm-up + 250 phiên kiểm thử."})
+            d=clean(fetch_stock_history(s,length=HISTORY_SESSIONS))
+            if len(d) < TRAIN_SESSIONS + TEST_SESSIONS:
+                errors.append({"symbol":s,"error":f"Chỉ lấy được {len(d)} phiên; cần tối thiểu {TRAIN_SESSIONS + TEST_SESSIONS} phiên cho 3 năm train + 1 năm test."})
                 continue
             # Universe selection from the beginning of the held-out interval.
-            cutoff=max(250,len(d)-TEST_SESSIONS-30)
+            cutoff=TRAIN_SESSIONS
             eligible,_=universe_check(d.iloc[:cutoff+1])
             if not eligible:
                 continue
@@ -213,7 +217,7 @@ def main():
     diagnostics={k:{"evaluated":0,"candidates":0,"blocked_regime":0} for k in ("PULLBACK","SWING_BREAKOUT","REVERSAL")}
     for s in chosen:
         d=histories[s]
-        start=max(250,len(d)-TEST_SESSIONS-30)
+        start=TRAIN_SESSIONS
         for i in range(start,len(d)-1):
             asof=d.iloc[:i+1].copy()
             mkt=market.loc[market.date<=asof.iloc[-1].date].copy()
@@ -246,13 +250,15 @@ def main():
     frame.to_csv(out/"trades.csv",index=False)
     report={"pilot_symbols_requested":PILOT_SYMBOLS,"symbols_found_on_exchange":symbols,
         "symbols_tested":len(chosen),"symbols_eligible":len(ranked),
-        "market_data_end":str(market.date.max().date()),"test_sessions":TEST_SESSIONS,
+        "market_data_end":str(market.date.max().date()),"test_sessions_per_window":TEST_SESSIONS,"train_sessions":TRAIN_SESSIONS,
+        "oos_windows": max(0, (len(histories[chosen[0]])-TRAIN_SESSIONS)//TEST_SESSIONS) if chosen else 0,
         "diagnostics":diagnostics,"performance":summary,"data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
                  "slippage": "0.10% high-liquidity; 0.25% low-liquidity"},
         "limitations":["Initial pilot research only; 10-symbol cap (FPT, HPG, SSI, MBB, CTG, VCB, VNM, MWG, TCB, GAS).",
-          "Single target exit proxy; partial take-profit and Chandelier trailing not yet simulated.",
-          "No portfolio concurrency, industry cap, daily circuit breaker or walk-forward 3y/1y aggregation yet.",
+           "Daily-bar simulation with staged partial exits and trailing stops; stop-first assumption when stop and target occur in the same candle.",
+          "Walk-forward uses rolling 3-year training history and successive 1-year out-of-sample windows; pilot remains limited to 10 symbols.",
+          "No portfolio concurrency, industry cap, daily circuit breaker, drawdown throttle or loss-streak throttle yet.",
           "Current listing universe can create survivorship bias."]}
     (out/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(report,ensure_ascii=False,indent=2))
