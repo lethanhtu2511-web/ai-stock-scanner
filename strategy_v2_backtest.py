@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from data_provider import fetch_exchange_symbols, fetch_stock_history
-from strategy_v2 import analyze_daily_setup, market_regime, universe_check, _indicators
+from strategy_v2 import analyze_daily_setup, universe_check, _indicators
 
 COST_BUY = 0.0015
 COST_SELL = 0.0015
@@ -212,7 +212,10 @@ def main():
             if not eligible:
                 continue
             avg=float((d.close*d.volume).iloc[:cutoff+1].tail(20).mean())
-            histories[s]=d
+            # Precompute the complete indicator matrix once per symbol. The
+            # walk-forward loop below slices only past rows, avoiding O(n^2)
+            # repeated EMA/ADX/RSI calculations for every historical session.
+            histories[s]=_indicators(d)
             ranked.append((s,avg))
         except Exception as exc:
             errors.append({"symbol":s,"error":str(exc)[:180]})
@@ -228,15 +231,32 @@ def main():
         chosen=chosen[:MAX_SYMBOLS]
     trades=[]
     diagnostics={k:{"evaluated":0,"candidates":0,"blocked_regime":0} for k in ("PULLBACK","SWING_BREAKOUT","REVERSAL")}
-    for s in chosen:
+    # Precompute VNINDEX indicators and resolve its regime by date using
+    # searchsorted; never rebuild the index indicators inside the stock loop.
+    market_ind = _indicators(market)
+    market_dates = pd.to_datetime(market_ind.date).to_numpy()
+    sessions_done = 0
+    for symbol_number, s in enumerate(chosen, 1):
         d=histories[s]
         next_free_index=TRAIN_SESSIONS
         for i in range(TRAIN_SESSIONS,len(d)-1):
-            asof=d.iloc[:i+1].copy()
-            mkt=market.loc[market.date<=asof.iloc[-1].date].copy()
-            if len(mkt)<200:
+            asof=d.iloc[:i+1]
+            asof_date=pd.Timestamp(asof.iloc[-1].date).to_datetime64()
+            market_i=int(pd.Series(market_dates).searchsorted(asof_date, side="right"))-1
+            if market_i < 199:
                 continue
-            res=analyze_daily_setup(s,asof,mkt)
+            mr=market_ind.iloc[market_i]
+            if pd.isna(mr.sma50) or pd.isna(mr.sma200):
+                regime="UNKNOWN"
+            elif mr.close < mr.sma200:
+                regime="BEARISH"
+            elif mr.sma50 > mr.sma200:
+                regime="BULLISH"
+            else:
+                regime="NEUTRAL"
+            res=analyze_daily_setup(s,asof,None,indicators_precomputed=True,
+                                    market_regime_override=regime)
+            sessions_done += 1
             for setup in diagnostics:
                 diagnostics[setup]["evaluated"]+=1
                 if res.get("market_regime")=="BEARISH":
@@ -252,6 +272,19 @@ def main():
                 next_free_index=trade.pop("_exit_index")+1
                 trade["oos_window"]=(i-TRAIN_SESSIONS)//TEST_SESSIONS+1
                 trades.append({"symbol":s,"setup":c["setup"],**trade})
+            if sessions_done % 100 == 0:
+                (progress/"progress.json").write_text(json.dumps({
+                    "phase":"walk_forward","symbols_processed":symbol_number,
+                    "symbols_total":len(chosen),"current_symbol":s,
+                    "sessions_evaluated":sessions_done,"trades_found":len(trades),
+                    "diagnostics":diagnostics
+                },ensure_ascii=False,indent=2),encoding="utf-8")
+        (progress/"progress.json").write_text(json.dumps({
+            "phase":"walk_forward","symbols_processed":symbol_number,
+            "symbols_total":len(chosen),"current_symbol":s,
+            "sessions_evaluated":sessions_done,"trades_found":len(trades),
+            "diagnostics":diagnostics
+        },ensure_ascii=False,indent=2),encoding="utf-8")
     frame=pd.DataFrame(trades)
     summary={}
     for setup in diagnostics:
@@ -281,7 +314,9 @@ def main():
                 }
     out=Path("strategy_v2_output"); out.mkdir(exist_ok=True)
     frame.to_csv(out/"trades.csv",index=False)
-    report={"universe_mode":"ALL_HOSE_HNX" if MAX_SYMBOLS == 0 else "BOUNDED",
+    report={"engine":"PRECOMPUTED_INDICATORS_WALK_FORWARD",
+        "sessions_evaluated":sessions_done,
+        "universe_mode":"ALL_HOSE_HNX" if MAX_SYMBOLS == 0 else "BOUNDED",
         "symbols_found_on_exchange":len(symbols),"symbols_tested":len(chosen),"symbols_eligible":len(ranked),
         "market_data_end":str(market.date.max().date()),"test_sessions_per_window":TEST_SESSIONS,"train_sessions":TRAIN_SESSIONS,
         "oos_windows": max([max(0,(len(histories[s])-TRAIN_SESSIONS)//TEST_SESSIONS) for s in chosen],default=0),
