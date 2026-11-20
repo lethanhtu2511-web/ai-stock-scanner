@@ -15,6 +15,7 @@ from realtime_provider import (
 from scan_store import save_scan_results, get_scan_summary
 from scan_lock import scan_lock
 from backup_manager import backup_database
+from runtime_control import get_control, worker_heartbeat, complete_manual_scan
 
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -610,73 +611,61 @@ def run_daily_backup():
 
 
 def run_worker():
-    logger.info(
-        "AI Stock Scanner Worker đã khởi động."
-    )
-
-    logger.info(
-        "Chỉ báo kỹ thuật: D1."
-    )
-
-    logger.info(
-        "Giá xác nhận: chỉ dùng giá có timestamp nguồn hợp lệ."
-    )
-
-    logger.info(
-        "Ba chiến lược: SWING, REVERSAL, PULLBACK."
-    )
-
-    logger.info(
-        "Tự động quét trong phiên mỗi %s giây; "
-        "quét D1 cuối ngày sau %s.",
-        SCAN_INTERVAL,
-        DAILY_SCAN_TIME.strftime("%H:%M"),
-    )
+    logger.info("AI Stock Scanner Worker đã khởi động; điều khiển qua Supabase.")
+    last_continuous_scan = 0.0
+    last_scan_iso = None
+    last_daily_date = None
 
     while True:
         loop_started = time.monotonic()
-
         try:
-            if should_run_intraday_scan():
-                logger.info(
-                    "Đến chu kỳ quét trong phiên."
-                )
+            control = get_control()
+            mode = control.get("mode", "on_demand")
+            requested = control.get("manual_scan_requested_at")
+            completed = control.get("manual_scan_completed_at")
+            manual_pending = bool(requested and requested != completed)
+            now = datetime.now(VN_TZ)
+            do_scan = manual_pending
+            reason = "yêu cầu quét thủ công từ giao diện" if manual_pending else ""
 
+            if mode == "continuous" and is_market_session(now):
+                if loop_started - last_continuous_scan >= SCAN_INTERVAL:
+                    do_scan = True
+                    reason = "chế độ chạy liên tục"
+            if mode == "continuous" and daily_scan_due(now, last_daily_date):
+                do_scan = True
+                reason = "quét D1 cuối ngày"
+
+            if do_scan:
+                logger.info("Bắt đầu quét: %s", reason)
+                worker_heartbeat(status="running", last_scan_at=last_scan_iso)
                 saved = run_scan()
+                last_scan_iso = datetime.now(VN_TZ).isoformat(timespec="seconds")
+                last_continuous_scan = time.monotonic()
+                if reason == "quét D1 cuối ngày":
+                    last_daily_date = now.date().isoformat()
+                    mark_daily_scan_complete(saved)
+                if manual_pending:
+                    complete_manual_scan(requested)
+                worker_heartbeat(status="idle", last_scan_at=last_scan_iso,
+                                 symbols_monitored=MAX_SYMBOLS or None)
+                logger.info("Quét hoàn tất; đã lưu %s dòng.", saved)
+            else:
+                worker_heartbeat(status="idle", last_scan_at=last_scan_iso,
+                                 symbols_monitored=MAX_SYMBOLS or None)
 
-                logger.info(
-                    "Hoàn tất quét trong phiên; đã lưu %s dòng.",
-                    saved,
-                )
-
-            elif should_run_daily_scan():
-                logger.info(
-                    "Đến thời điểm quét D1 cuối ngày."
-                )
-
-                saved = run_scan()
-                mark_daily_scan_complete(saved)
-
-                logger.info(
-                    "Hoàn tất quét D1 cuối ngày; đã lưu %s dòng.",
-                    saved,
-                )
-
-            elif should_run_daily_backup():
+            if mode == "continuous" and not is_market_session(now) and should_run_daily_backup():
                 run_daily_backup()
 
-            else:
-                logger.info(
-                    "Chưa đến chu kỳ quét; đang chờ."
-                )
-
-        except Exception:
-            logger.exception(
-                "Worker gặp lỗi không dự kiến."
-            )
+        except Exception as exc:
+            logger.exception("Worker gặp lỗi không dự kiến.")
+            try:
+                worker_heartbeat(status="error", last_scan_at=last_scan_iso, error=exc)
+            except Exception:
+                logger.exception("Không cập nhật được heartbeat.")
 
         elapsed = time.monotonic() - loop_started
-        time.sleep(max(10, SCAN_INTERVAL - elapsed))
+        time.sleep(max(3, min(10, 10 - elapsed)))
 
 
 if __name__ == "__main__":
