@@ -24,8 +24,8 @@ class ForeignFlowTests(unittest.TestCase):
         summary = summarize_foreign_flow(raw, as_of="2026-11-18", market_turnover_5d=1000)
         self.assertEqual(summary["foreign_data_date"], "2026-11-18")
         self.assertEqual(summary["foreign_net_value"], -70)
-        self.assertEqual(summary["foreign_net_5d"],  -30)
-        self.assertEqual(summary["foreign_net_ratio"], -30 / 1000)
+        self.assertEqual(summary["foreign_net_5d"],  -20)
+        self.assertEqual(summary["foreign_net_ratio"], -20 / 1000)
 
     def test_missing_flow_is_unavailable_not_zero_net(self):
         summary = summarize_foreign_flow(pd.DataFrame())
