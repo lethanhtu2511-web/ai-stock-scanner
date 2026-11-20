@@ -239,6 +239,7 @@ def convert_results(scan_results):
         "foreign_net_3d",
         "foreign_net_5d",
         "foreign_net_10d",
+        "foreign_net_ratio",
         "foreign_signal",
         "foreign_score_adjustment",
         "foreign_data_date",
