@@ -60,6 +60,10 @@ def _get_supabase():
     return _supabase_client
 
 
+def supabase_is_configured():
+    """Return whether shared Supabase persistence is configured."""
+    return _get_supabase() is not None
+
 def _connect(db_path=DEFAULT_DB_PATH):
     folder = os.path.dirname(db_path)
     if folder:
