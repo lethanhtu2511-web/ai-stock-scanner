@@ -9,6 +9,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: strategy-v2-research
+  cancel-in-progress: true
 jobs:
   research-backtest:
     runs-on: ubuntu-latest
