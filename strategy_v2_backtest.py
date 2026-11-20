@@ -194,7 +194,7 @@ def simulate(d, signal_i, candidate):
     }
 
 def main():
-    listed=set(fetch_exchange_symbols())
+    listed=sorted(set(fetch_exchange_symbols()))
     symbols = listed if MAX_SYMBOLS == 0 else listed[:MAX_SYMBOLS]
     market=clean(fetch_stock_history("VNINDEX",length=HISTORY_SESSIONS,is_index=True))
     ranked=[]
@@ -250,6 +250,7 @@ def main():
             trade=simulate(d,i,c)
             if trade:
                 next_free_index=trade.pop("_exit_index")+1
+                trade["oos_window"]=(i-TRAIN_SESSIONS)//TEST_SESSIONS+1
                 trades.append({"symbol":s,"setup":c["setup"],**trade})
     frame=pd.DataFrame(trades)
     summary={}
@@ -264,12 +265,27 @@ def main():
                 "total_compounded_pct":round(((1+g.net_return_pct/100).prod()-1)*100,3)}
         else:
             summary[setup]={"trades":0,"win_rate_pct":0,"avg_net_return_pct":0,"profit_factor":None}
+    window_summary={}
+    if not frame.empty:
+        for window, wg in frame.groupby("oos_window"):
+            window_summary[str(int(window))]={}
+            for setup in diagnostics:
+                sg=wg[wg.setup==setup]
+                wins=sg.loc[sg.net_return_pct>0,"net_return_pct"].sum()
+                losses=abs(sg.loc[sg.net_return_pct<0,"net_return_pct"].sum())
+                window_summary[str(int(window))][setup]={
+                    "trades":int(len(sg)),
+                    "win_rate_pct":round(float(sg.win.mean()*100),2) if len(sg) else 0,
+                    "profit_factor":round(float(wins/losses),3) if losses else None,
+                    "avg_net_return_pct":round(float(sg.net_return_pct.mean()),3) if len(sg) else 0
+                }
     out=Path("strategy_v2_output"); out.mkdir(exist_ok=True)
     frame.to_csv(out/"trades.csv",index=False)
     report={"universe_mode":"ALL_HOSE_HNX" if MAX_SYMBOLS == 0 else "BOUNDED",
         "symbols_found_on_exchange":len(symbols),"symbols_tested":len(chosen),"symbols_eligible":len(ranked),
         "market_data_end":str(market.date.max().date()),"test_sessions_per_window":TEST_SESSIONS,"train_sessions":TRAIN_SESSIONS,
-        "oos_windows": max(0, (len(histories[chosen[0]])-TRAIN_SESSIONS)//TEST_SESSIONS) if chosen else 0,
+        "oos_windows": max([max(0,(len(histories[s])-TRAIN_SESSIONS)//TEST_SESSIONS) for s in chosen],default=0),
+        "oos_window_performance":window_summary,
         "diagnostics":diagnostics,"performance":summary,"data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
                  "slippage": "0.10% high-liquidity; 0.25% low-liquidity"},
