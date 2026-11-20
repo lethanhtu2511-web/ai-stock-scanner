@@ -204,10 +204,6 @@ def run_historical_backtest(
     selected = [symbol for symbol, _ in ranked[:max(1, int(max_symbols))]]
     all_trades = []
     signal_eval_errors = []
-    signal_diagnostics = {
-        strategy: {"evaluated": 0, "BUY": 0, "WAIT": 0, "WATCH": 0, "SKIP": 0, "FILTERED": 0, "scores": [], "blockers": Counter()}
-        for strategy in strategy_keys
-    }
     strategy_keys = list(ALL_HORIZONS) if strategy_filter == "ALL" else (
         list(EARLY_HORIZONS) if strategy_filter == "EARLY" else [strategy_filter]
     )
@@ -215,6 +211,10 @@ def run_historical_backtest(
     if invalid_strategy:
         raise ValueError("Chiến lược không hợp lệ: " + ", ".join(invalid_strategy))
 
+    signal_diagnostics = {
+        strategy: {"evaluated": 0, "BUY": 0, "WAIT": 0, "WATCH": 0, "SKIP": 0, "FILTERED": 0, "scores": [], "blockers": Counter()}
+        for strategy in strategy_keys
+    }
     foreign_histories = {}
     for symbol in selected:
         try:
