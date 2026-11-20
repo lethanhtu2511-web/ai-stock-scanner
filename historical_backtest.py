@@ -212,7 +212,12 @@ def run_historical_backtest(
         raise ValueError("Chiến lược không hợp lệ: " + ", ".join(invalid_strategy))
 
     signal_diagnostics = {
-        strategy: {"evaluated": 0, "BUY": 0, "WAIT": 0, "WATCH": 0, "SKIP": 0, "FILTERED": 0, "scores": [], "blockers": Counter()}
+        strategy: {
+            "evaluated": 0, "BUY": 0, "WAIT": 0, "WATCH": 0,
+            "SKIP": 0, "FILTERED": 0, "scores": [],
+            "blockers": Counter(), "adaptive_statuses": Counter(),
+            "adaptive_scores": [],
+        }
         for strategy in strategy_keys
     }
     foreign_histories = {}
@@ -281,6 +286,10 @@ def run_historical_backtest(
                     diagnostic[state] = diagnostic.get(state, 0) + 1
                     diagnostic["scores"].append(int(item.get("score", 0) or 0))
                     diagnostic["blockers"].update(item.get("blockers", []) or [])
+                    adaptive = item.get("adaptive_research") or {}
+                    if adaptive:
+                        diagnostic["adaptive_statuses"].update([adaptive.get("status", "UNKNOWN")])
+                        diagnostic["adaptive_scores"].append(int(adaptive.get("score", 0) or 0))
                     is_signal = state == "BUY" and item.get("confirmed") is True
                     trade_plan = item
                 else:
@@ -332,6 +341,17 @@ def run_historical_backtest(
                 {"reason": reason, "count": int(count)}
                 for reason, count in detail["blockers"].most_common(10)
             ],
+            "adaptive_research": {
+                "status_counts": {
+                    key: int(value) for key, value in detail["adaptive_statuses"].items()
+                },
+                "score_percentiles": (
+                    {str(q): round(float(pd.Series(detail["adaptive_scores"]).quantile(q)), 2)
+                     for q in (0.25, 0.5, 0.75, 0.9)}
+                    if detail["adaptive_scores"] else {}
+                ),
+                "executable_buy": False,
+            },
         }
 
     by_strategy = []
