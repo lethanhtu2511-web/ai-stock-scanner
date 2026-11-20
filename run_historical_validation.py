@@ -55,6 +55,7 @@ def main() -> None:
         "data_errors": result["data_errors"],
         "signal_evaluation_error_count": result.get("signal_evaluation_error_count", 0),
         "signal_evaluation_errors_sample": result.get("signal_evaluation_errors_sample", []),
+        "signal_diagnostics": result.get("signal_diagnostics", {}),
         "selected_symbols": result["selected_symbols"],
         "costs": result["costs"],
         "lookback_sessions": result["lookback_sessions"],
