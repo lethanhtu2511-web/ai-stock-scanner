@@ -16,7 +16,15 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Tạo file `.env` cục bộ nếu triển khai có cấu hình môi trường. Không đưa API key hoặc Supabase secret vào GitHub.
+Tạo file `.env` cục bộ ngay cạnh `worker.py` với các biến sau (dùng đúng URL và secret trong Supabase Project Settings):
+
+```dotenv
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co
+SUPABASE_SECRET_KEY=YOUR_SECRET_KEY
+SCAN_INTERVAL=300
+```
+
+`python-dotenv` sẽ tự nạp `.env`. Không đưa file này lên GitHub; `.env` đã được loại khỏi Git. Không dán secret vào cuộc trò chuyện.
 
 ## Chạy
 Nhấp đúp `run_worker_windows.bat`, hoặc chạy:
@@ -30,4 +38,4 @@ Giữ cửa sổ worker mở trong giờ giao dịch. Nếu máy ngủ, tắt ho
 ## Giới hạn hiện tại cần hiểu đúng
 Worker hiện tại chạy chu kỳ quét theo `SCAN_INTERVAL` (mặc định 300 giây), không phải luồng tick 1–5 giây. KBS public board không có cam kết SLA/độ trễ trong mã hiện tại. Không được đổi nhãn thành realtime nếu timestamp nguồn không xác minh được.
 
-Để bật chế độ điều khiển liên tục/ngắt quãng từ điện thoại, cần hoàn tất bảng điều khiển runtime dùng chung trên Supabase và heartbeat của worker. Không được dùng bảng `settings` hiện tại cho chuỗi trạng thái vì cột `value` đang là số. Phần này cần migration riêng và kiểm thử trước khi bật mặc định.
+Chế độ `continuous` / `on_demand` được lưu ở `runtime_control` trên Supabase. Worker kiểm tra điều khiển khoảng 10 giây/lần; chế độ `on_demand` chỉ quét khi giao diện gửi yêu cầu. Trang Streamlit và worker phải cùng dùng đúng Supabase project và secret server-side. Không đưa secret vào mã nguồn.
