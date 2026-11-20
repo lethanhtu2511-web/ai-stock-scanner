@@ -256,7 +256,7 @@ def analyze_daily_setup(symbol: str, df: pd.DataFrame, market_df: pd.DataFrame |
                 plan = _risk_plan(entry, stop, float(r.atr), setup="SWING_BREAKOUT", liquidity_high=liquidity_high)
                 out["candidates"].append({"setup":"SWING_BREAKOUT","score":score,"max_score":7,
                     "reasons":why+["Nền <=12%, khối lượng co hẹp"],"base_range_pct":round(base_range*100,2),
-                    "entry_type":"NEXT_OPEN","gap_limit_atr":1.5,"atr":float(r.atr),"holding_sessions":[3,30],
+                    "entry_type":"NEXT_OPEN","gap_limit_atr":1.5,"atr":float(r.atr),"holding_sessions":[3,30],"base_low":base_low,
                     "risk_factor":risk_factor,"risk_plan":plan,
                     "exit_rule":"1/3 tại 2R, 1/3 tại 3R hoặc swing high; phần còn lại Chandelier; tối đa 30 phiên"})
     # Reversal: separate, higher-risk satellite; no trend filter by design.
@@ -282,6 +282,7 @@ def analyze_daily_setup(symbol: str, df: pd.DataFrame, market_df: pd.DataFrame |
                     "reasons":why,"prior_decline_pct":round(decline*100,2),
                     "entry_type":"STOP_ABOVE_CONFIRMATION_HIGH","entry_trigger":trigger,
                     "cancel_if_close_below_confirmation_low":float(r.low),
+                    "confirmation_low":float(r.low),
                     "holding_sessions":[3,10],"risk_factor":risk_factor*0.5,
                     "risk_plan":plan,"exit_rule":"50% tại 1,5R; phần còn lại trail dưới EMA21; thoát tối đa 10 phiên nếu không bật"})
     out["candidates"].sort(key=lambda x: (x["score"]/max(x["max_score"],1), x["risk_factor"]), reverse=True)
