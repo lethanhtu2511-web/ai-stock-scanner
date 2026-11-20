@@ -14,6 +14,7 @@ from scan_store import (
     get_scan_summary,
 )
 from worker import run_scan
+from runtime_control import get_control, set_mode, request_manual_scan
 from portfolio import (
     add_transaction,
     get_positions,
@@ -661,59 +662,35 @@ def show_scanner():
     st.title("🔎 QUÉT CỔ PHIẾU")
 
     st.info(
-        "Bot cập nhật mỗi 300 giây trong giờ giao dịch "
-        "khi trang đang mở. Phân tích kỹ thuật sử dụng D1; "
-        "giá trong phiên dùng để xác nhận điểm mua "
-        "và lập kế hoạch rủi ro."
+        "Chế độ quét được điều khiển qua Supabase. Worker chạy trên PC Windows; điện thoại dùng để điều khiển và xem kết quả. Bot không tự đặt lệnh."
     )
 
-    if st.button(
-        "🚀 QUÉT THỊ TRƯỜNG NGAY",
-        type="primary",
-        use_container_width=True,
-    ):
-
-        progress = st.progress(
-            0,
-            text="Đang chuẩn bị...",
+    try:
+        control = get_control()
+        current_mode = control.get("mode", "on_demand")
+        choice = st.radio(
+            "Chế độ hoạt động",
+            ["Chạy không liên tục", "Chạy liên tục"],
+            index=1 if current_mode == "continuous" else 0,
+            horizontal=True,
+            key="runtime_mode_choice",
         )
+        requested_mode = "continuous" if choice == "Chạy liên tục" else "on_demand"
+        if requested_mode != current_mode:
+            set_mode(requested_mode)
+            st.success("Đã gửi thay đổi chế độ đến worker.")
+            st.rerun()
 
-        message = st.empty()
-
-        def update_progress(percent, text):
-
-            progress.progress(
-                max(0, min(100, int(percent))),
-                text=f"{int(percent)}%",
-            )
-
-            message.caption(text)
-
-        try:
-            saved = run_scan(
-                progress_callback=update_progress
-            )
-
-            if saved:
-                st.success(
-                    f"Đã quét và lưu {saved:,} dòng."
-                )
-
-            else:
-                st.warning(
-                    "Không lưu được kết quả. "
-                    "Kiểm tra Cloud logs."
-                )
-
-        except Exception as exc:
-            st.error(
-                f"Quét thất bại: {exc}"
-            )
-
-        finally:
-            progress.empty()
-            message.empty()
-
+        heartbeat = parse_scan_time(control.get("heartbeat_at"))
+        online = bool(heartbeat and (datetime.now(VN_TZ) - heartbeat).total_seconds() <= 30)
+        st.metric("Worker trên PC", "ĐANG KẾT NỐI" if online else "OFFLINE")
+        st.caption("Chế độ: " + current_mode + " · Heartbeat: " + (heartbeat.strftime("%H:%M:%S %d/%m/%Y") if heartbeat else "Chưa có"))
+        if st.button("🚀 YÊU CẦU QUÉT THỊ TRƯỜNG", type="primary", use_container_width=True):
+            request_manual_scan()
+            st.success("Đã gửi yêu cầu quét. Worker trên PC sẽ thực hiện khi đang kết nối.")
+    except Exception as exc:
+        st.error("Không kết nối được điều khiển worker: " + str(exc))
+        st.warning("Kiểm tra SUPABASE_URL và SUPABASE_SECRET_KEY trong Secrets trên Streamlit và file .env trên PC.")
     auto_refresh_panel(show_details=True)
 
 
