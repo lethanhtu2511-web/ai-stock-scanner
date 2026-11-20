@@ -140,6 +140,13 @@ if result:
     c1.metric("Mã trong danh sách", result["symbols_requested"])
     c2.metric("Mã đã kiểm định", result["symbols_tested"])
     c3.metric("Lỗi tải dữ liệu", len(result["data_errors"]))
+    st.metric(
+        "Mã có lịch sử khối ngoại",
+        f'{result.get("foreign_flow_symbols", 0)}/{result["symbols_tested"]}',
+    )
+    missing_foreign = result.get("foreign_flow_missing_symbols", [])
+    if missing_foreign:
+        st.caption("Thiếu dữ liệu khối ngoại: " + ", ".join(missing_foreign))
     st.caption("Mã được chọn: " + ", ".join(result["selected_symbols"]))
     if result["data_errors"]:
         with st.expander("Mã lỗi dữ liệu"):
