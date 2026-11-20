@@ -434,6 +434,7 @@ def _score_pullback(m):
 
 
 def _relative_strength(stock_df, market_df=None):
+    """So sánh hiệu suất 20 phiên trên các ngày giao dịch chung."""
     if market_df is None:
         return None
 
@@ -443,25 +444,66 @@ def _relative_strength(stock_df, market_df=None):
             str(c).strip().lower() for c in market.columns
         ]
 
-        if "close" not in market.columns:
+        stock = stock_df.copy()
+        stock.columns = [
+            str(c).strip().lower() for c in stock.columns
+        ]
+
+        if "close" not in market.columns or "close" not in stock.columns:
             return None
 
         market_close = pd.to_numeric(
             market["close"], errors="coerce"
-        ).dropna()
+        )
+        stock_close = pd.to_numeric(
+            stock["close"], errors="coerce"
+        )
 
-        stock_close = stock_df["close"].dropna()
+        # Đồng bộ theo ngày để tránh so sánh lệch phiên khi một nguồn
+        # thiếu nến hoặc có lịch nghỉ giao dịch khác nhau.
+        if "date" in market.columns and "date" in stock.columns:
+            market_dates = pd.to_datetime(
+                market["date"], errors="coerce"
+            )
+            stock_dates = pd.to_datetime(
+                stock["date"], errors="coerce"
+            )
+            market_series = pd.DataFrame({
+                "date": market_dates,
+                "market_close": market_close,
+            }).dropna()
+            stock_series = pd.DataFrame({
+                "date": stock_dates,
+                "stock_close": stock_close,
+            }).dropna()
 
-        if len(market_close) < 21 or len(stock_close) < 21:
+            aligned = (
+                stock_series.merge(market_series, on="date", how="inner")
+                .sort_values("date")
+                .drop_duplicates("date", keep="last")
+            )
+            if len(aligned) < 21:
+                return None
+
+            stock_start = float(aligned["stock_close"].iloc[-21])
+            stock_end = float(aligned["stock_close"].iloc[-1])
+            market_start = float(aligned["market_close"].iloc[-21])
+            market_end = float(aligned["market_close"].iloc[-1])
+        else:
+            market_values = market_close.dropna()
+            stock_values = stock_close.dropna()
+            if len(market_values) < 21 or len(stock_values) < 21:
+                return None
+            stock_start = float(stock_values.iloc[-21])
+            stock_end = float(stock_values.iloc[-1])
+            market_start = float(market_values.iloc[-21])
+            market_end = float(market_values.iloc[-1])
+
+        if min(stock_start, market_start) <= 0:
             return None
 
-        stock_return = (
-            stock_close.iloc[-1] / stock_close.iloc[-21] - 1
-        )
-        market_return = (
-            market_close.iloc[-1] / market_close.iloc[-21] - 1
-        )
-
+        stock_return = stock_end / stock_start - 1
+        market_return = market_end / market_start - 1
         return float(stock_return - market_return)
 
     except (IndexError, KeyError, TypeError, ValueError):
