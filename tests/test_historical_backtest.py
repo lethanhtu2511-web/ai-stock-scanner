@@ -77,16 +77,17 @@ class HistoricalBacktestTests(unittest.TestCase):
             seen_lengths.append(len(history))
             return {
                 "strategies": {
-                    key: {"signal": "MUA", "confirmed": True}
+                    key: {
+                        "signal": "BUY", "confirmed": True,
+                        "stop_loss": None, "target_price": None,
+                    }
                     for key in hb.STRATEGY_HORIZONS
-                },
-                "stop_loss": 0,
-                "target_price": 0,
+                }
             }
 
         with patch.object(hb, "fetch_exchange_symbols", return_value=["TST"]), \
              patch.object(hb, "fetch_stock_history", return_value=frame), \
-             patch.object(hb, "analyze_stock", side_effect=fake_analyze):
+             patch.object(hb, "analyze_historical_signal", side_effect=fake_analyze):
             result = hb.run_historical_backtest(
                 lookback_sessions=20,
                 max_symbols=1,
