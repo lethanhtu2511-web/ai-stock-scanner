@@ -156,6 +156,9 @@ def run_historical_backtest(
     universe = list(dict.fromkeys(str(s).strip().upper() for s in universe if str(s).strip()))
     if not universe:
         raise ValueError("Không có danh sách mã để backtest.")
+    # Keep each run bounded and reproducible. The exchange list is already
+    # normalized; users can increase max_symbols for broader coverage.
+    universe = sorted(universe)[:max(1, int(max_symbols))]
 
     histories, errors = {}, []
     ranked = []
@@ -173,8 +176,9 @@ def run_historical_backtest(
         if progress_callback:
             progress_callback(i + 1, len(universe), f"Tải dữ liệu {symbol}")
 
+    # Report only successfully downloaded symbols, ranked by observed liquidity.
     ranked.sort(key=lambda item: item[1], reverse=True)
-    selected = [symbol for symbol, _ in ranked[:max(1, int(max_symbols))]]
+    selected = [symbol for symbol, _ in ranked]
     all_trades = []
     strategy_keys = list(STRATEGY_HORIZONS) if strategy_filter == "ALL" else [strategy_filter]
     invalid_strategy = [s for s in strategy_keys if s not in STRATEGY_HORIZONS]
@@ -184,21 +188,29 @@ def run_historical_backtest(
     for symbol_index, symbol in enumerate(selected):
         d = histories[symbol].reset_index(drop=True)
         start_idx = max(200, len(d) - max(1, int(lookback_sessions)) - max(STRATEGY_HORIZONS.values()))
+        next_available = {key: 0 for key in strategy_keys}
         for signal_idx in range(start_idx, len(d) - 1):
             # Strict point-in-time slice: no bar after signal_idx enters the model.
             point_in_time = d.iloc[:signal_idx + 1].copy()
+            try:
+                analysis = analyze_stock(symbol, point_in_time)
+            except Exception:
+                continue
             for strategy in strategy_keys:
-                try:
-                    analysis = analyze_stock(symbol, point_in_time)
-                    item = analysis["strategies"][strategy]
-                    if item["signal"] == "MUA" and item["confirmed"]:
-                        trade = _simulate_trade(
-                            symbol, strategy, d, signal_idx, analysis, costs_used
-                        )
-                        if trade:
-                            all_trades.append(trade)
-                except Exception:
+                horizon = STRATEGY_HORIZONS[strategy]
+                # Do not count immature trades that lack a full forward window.
+                if signal_idx + horizon >= len(d) or signal_idx < next_available[strategy]:
                     continue
+                item = analysis["strategies"][strategy]
+                if item["signal"] == "MUA" and item["confirmed"]:
+                    trade = _simulate_trade(
+                        symbol, strategy, d, signal_idx, analysis, costs_used
+                    )
+                    if trade:
+                        all_trades.append(trade)
+                        exit_positions = d.index[d["date"] == pd.Timestamp(trade["exit_date"])]
+                        if len(exit_positions):
+                            next_available[strategy] = int(exit_positions[0]) + 1
         if progress_callback:
             progress_callback(
                 len(universe) + symbol_index + 1,
