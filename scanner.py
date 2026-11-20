@@ -508,9 +508,11 @@ def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
         liquidity_blockers.append("GTGD trung vị 20 phiên dưới 3 tỷ")
 
     price = float(d.iloc[-1]["Close"])
+    turnover_5d = float((d["Close"] * d["Volume"]).tail(5).sum())
     foreign = summarize_foreign_flow(
         foreign_flow,
         as_of=pd.Timestamp(d.iloc[-1]["Date"]),
+        market_turnover_5d=turnover_5d,
     )
     atr = _number(analysis.get("atr"))
     resistance = _number(analysis.get("resistance"))
@@ -525,7 +527,7 @@ def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
             signal, signal_blockers = _strategy_signal(detail, risk_plan)
             blockers = list(detail.get("blockers", [])) + signal_blockers
             # Strong, persistent foreign net selling is a risk veto, not a buy trigger.
-            if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_5d"] < -50_000_000_000:
+            if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_ratio"] is not None and foreign["foreign_net_ratio"] <= -0.02:
                 signal = "WAIT"
                 blockers.append("Khối ngoại bán ròng mạnh 5 phiên; chờ áp lực bán suy yếu")
         strategies[strategy] = {
@@ -718,9 +720,11 @@ def analyze_stock(
         d,
         market_df=market_df,
     )
+    turnover_5d = float((d["Close"] * d["Volume"]).tail(5).sum())
     foreign = summarize_foreign_flow(
         foreign_flow,
         as_of=data_date,
+        market_turnover_5d=turnover_5d,
     )
 
     # Nhãn bối cảnh chỉ để hiển thị; không thay đổi điểm hay điều kiện BUY/WAIT.
@@ -804,7 +808,7 @@ def analyze_stock(
                 )
 
         # Khối ngoại bán ròng mạnh liên tục là điều kiện cảnh báo rủi ro.
-        if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_5d"] < -50_000_000_000:
+        if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_ratio"] is not None and foreign["foreign_net_ratio"] <= -0.02:
             signal = "WAIT"
             blockers.append(
                 "Khối ngoại bán ròng mạnh 5 phiên; chờ áp lực bán suy yếu"
