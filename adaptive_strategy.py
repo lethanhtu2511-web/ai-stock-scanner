@@ -11,7 +11,10 @@ HARD_RISK_TERMS = (
     "realtime", "quote", "mua đuổi", "áp lực bán",
 )
 
-HARD_RISK_PHRASES = ("phá đáy", "mất ema50", "đã mất ema50")
+HARD_RISK_PHRASES = (
+    "phá đáy", "mất ema50", "đã mất ema50",
+    "tăng quá xa ema20", "giá đã tăng quá xa",
+)
 
 SOFT_CONFIRMATION_TERMS = (
     "rsi", "macd", "khối lượng", "nến", "ema20", "ema50",
