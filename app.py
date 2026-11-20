@@ -184,6 +184,9 @@ def display_scan_table(rows):
     rename = {
         "symbol": "Mã",
         "score": "Điểm",
+        "early_signal": "Cảnh báo sớm",
+        "early_score": "Điểm cảnh báo",
+        "early_volume_ratio": "KL/TB20",
         "price": "Giá phân tích",
         "realtime_price": "Giá realtime",
         "d1_close": "Đóng cửa D1",
@@ -202,6 +205,8 @@ def display_scan_table(rows):
 
     preferred = [
         "Mã",
+        "Cảnh báo sớm",
+        "Điểm cảnh báo",
         "Chiến lược",
         "Tín hiệu",
         "Điểm",
