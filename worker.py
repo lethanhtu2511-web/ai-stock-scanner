@@ -229,6 +229,19 @@ def convert_results(scan_results):
         "early_volume_ratio",
         "early_resistance",
         "early_quote_verified",
+        "foreign_flow_status",
+        "foreign_buy_value",
+        "foreign_sell_value",
+        "foreign_net_value",
+        "foreign_buy_volume",
+        "foreign_sell_volume",
+        "foreign_net_volume",
+        "foreign_net_3d",
+        "foreign_net_5d",
+        "foreign_net_10d",
+        "foreign_signal",
+        "foreign_score_adjustment",
+        "foreign_data_date",
     ]
 
     for item in scan_results:
