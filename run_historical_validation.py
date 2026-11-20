@@ -47,6 +47,7 @@ def main() -> None:
         "universe_type": "representative_sample_not_full_market",
         "sample_symbols": SAMPLE_SYMBOLS,
         "legacy_combined_signal_summary": result["summary"],
+        "portfolio": result.get("portfolio", {}),
         "validation": validation,
         "by_strategy": result["by_strategy"],
         "symbols_requested": result["symbols_requested"],
