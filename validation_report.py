@@ -113,7 +113,8 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
         "risk_per_trade_pct": round(risk_per_trade * 100, 2),
         "max_allocation_per_position_pct": round(slot_cap * 100, 2),
         "max_drawdown_pct": round(max_drawdown * 100, 3),
-        "note": "Mô phỏng vốn tiền mặt, tối đa 5 vị thế, lô 100; chỉ dùng giao dịch có stop-loss. Lãi/lỗ đã bao gồm phí, thuế và trượt giá trong net_return_pct.",
+        "drawdown_method": "REALIZED_EQUITY_ONLY",
+        "note": "Mô phỏng vốn tiền mặt, tối đa 5 vị thế, lô 100; chỉ dùng giao dịch có stop-loss. Lãi/lỗ đã bao gồm phí, thuế và trượt giá trong net_return_pct. Drawdown chỉ tính trên vốn đã hiện thực hóa khi vị thế đóng, chưa phản ánh lỗ/lãi tạm thời trong thời gian nắm giữ.",
     }
 
 
