@@ -1,6 +1,5 @@
 
 import os
-import threading
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
@@ -14,7 +13,6 @@ from scan_store import (
     get_scan_summary,
 )
 from worker import run_scan
-from runtime_control import get_control, set_mode, request_manual_scan
 from portfolio import (
     add_transaction,
     get_positions,
@@ -34,10 +32,6 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DB_PATH = os.getenv("DATABASE_PATH", "data/stock_scanner.sqlite3")
 APP_VERSION = "3.0"
 
-AUTO_REFRESH_SECONDS = 300
-
-# Market scans are owned by the Windows worker; Streamlit Cloud is UI/control only.
-AUTO_SCAN_ENABLED = False
 
 st.set_page_config(
     page_title=f"AI Stock Scanner {APP_VERSION}",
@@ -47,6 +41,18 @@ st.set_page_config(
 )
 
 init_scan_db(DB_PATH)
+
+# Quét đúng một lần khi phiên ứng dụng được mở/tải lại.
+# Các lần rerun do thao tác giao diện không tự quét lại.
+if "_initial_scan_completed" not in st.session_state:
+    st.session_state["_initial_scan_completed"] = True
+    try:
+        with st.spinner("Đang lấy dữ liệu mới và quét HOSE/HNX lần đầu..."):
+            st.session_state["_initial_scan_saved"] = run_scan()
+        st.session_state["_initial_scan_error"] = None
+    except Exception as exc:
+        st.session_state["_initial_scan_saved"] = 0
+        st.session_state["_initial_scan_error"] = str(exc)
 
 SIGNAL_NAMES = {
     "BUY": "MUA XÁC NHẬN",
@@ -372,11 +378,9 @@ def get_scan_lock():
 # AUTO REFRESH AND SCAN
 # =========================================================
 
-@st.fragment(run_every=AUTO_REFRESH_SECONDS)
 def auto_refresh_panel(show_details=True):
 
-    now = datetime.now(VN_TZ)
-
+    # Chỉ hiển thị kết quả đã lưu; không tự gọi nguồn dữ liệu ở các lần rerun.
     summary = get_scan_summary(DB_PATH)
 
     latest_time = summary.get("latest_scan_at")
@@ -445,8 +449,7 @@ def auto_refresh_panel(show_details=True):
         st.caption(
             f"Lượt quét gần nhất: "
             f"{latest_dt.strftime('%d/%m/%Y %H:%M:%S')} "
-            f"· Cách đây {int(age_seconds)} giây "
-            f"· Tự làm mới mỗi 5 phút khi phiên còn mở."
+            f"· Cách đây {int(age_seconds)} giây"
         )
 
     else:
@@ -660,35 +663,26 @@ def show_scanner():
     st.title("🔎 QUÉT CỔ PHIẾU")
 
     st.info(
-        "Chế độ quét được điều khiển qua Supabase. Worker chạy trên PC Windows; điện thoại dùng để điều khiển và xem kết quả. Bot không tự đặt lệnh."
+        "Bot chỉ lấy dữ liệu mới khi anh mở/tải lại phiên ứng dụng hoặc chủ động bấm nút quét. "
+        "Không chạy nền, không tự quét định kỳ và không tự đặt lệnh."
     )
 
-    try:
-        control = get_control()
-        current_mode = control.get("mode", "on_demand")
-        choice = st.radio(
-            "Chế độ hoạt động",
-            ["Chạy không liên tục", "Chạy liên tục"],
-            index=1 if current_mode == "continuous" else 0,
-            horizontal=True,
-            key="runtime_mode_" + str(control.get("updated_at") or current_mode),
-        )
-        requested_mode = "continuous" if choice == "Chạy liên tục" else "on_demand"
-        if requested_mode != current_mode:
-            set_mode(requested_mode)
-            st.success("Đã gửi thay đổi chế độ đến worker.")
+    if st.button("🔄 LẤY DỮ LIỆU MỚI & QUÉT LẠI", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Đang cập nhật dữ liệu và phân tích HOSE/HNX..."):
+                saved = run_scan()
+            st.session_state["_initial_scan_completed"] = True
+            st.session_state["_initial_scan_error"] = None
+            st.success(f"Đã hoàn tất lượt quét, lưu {saved:,} dòng kết quả.")
             st.rerun()
+        except Exception as exc:
+            st.error(f"Quét thất bại: {exc}")
 
-        heartbeat = parse_scan_time(control.get("heartbeat_at"))
-        online = bool(heartbeat and (datetime.now(VN_TZ) - heartbeat).total_seconds() <= 30)
-        st.metric("Worker trên PC", "ĐANG KẾT NỐI" if online else "OFFLINE")
-        st.caption("Chế độ: " + current_mode + " · Heartbeat: " + (heartbeat.strftime("%H:%M:%S %d/%m/%Y") if heartbeat else "Chưa có"))
-        if st.button("🚀 YÊU CẦU QUÉT THỊ TRƯỜNG", type="primary", use_container_width=True):
-            request_manual_scan()
-            st.success("Đã gửi yêu cầu quét. Worker trên PC sẽ thực hiện khi đang kết nối.")
-    except Exception as exc:
-        st.error("Không kết nối được điều khiển worker: " + str(exc))
-        st.warning("Kiểm tra SUPABASE_URL và SUPABASE_SECRET_KEY trong Secrets trên Streamlit và file .env trên PC.")
+    if st.session_state.get("_initial_scan_error"):
+        st.warning("Lượt quét khi mở bot chưa thành công: " + st.session_state["_initial_scan_error"])
+    elif st.session_state.get("_initial_scan_completed"):
+        st.caption(f"Lượt quét khi mở phiên: {st.session_state.get('_initial_scan_saved', 0):,} dòng kết quả.")
+
     auto_refresh_panel(show_details=True)
 
 
@@ -711,9 +705,8 @@ def show_history():
 
     if "scanned_at" in df.columns:
         st.caption(
-            "Lịch sử lưu trên SQLite của môi trường chạy ứng dụng. "
-            "Streamlit Cloud có thể làm mất dữ liệu cục bộ "
-            "khi khởi động lại."
+            "Lịch sử quét được lưu theo cấu hình cơ sở dữ liệu hiện tại; "
+            "nếu đã bật đồng bộ Supabase, kết quả được chia sẻ giữa các phiên."
         )
 
     signal_filter = st.selectbox(
@@ -934,19 +927,13 @@ def show_system_info():
 
     st.write(f"Phiên bản: AI Stock Scanner {APP_VERSION}")
     st.write("Thị trường: HOSE / HNX")
-    st.write("Chu kỳ làm mới: 300 giây")
+    st.write("Cập nhật dữ liệu: khi mở/tải lại bot hoặc bấm Quét lại")
     st.write("Phân tích kỹ thuật: D1")
     st.write("Chiến lược: Swing / Reversal / Pullback")
     st.write("Tự động đặt lệnh: Không")
     st.write("Quản lý danh mục: Đã bật")
 
-    st.warning(
-        "Chu kỳ 300 giây là chu kỳ ứng dụng yêu cầu làm mới. "
-        "Dữ liệu chỉ được gọi là realtime nếu nguồn KBS cung cấp "
-        "timestamp hợp lệ và không quá 300 giây. "
-        "Streamlit Cloud chỉ tự làm mới khi phiên trình duyệt "
-        "đang hoạt động."
-    )
+    st.info("Bot không chạy nền và không tự quét định kỳ. Mỗi lần mở phiên mới hoặc bấm Quét lại sẽ gọi nguồn dữ liệu và chạy phân tích một lượt. Giá chỉ được xác nhận realtime khi timestamp nguồn hợp lệ.")
 
 
 # =========================================================
@@ -976,9 +963,7 @@ def main():
             f"AI Stock Scanner {APP_VERSION}"
         )
 
-        st.caption(
-            "Tự làm mới: 300 giây"
-        )
+        st.caption("Chỉ quét khi mở phiên hoặc theo yêu cầu")
 
     if page == "Tổng quan":
         show_dashboard()
