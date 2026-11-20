@@ -894,6 +894,7 @@ def scan_market(
         market_df = fetch_stock_history(
             "VNINDEX",
             length=260,
+            is_index=True,
         )
 
     except Exception as exc:
