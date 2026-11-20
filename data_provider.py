@@ -254,11 +254,13 @@ def clear_history_cache():
     _HISTORY_CACHE.clear()
 
 
-def fetch_stock_history(symbol, length=260):
+def fetch_stock_history(symbol, length=260, is_index=False):
+    """Lấy lịch sử D1; chỉ số phải được yêu cầu rõ ràng từ provider."""
     symbol = normalize_symbol(symbol)
     length = max(220, int(length))
+    is_index = bool(is_index)
 
-    key = (symbol, length)
+    key = (symbol, length, is_index)
     now = time.monotonic()
 
     cached = _HISTORY_CACHE.get(key)
@@ -273,11 +275,37 @@ def fetch_stock_history(symbol, length=260):
         raw = get_ohlcv(
             symbol,
             lookback_days=600,
+            is_index=is_index,
         )
 
         df = _normalize_history(raw)
-
         df = _remove_incomplete_today_candle(df)
+
+        # Nếu chuỗi cổ phiếu cũ hơn 7 ngày lịch, thử yêu cầu provider
+        # bỏ qua cache một lần. Chỉ thay dữ liệu nếu ngày mới hơn thực sự.
+        if not is_index and not df.empty:
+            latest_date = pd.Timestamp(df.iloc[-1]["Date"]).normalize()
+            today = pd.Timestamp.now(tz=VN_TZ).tz_localize(None).normalize()
+            if (today - latest_date).days > 7:
+                try:
+                    fresh_raw = get_ohlcv(
+                        symbol,
+                        lookback_days=600,
+                        is_index=False,
+                        ttl_s=0,
+                    )
+                    fresh_df = _remove_incomplete_today_candle(
+                        _normalize_history(fresh_raw)
+                    )
+                    if (
+                        not fresh_df.empty
+                        and pd.Timestamp(fresh_df.iloc[-1]["Date"]).normalize()
+                        > latest_date
+                    ):
+                        df = fresh_df
+                except Exception:
+                    # Giữ dữ liệu cũ để scanner đánh dấu D1_STALE và chặn mua.
+                    pass
 
         df = (
             df.tail(length)
