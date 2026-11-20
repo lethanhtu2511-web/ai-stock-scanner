@@ -19,8 +19,10 @@ COST_SELL = 0.0015
 TAX_SELL = 0.001
 SLIPPAGE_HIGH = 0.001
 SLIPPAGE_LOW = 0.0025
-MAX_SYMBOLS = 10
-PILOT_SYMBOLS = ["FPT", "HPG", "SSI", "MBB", "CTG", "VCB", "VNM", "MWG", "TCB", "GAS"]
+import os
+
+# Full current HOSE/HNX universe by default. Set V2_MAX_SYMBOLS for a bounded smoke run.
+MAX_SYMBOLS = int(os.getenv("V2_MAX_SYMBOLS", "0"))  # 0 = all eligible symbols
 TEST_SESSIONS = 250
 TRAIN_SESSIONS = 750
 HISTORY_SESSIONS = TRAIN_SESSIONS + 3 * TEST_SESSIONS
@@ -74,7 +76,16 @@ def simulate(d, signal_i, candidate):
             return None
         raw_entry = max(float(row.open), trigger)
 
-    stop = float(plan["stop_loss"])
+    # Rebuild protective stop from actual fill, not signal-close reference.
+    if candidate["setup"] == "PULLBACK":
+        structural = float(d.iloc[max(0, signal_i-4):signal_i+1].low.min())
+        stop = min(structural, raw_entry - 1.5 * atr) - 0.2 * atr
+    elif candidate["setup"] == "SWING_BREAKOUT":
+        structural = float(candidate.get("base_low", plan["stop_loss"]))
+        stop = min(structural, raw_entry - 2.0 * atr)
+    else:
+        structural = float(candidate.get("confirmation_low", plan["stop_loss"] + 0.5 * atr))
+        stop = structural - 0.5 * atr
     if raw_entry <= stop:
         return None
     risk = raw_entry - stop
@@ -179,46 +190,48 @@ def simulate(d, signal_i, candidate):
         "actual_entry": round(raw_entry, 2),
         "initial_stop": round(stop, 2),
         "initial_risk": round(risk, 2),
+        "_exit_index": int(exit_i),
     }
 
 def main():
     listed=set(fetch_exchange_symbols())
-    symbols=[s for s in PILOT_SYMBOLS if s in listed]
-    missing=[s for s in PILOT_SYMBOLS if s not in listed]
+    symbols = listed if MAX_SYMBOLS == 0 else listed[:MAX_SYMBOLS]
     market=clean(fetch_stock_history("VNINDEX",length=HISTORY_SESSIONS,is_index=True))
     ranked=[]
     histories={}
-    errors=[{"symbol":s,"error":"Không có trong danh sách HOSE/HNX hiện tại."} for s in missing]
-    for s in symbols:
+    errors=[]
+    progress=Path("strategy_v2_output"); progress.mkdir(exist_ok=True)
+    for number, s in enumerate(symbols, 1):
         try:
             d=clean(fetch_stock_history(s,length=HISTORY_SESSIONS))
             if len(d) < TRAIN_SESSIONS + TEST_SESSIONS:
-                errors.append({"symbol":s,"error":f"Chỉ lấy được {len(d)} phiên; cần tối thiểu {TRAIN_SESSIONS + TEST_SESSIONS} phiên cho 3 năm train + 1 năm test."})
+                errors.append({"symbol":s,"error":f"Chỉ có {len(d)} phiên; cần ít nhất {TRAIN_SESSIONS + TEST_SESSIONS}."})
                 continue
-            # Universe selection from the beginning of the held-out interval.
             cutoff=TRAIN_SESSIONS
-            eligible,_=universe_check(d.iloc[:cutoff+1])
+            eligible, blockers=universe_check(d.iloc[:cutoff+1])
             if not eligible:
                 continue
             avg=float((d.close*d.volume).iloc[:cutoff+1].tail(20).mean())
             histories[s]=d
             ranked.append((s,avg))
-            progress=Path("strategy_v2_output"); progress.mkdir(exist_ok=True)
-            (progress/"progress.json").write_text(json.dumps({
-                "downloaded_symbols": list(histories.keys()),
-                "eligible_symbols": [x[0] for x in ranked],
-                "errors": errors
-            },ensure_ascii=False,indent=2),encoding="utf-8")
         except Exception as exc:
             errors.append({"symbol":s,"error":str(exc)[:180]})
+        if number % 10 == 0 or number == len(symbols):
+            (progress/"progress.json").write_text(json.dumps({
+                "symbols_processed":number,"symbols_total":len(symbols),
+                "downloaded_symbols":len(histories),"eligible_symbols":[x[0] for x in ranked],
+                "errors":errors[-100:]
+            },ensure_ascii=False,indent=2),encoding="utf-8")
     ranked.sort(key=lambda x:x[1],reverse=True)
-    chosen=[s for s,_ in ranked[:MAX_SYMBOLS]]
+    chosen=[s for s,_ in ranked]
+    if MAX_SYMBOLS > 0:
+        chosen=chosen[:MAX_SYMBOLS]
     trades=[]
     diagnostics={k:{"evaluated":0,"candidates":0,"blocked_regime":0} for k in ("PULLBACK","SWING_BREAKOUT","REVERSAL")}
     for s in chosen:
         d=histories[s]
-        start=TRAIN_SESSIONS
-        for i in range(start,len(d)-1):
+        next_free_index=TRAIN_SESSIONS
+        for i in range(TRAIN_SESSIONS,len(d)-1):
             asof=d.iloc[:i+1].copy()
             mkt=market.loc[market.date<=asof.iloc[-1].date].copy()
             if len(mkt)<200:
@@ -228,11 +241,16 @@ def main():
                 diagnostics[setup]["evaluated"]+=1
                 if res.get("market_regime")=="BEARISH":
                     diagnostics[setup]["blocked_regime"]+=1
-            for c in res.get("candidates",[]):
+            candidates=res.get("candidates",[])
+            for c in candidates:
                 diagnostics[c["setup"]]["candidates"]+=1
-                trade=simulate(d,i,c)
-                if trade:
-                    trades.append({"symbol":s,"setup":c["setup"],**trade})
+            if i < next_free_index or not candidates:
+                continue
+            c=candidates[0]
+            trade=simulate(d,i,c)
+            if trade:
+                next_free_index=trade.pop("_exit_index")+1
+                trades.append({"symbol":s,"setup":c["setup"],**trade})
     frame=pd.DataFrame(trades)
     summary={}
     for setup in diagnostics:
@@ -248,18 +266,18 @@ def main():
             summary[setup]={"trades":0,"win_rate_pct":0,"avg_net_return_pct":0,"profit_factor":None}
     out=Path("strategy_v2_output"); out.mkdir(exist_ok=True)
     frame.to_csv(out/"trades.csv",index=False)
-    report={"pilot_symbols_requested":PILOT_SYMBOLS,"symbols_found_on_exchange":symbols,
-        "symbols_tested":len(chosen),"symbols_eligible":len(ranked),
+    report={"universe_mode":"ALL_HOSE_HNX" if MAX_SYMBOLS == 0 else "BOUNDED",
+        "symbols_found_on_exchange":len(symbols),"symbols_tested":len(chosen),"symbols_eligible":len(ranked),
         "market_data_end":str(market.date.max().date()),"test_sessions_per_window":TEST_SESSIONS,"train_sessions":TRAIN_SESSIONS,
         "oos_windows": max(0, (len(histories[chosen[0]])-TRAIN_SESSIONS)//TEST_SESSIONS) if chosen else 0,
         "diagnostics":diagnostics,"performance":summary,"data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
                  "slippage": "0.10% high-liquidity; 0.25% low-liquidity"},
-        "limitations":["Initial pilot research only; 10-symbol cap (FPT, HPG, SSI, MBB, CTG, VCB, VNM, MWG, TCB, GAS).",
-           "Daily-bar simulation with staged partial exits and trailing stops; stop-first assumption when stop and target occur in the same candle.",
-          "Walk-forward uses rolling 3-year training history and successive 1-year out-of-sample windows; pilot remains limited to 10 symbols.",
-          "No portfolio concurrency, industry cap, daily circuit breaker, drawdown throttle or loss-streak throttle yet.",
-          "Current listing universe can create survivorship bias."]}
+        "limitations":["Signals use current listing universe; delisted historical constituents are not reconstructed (survivorship bias remains).",
+           "Each symbol is limited to one active trade and overlapping same-symbol signals are suppressed; not yet a capital-weighted portfolio simulation.",
+           "Daily-bar simulation uses stop-first assumption when stop and target occur in the same candle.",
+           "Fixed rules are not fitted; the 3-year segment is indicator warm-up/history followed by out-of-sample evaluation.",
+           "Industry concentration, portfolio-wide cash allocation, daily circuit breaker, drawdown throttle and loss-streak throttle are not yet simulated."]}
     (out/"report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
     print(json.dumps(report,ensure_ascii=False,indent=2))
     if not chosen:
