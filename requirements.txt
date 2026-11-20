@@ -9,4 +9,3 @@ vn-market-data @ git+https://github.com/trangcm/vn-market-data@v0.4.0
 supabase>=2.10.0
 
 python-dotenv>=1.0.1
-vnstock>=3.3.0
