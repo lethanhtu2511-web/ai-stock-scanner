@@ -31,6 +31,35 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertEqual(trade["exit_reason"], "STOP LOSS")
         self.assertEqual(trade["holding_sessions"], 1)
 
+    def test_early_breakout_is_backtested_separately(self):
+        dates = pd.bdate_range("2025-01-01", periods=240)
+        close = [100 + i * 0.05 for i in range(240)]
+        frame = pd.DataFrame({
+            "date": dates,
+            "open": close,
+            "high": [x * 1.01 for x in close],
+            "low": [x * 0.99 for x in close],
+            "close": close,
+            "volume": [1_000_000] * 240,
+        })
+        with patch.object(hb, "fetch_stock_history", return_value=frame), \
+             patch.object(hb, "evaluate_early_signal", return_value={
+                 "early_signal": "EARLY_BREAKOUT"
+             }):
+            result = hb.run_historical_backtest(
+                symbols=["TST"],
+                lookback_sessions=20,
+                max_symbols=1,
+                strategy_filter="EARLY",
+            )
+        self.assertGreater(result["summary"]["trades"], 0)
+        self.assertTrue(
+            set(result["trades"]["strategy"]) == {"EARLY_BREAKOUT"}
+        )
+        self.assertTrue(
+            (result["trades"]["holding_sessions"] <= 5).all()
+        )
+
     def test_walk_forward_uses_only_past_bars_and_full_horizon(self):
         dates = pd.bdate_range("2025-01-01", periods=240)
         close = [100 + i * 0.05 for i in range(240)]
