@@ -168,7 +168,16 @@ def run_historical_backtest(
             d = _clean_history(raw)
             if len(d) < 220:
                 raise ValueError(f"Chỉ có {len(d)} phiên, cần ít nhất 220.")
-            avg_turnover = float((d["close"] * d["volume"]).tail(20).mean())
+            # Rank using turnover known at the beginning of the test window,
+            # not today's turnover (avoids future-data selection leakage).
+            cutoff_idx = max(
+                200,
+                len(d) - max(1, int(lookback_sessions))
+                - max(STRATEGY_HORIZONS.values()),
+            )
+            known_at_cutoff = d.iloc[:cutoff_idx + 1]
+            turnover = known_at_cutoff["close"] * known_at_cutoff["volume"]
+            avg_turnover = float(turnover.tail(20).mean())
             histories[symbol] = d
             ranked.append((symbol, avg_turnover))
         except Exception as exc:
@@ -238,11 +247,18 @@ def run_historical_backtest(
         "selected_symbols": selected,
         "costs": costs_used,
         "lookback_sessions": int(lookback_sessions),
+        "data_end_date": (
+            max(pd.Timestamp(frame.iloc[-1]["date"]) for frame in histories.values()).strftime("%Y-%m-%d")
+            if histories else None
+        ),
         "method_note": (
             "Tín hiệu được tính bằng dữ liệu đến hết phiên T; mô phỏng mua tại giá mở cửa T+1. "
             "Tính phí mua 0,15%, phí bán 0,15%, thuế bán 0,10% và trượt giá 0,20% mỗi chiều. "
             "Nếu cùng một nến chạm cả stop và target, giả định stop khớp trước để thận trọng. "
-            "Đây là backtest D1 mô phỏng, chưa phản ánh độ sâu sổ lệnh, giới hạn giá, thanh khoản "
-            "khớp lệnh thực tế, cổ phiếu hủy niêm yết và corporate actions đã điều chỉnh."
+            "Đây là backtest D1 mô phỏng. Danh sách mã hiện tại có thể gây survivorship bias "
+            "do không bao gồm cổ phiếu đã hủy niêm yết; nguồn dữ liệu lịch sử có thể đã điều chỉnh "
+            "corporate actions. Chỉ số lợi nhuận tích lũy là chuỗi giao dịch nối tiếp, không phải "
+            "mô phỏng danh mục vốn có giới hạn vị thế. Chưa phản ánh độ sâu sổ lệnh, giới hạn giá "
+            "và khả năng khớp lệnh thực tế."
         ),
     }
