@@ -132,6 +132,10 @@ if result:
         st.info("Không phát sinh giao dịch đạt điều kiện MUA trong giai đoạn kiểm định.")
 
     st.subheader("Phạm vi và chất lượng dữ liệu")
+    st.caption(
+        f"Ngày dữ liệu cuối: {result.get('data_end_date') or 'không xác định'} · "
+        f"VN-Index benchmark: {'Có' if result.get('benchmark_available') else 'Không có; bỏ qua Relative Strength'}"
+    )
     c1, c2, c3 = st.columns(3)
     c1.metric("Mã trong danh sách", result["symbols_requested"])
     c2.metric("Mã đã kiểm định", result["symbols_tested"])
