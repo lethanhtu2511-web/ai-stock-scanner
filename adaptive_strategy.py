@@ -8,6 +8,7 @@ from __future__ import annotations
 HARD_RISK_TERMS = (
     "biến động", "ATR", "thanh khoản", "GTGD", "bán ròng mạnh",
     "reward/risk", "tỷ lệ lợi nhuận/rủi ro", "dữ liệu",
+    "realtime", "quote", "mua đuổi",
 )
 
 SOFT_CONFIRMATION_TERMS = (
