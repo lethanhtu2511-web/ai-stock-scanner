@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import math
 import pandas as pd
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
+
+VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
 
 def _safe(value, default=0.0):
@@ -35,6 +39,20 @@ def evaluate_early_signal(history: pd.DataFrame, quote: dict | None = None) -> d
     if len(d) < 60:
         return {"early_signal": "UNAVAILABLE", "early_score": 0,
                 "early_reasons": ["Dữ liệu D1 không đủ sau chuẩn hóa."]}
+
+    # Ignore the still-forming daily candle during market hours.
+    if "date" in d.columns and len(d):
+        dates = pd.to_datetime(d["date"], errors="coerce")
+        now = datetime.now(VN_TZ)
+        in_session = now.weekday() < 5 and (
+            dt_time(9, 0) <= now.time() <= dt_time(11, 30)
+            or dt_time(13, 0) <= now.time() <= dt_time(15, 0)
+        )
+        if in_session and pd.notna(dates.iloc[-1]) and dates.iloc[-1].date() == now.date():
+            d = d.iloc[:-1].reset_index(drop=True)
+    if len(d) < 60:
+        return {"early_signal": "UNAVAILABLE", "early_score": 0,
+                "early_reasons": ["Cần 60 phiên D1 đã hoàn tất."]}
 
     c, h, l, v = d.close, d.high, d.low, d.volume
     close = _safe(c.iloc[-1])
