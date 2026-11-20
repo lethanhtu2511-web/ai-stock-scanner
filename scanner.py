@@ -846,6 +846,16 @@ def analyze_stock(
             penalties,
         )
 
+        adaptive = adaptive_assessment(
+            detail,
+            liquidity_ok=not bool(liquidity_blockers),
+            risk_plan=risk_plan,
+            atr_pct=analysis.get("atr_pct"),
+            foreign_net_ratio=foreign.get("foreign_net_ratio"),
+            market_regime=analysis.get("market_regime", "UNKNOWN"),
+            strategy=strategy,
+        )
+
         row = {
             "symbol": symbol,
             "strategy": strategy,
@@ -921,6 +931,7 @@ def analyze_stock(
                 "market_regime",
                 "UNKNOWN",
             ),
+            "adaptive_research": adaptive,
 
             "data_date": data_date.strftime(
                 "%d/%m/%Y"
