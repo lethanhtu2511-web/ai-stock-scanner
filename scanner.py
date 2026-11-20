@@ -484,6 +484,32 @@ def _make_reason(signal, blockers, reasons, penalties):
 # ANALYZE ONE STOCK
 # =====================================================
 
+def _classify_market_regime(market_df):
+    """Phân loại xu hướng VN-Index để hiển thị; không thay đổi điểm tín hiệu."""
+    if not isinstance(market_df, pd.DataFrame) or market_df.empty:
+        return "UNKNOWN"
+
+    d = market_df.copy()
+    d.columns = [str(col).strip().lower() for col in d.columns]
+    if "close" not in d.columns:
+        return "UNKNOWN"
+
+    close = pd.to_numeric(d["close"], errors="coerce").dropna()
+    if len(close) < 50:
+        return "UNKNOWN"
+
+    latest = float(close.iloc[-1])
+    ma20 = float(close.rolling(20).mean().iloc[-1])
+    ma50 = float(close.rolling(50).mean().iloc[-1])
+    ma20_prev5 = float(close.rolling(20).mean().iloc[-6])
+
+    if latest > ma20 > ma50 and ma20 > ma20_prev5:
+        return "BULLISH"
+    if latest < ma20 < ma50 and ma20 < ma20_prev5:
+        return "BEARISH"
+    return "NEUTRAL"
+
+
 def analyze_stock(
     df,
     symbol=None,
@@ -622,6 +648,9 @@ def analyze_stock(
         d,
         market_df=market_df,
     )
+
+    # Nhãn bối cảnh chỉ để hiển thị; không thay đổi điểm hay điều kiện BUY/WAIT.
+    analysis["market_regime"] = _classify_market_regime(market_df)
 
     atr = _number(
         analysis.get("atr")
