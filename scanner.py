@@ -10,6 +10,7 @@ from strategy_engine import (
 )
 from early_signal_engine import evaluate_early_signal
 from foreign_flow_provider import summarize_foreign_flow
+from adaptive_strategy import adaptive_assessment, classify_market_regime
 
 # =====================================================
 # AI STOCK SCANNER 3.0 - D1 + VERIFIED REALTIME
@@ -516,6 +517,7 @@ def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
     )
     atr = _number(analysis.get("atr"))
     resistance = _number(analysis.get("resistance"))
+    regime = classify_market_regime(market_df)
     strategies = {}
 
     for strategy, detail in analysis["strategies"].items():
@@ -530,9 +532,19 @@ def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
             if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_ratio"] is not None and foreign["foreign_net_ratio"] <= -0.02:
                 signal = "WAIT"
                 blockers.append("Khối ngoại bán ròng mạnh 5 phiên; chờ áp lực bán suy yếu")
+        adaptive = adaptive_assessment(
+            detail,
+            liquidity_ok=not bool(liquidity_blockers),
+            risk_plan=risk_plan,
+            atr_pct=analysis.get("atr_pct"),
+            foreign_net_ratio=foreign.get("foreign_net_ratio"),
+            market_regime=regime,
+            strategy=strategy,
+        )
         strategies[strategy] = {
             "signal": signal,
             "confirmed": signal == "BUY",
+            "adaptive_research": adaptive,
             "score": max(0, min(100, int(detail.get("score", 0)) + foreign["foreign_score_adjustment"])),
             "stop_loss": risk_plan["stop_loss"] if risk_plan else None,
             "target_price": risk_plan["target_price"] if risk_plan else None,
