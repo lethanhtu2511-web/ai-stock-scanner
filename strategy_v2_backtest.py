@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from data_provider import fetch_exchange_symbols, fetch_stock_history
-from strategy_v2 import analyze_daily_setup, market_regime, universe_check
+from strategy_v2 import analyze_daily_setup, market_regime, universe_check, _indicators
 
 COST_BUY = 0.0015
 COST_SELL = 0.0015
@@ -43,42 +43,139 @@ def net_return(entry, exit_price, slip):
 
 
 def simulate(d, signal_i, candidate):
-    nxt = signal_i+1
+    """Conservative next-session execution with staged exits and trailing stops.
+
+    Stop/targets are recalculated from the actual fill price. When stop and
+    target are both touched in one daily candle, stop is assumed first.
+    """
+    nxt = signal_i + 1
     if nxt >= len(d):
         return None
+
+    signal = d.iloc[signal_i]
     row = d.iloc[nxt]
-    slip = candidate["risk_plan"]["slippage_rate"]
+    plan = candidate["risk_plan"]
+    slip = float(plan["slippage_rate"])
+    atr = float(candidate.get("atr") or 0)
+    signal_close = float(signal.close)
+
     if candidate["entry_type"] == "NEXT_OPEN":
         raw_entry = float(row.open)
-        gap = abs(raw_entry-float(d.iloc[signal_i].close))/float(candidate["risk_plan"]["R"])
-        if raw_entry > float(d.iloc[signal_i].close) and gap > candidate["gap_limit_atr"]*float(candidate["risk_plan"]["R"]):
+        gap_atr = abs(raw_entry - signal_close) / atr if atr > 0 else float("inf")
+        if gap_atr > float(candidate["gap_limit_atr"]):
             return None
     else:
         trigger = float(candidate["entry_trigger"])
         if float(row.high) < trigger:
             return None
-        raw_entry = max(float(row.open), trigger)
         if float(row.close) < float(candidate["cancel_if_close_below_confirmation_low"]):
             return None
-    entry = raw_entry*(1+slip)
-    stop = float(candidate["risk_plan"]["stop_loss"])
-    target = float(candidate["risk_plan"]["target_1"])
-    max_hold = int(candidate["holding_sessions"][1])
-    last = min(len(d)-1, nxt+max_hold-1)
-    exit_price, exit_i, reason = float(d.iloc[last].close), last, "TIME_EXIT"
-    for j in range(nxt,last+1):
-        b=d.iloc[j]
-        if float(b.open) <= stop:
-            exit_price,exit_i,reason=float(b.open),j,"GAP_STOP"; break
-        if float(b.low) <= stop:
-            exit_price,exit_i,reason=stop,j,"STOP"; break
-        if float(b.high) >= target:
-            exit_price,exit_i,reason=target,j,"TARGET_1"; break
-    ret=net_return(raw_entry,exit_price,slip)
-    return {"entry_date":str(d.iloc[nxt].date.date()),"exit_date":str(d.iloc[exit_i].date.date()),
-            "net_return_pct":round(ret*100,3),"win":ret>0,"holding":exit_i-nxt+1,
-            "exit_reason":reason,"score":candidate["score"]}
+        raw_entry = max(float(row.open), trigger)
 
+    stop = float(plan["stop_loss"])
+    if raw_entry <= stop:
+        return None
+    risk = raw_entry - stop
+    if risk <= 0:
+        return None
+
+    setup = candidate["setup"]
+    if setup == "REVERSAL":
+        target_r = 1.5
+        target_2r = None
+        target_3r = None
+    else:
+        target_r = 2.0
+        target_2r = 3.0 if setup == "SWING_BREAKOUT" else None
+        target_3r = None
+
+    target1 = raw_entry + target_r * risk
+    target2 = raw_entry + target_2r * risk if target_2r else None
+    max_hold = int(candidate["holding_sessions"][1])
+    last = min(len(d) - 1, nxt + max_hold - 1)
+
+    # Indicator values are calculated using historical bars only. Trailing
+    # levels for a session use the previous completed session's values.
+    ind = _indicators(d.iloc[:last + 1].copy())
+    remaining = 1.0
+    realized = 0.0
+    exits = []
+    first_target_hit = False
+    highest_high = float(row.high)
+    exit_reason = "TIME_EXIT"
+    exit_i = last
+
+    def realize(fraction, price, reason, idx):
+        nonlocal realized, remaining
+        fraction = min(fraction, remaining)
+        if fraction <= 0:
+            return
+        realized += fraction * net_return(raw_entry, float(price), slip)
+        remaining -= fraction
+        exits.append({"fraction": round(fraction, 4), "price": round(float(price), 2),
+                      "reason": reason, "date": str(d.iloc[idx].date.date())})
+
+    for j in range(nxt, last + 1):
+        b = d.iloc[j]
+        # Trail from information available at the prior close only.
+        if j > nxt:
+            prev_ind = ind.iloc[j - 1]
+            if setup in ("PULLBACK", "SWING_BREAKOUT"):
+                trail = float(prev_ind.high22_prev - 3 * prev_ind.atr) if pd.notna(prev_ind.high22_prev) and pd.notna(prev_ind.atr) else stop
+            else:
+                trail = float(prev_ind.ema21) if pd.notna(prev_ind.ema21) else stop
+            if first_target_hit:
+                trail = max(trail, raw_entry + 0.5 * risk)
+            active_stop = max(stop, trail)
+        else:
+            active_stop = stop
+
+        # Conservative daily-bar ordering: stop before target if both touched.
+        if float(b.open) <= active_stop:
+            realize(remaining, float(b.open), "GAP_STOP", j)
+            exit_i, exit_reason = j, "GAP_STOP"
+            break
+        if float(b.low) <= active_stop:
+            realize(remaining, active_stop, "TRAIL_STOP" if active_stop > stop else "STOP", j)
+            exit_i, exit_reason = j, exits[-1]["reason"]
+            break
+
+        if setup == "SWING_BREAKOUT":
+            if remaining > 0 and float(b.high) >= target1:
+                tranche = 1/3 if not first_target_hit else 0
+                realize(tranche, target1, "TARGET_2R", j)
+                first_target_hit = True
+            if remaining > 0 and target2 is not None and float(b.high) >= target2:
+                realize(min(1/3, remaining), target2, "TARGET_3R", j)
+                first_target_hit = True
+        else:
+            if remaining > 0 and not first_target_hit and float(b.high) >= target1:
+                tranche = 0.5
+                realize(tranche, target1, "TARGET_1_5R" if setup == "REVERSAL" else "TARGET_2R", j)
+                first_target_hit = True
+
+        highest_high = max(highest_high, float(b.high))
+        if remaining <= 1e-9:
+            exit_i, exit_reason = j, "TARGETS_FILLED"
+            break
+
+    if remaining > 1e-9:
+        final_price = float(d.iloc[exit_i].close)
+        realize(remaining, final_price, exit_reason, exit_i)
+
+    return {
+        "entry_date": str(d.iloc[nxt].date.date()),
+        "exit_date": str(d.iloc[exit_i].date.date()),
+        "net_return_pct": round(realized * 100, 3),
+        "win": realized > 0,
+        "holding": exit_i - nxt + 1,
+        "exit_reason": exit_reason,
+        "score": candidate["score"],
+        "exit_legs": json.dumps(exits, ensure_ascii=False),
+        "actual_entry": round(raw_entry, 2),
+        "initial_stop": round(stop, 2),
+        "initial_risk": round(risk, 2),
+    }
 
 def main():
     listed=set(fetch_exchange_symbols())
