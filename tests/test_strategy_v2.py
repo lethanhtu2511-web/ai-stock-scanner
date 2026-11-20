@@ -71,10 +71,10 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertEqual(result["candidates"], [])
 
     def test_backtest_rebuilds_pullback_stop_from_actual_fill(self):
-        d = make_bars(n=330)
+        d = make_bars(n=331)
         d.loc[325:329, "low"] = 95.0
         d.loc[329, ["open", "close", "high", "low"]] = [100.0, 100.0, 101.0, 99.0]
-        d.loc[330-1, "open"] = 100.0
+        d.loc[330, ["open", "close", "high", "low"]] = [101.0, 101.0, 102.0, 100.0]
         candidate = {
             "setup": "PULLBACK", "entry_type": "NEXT_OPEN", "gap_limit_atr": 1.0,
             "atr": 2.0, "holding_sessions": [3, 3], "score": 5,
