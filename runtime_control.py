@@ -4,6 +4,11 @@ from datetime import datetime, timezone
 import os
 import socket
 import uuid
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 def _client():
     try:
