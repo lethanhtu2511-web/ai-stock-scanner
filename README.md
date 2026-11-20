@@ -69,6 +69,11 @@ Hàm restore từ chối chạy nếu không truyền xác nhận tường minh 
 
 ## Dữ liệu và giới hạn
 
+- Dữ liệu khối ngoại: lấy lịch sử mua/bán theo mã qua vnstock Market.foreign_flow, ưu tiên DNSE, dự phòng FHSC/SSI; cache 15 phút.
+- Khối ngoại hiển thị giá trị/khối lượng mua, bán, ròng và tổng ròng 3/5/10 phiên; điểm cộng/trừ được chuẩn hóa theo tổng GTGD 5 phiên.
+- Bán ròng 5 phiên có tỷ lệ từ 2% GTGD 5 phiên trở lên sẽ hạ tín hiệu BUY xuống WAIT; mua ròng chỉ hỗ trợ điểm, không tự tạo lệnh mua.
+- Khi thiếu dữ liệu khối ngoại, bot ghi UNAVAILABLE và không giả định là mua ròng hay bán ròng.
+- Backtest cắt dữ liệu khối ngoại theo đúng ngày tín hiệu để tránh nhìn trước tương lai.
 - Giá realtime chỉ được xác nhận khi timestamp đầy đủ do nguồn cung cấp, nằm trong phiên giao dịch và không quá 300 giây.
 - Nếu không xác minh được timestamp, dữ liệu được đánh dấu chưa xác minh hoặc dùng giá D1/phiên gần nhất; không được xem là realtime.
 - Dữ liệu D1 cần tối thiểu 200 phiên và được lọc theo thanh khoản.
