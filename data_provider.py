@@ -271,10 +271,14 @@ def fetch_stock_history(symbol, length=260, is_index=False):
     ):
         return cached[1].copy()
 
+    # Scale calendar lookback with requested bar count. 600 calendar days
+    # cannot supply 500-900 daily candles; use ~2.2 calendar days per bar.
+    lookback_days = max(600, int(length * 2.2))
+
     try:
         raw = get_ohlcv(
             symbol,
-            lookback_days=600,
+            lookback_days=lookback_days,
             is_index=is_index,
         )
 
@@ -290,7 +294,7 @@ def fetch_stock_history(symbol, length=260, is_index=False):
                 try:
                     fresh_raw = get_ohlcv(
                         symbol,
-                        lookback_days=600,
+                        lookback_days=lookback_days,
                         is_index=False,
                         ttl_s=0,
                     )
