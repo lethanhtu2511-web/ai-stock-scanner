@@ -32,7 +32,7 @@ from portfolio import (
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DB_PATH = os.getenv("DATABASE_PATH", "data/stock_scanner.sqlite3")
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 AUTO_REFRESH_SECONDS = 300
 
 
@@ -946,6 +946,7 @@ def main():
                 "Quét cổ phiếu",
                 "Lịch sử quét",
                 "Tự đánh giá",
+                "Backtest lịch sử",
                 "Quản lý danh mục",
                 "Thông tin hệ thống",
             ],
@@ -970,6 +971,9 @@ def main():
 
     elif page == "Tự đánh giá":
         show_self_evaluation()
+
+    elif page == "Backtest lịch sử":
+        st.switch_page("pages/1_Backtest_Lich_su.py")
 
     elif page == "Quản lý danh mục":
         show_portfolio()
