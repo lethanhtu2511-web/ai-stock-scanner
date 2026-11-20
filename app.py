@@ -415,8 +415,10 @@ def auto_refresh_panel(show_details=True):
     else:
         st.caption("Chưa có lượt quét nào được lưu.")
 
-    if is_market_session():
-        st.info("Tự động cập nhật mỗi 300 giây khi trang đang mở. Nếu đóng trang, lượt quét tự động sẽ tạm dừng.")
+    if worker_online:
+        st.info("Worker nền đang chạy độc lập theo chu kỳ 300 giây; có thể đóng Chrome mà không dừng bộ quét.")
+    elif is_market_session():
+        st.info("Worker nền chưa hoạt động. Giao diện tạm tự quét mỗi 300 giây khi trang đang mở.")
     elif datetime.now(VN_TZ).time() >= dt_time(15, 35):
         st.info("Ngoài giờ giao dịch: bot thực hiện lượt quét D1 cuối ngày một lần.")
     else:
@@ -606,8 +608,9 @@ def show_scanner():
     st.title("🔎 QUÉT CỔ PHIẾU")
 
     st.info(
-        "Bot tự cập nhật mỗi 300 giây trong giờ giao dịch khi trang đang mở; "
-        "anh cũng có thể chủ động quét ngay. Bot không tự đặt lệnh."
+        "Bot ưu tiên worker nền độc lập theo chu kỳ 300 giây; "
+        "nếu worker chưa hoạt động, giao diện tự quét khi trang đang mở. "
+        "Bot không tự đặt lệnh."
     )
 
     if st.button("🔄 LẤY DỮ LIỆU MỚI & QUÉT LẠI", type="primary", use_container_width=True):
@@ -923,13 +926,13 @@ def show_system_info():
 
     st.write(f"Phiên bản: AI Stock Scanner {APP_VERSION}")
     st.write("Thị trường: HOSE / HNX")
-    st.write("Cập nhật dữ liệu: mỗi 300 giây khi trang đang mở hoặc bấm Quét lại")
+    st.write("Cập nhật dữ liệu: worker nền mỗi 300 giây; giao diện có cơ chế dự phòng khi worker offline")
     st.write("Phân tích kỹ thuật: D1")
     st.write("Chiến lược: Swing / Reversal / Pullback")
     st.write("Tự động đặt lệnh: Không")
     st.write("Quản lý danh mục: Đã bật")
 
-    st.info("Bot tự quét mỗi 300 giây trong giờ giao dịch khi phiên Streamlit còn mở; nếu đóng trang, việc quét tự động tạm dừng. Giá chỉ được xác nhận realtime khi timestamp nguồn hợp lệ.")
+    st.info("Bot ưu tiên worker nền độc lập mỗi 300 giây. Khi worker offline, giao diện dùng cơ chế tự quét dự phòng lúc đang mở. Giá chỉ được xác nhận realtime khi timestamp nguồn hợp lệ.")
 
 
 # =========================================================
