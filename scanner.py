@@ -941,6 +941,7 @@ def analyze_stock(
                 "market_regime",
                 "UNKNOWN",
             ),
+            "candlestick_analysis": analysis.get("candlestick_analysis", {}),
             "adaptive_research": adaptive,
 
             "data_date": data_date.strftime(
