@@ -14,6 +14,7 @@ from scan_store import (
 )
 from signal_evaluator import evaluate_signal_history
 from worker import run_scan, ScanAlreadyRunningError
+from portfolio_advisor import advise_position
 from portfolio import (
     add_transaction,
     get_positions,
@@ -716,6 +717,7 @@ def show_portfolio():
 
     # Lấy một dòng có dữ liệu giá tốt nhất cho mỗi mã.
     market_by_symbol = {}
+    strategy_rows_by_symbol = {}
     signal_rank = {"BUY": 0, "WAIT": 1, "WATCH": 2, "SKIP": 3, "FILTERED": 4}
     price_rank = {
         "REALTIME": 0,
@@ -724,6 +726,11 @@ def show_portfolio():
         "UNVERIFIED": 3,
         "D1_STALE": 9,
     }
+    for row in latest_rows:
+        row_symbol = row.get("symbol")
+        if row_symbol:
+            strategy_rows_by_symbol.setdefault(row_symbol, []).append(row)
+
     for row in sorted(
         latest_rows,
         key=lambda x: (
@@ -762,6 +769,7 @@ def show_portfolio():
             "strategy": STRATEGY_NAMES.get(row.get("strategy"), row.get("strategy")),
             "score": row.get("score"),
             "reason": row.get("reason"),
+            "price_status": price_status,
         }
 
     st.subheader("Tổng quan")
@@ -799,6 +807,14 @@ def show_portfolio():
                 unrealized = None
                 pnl_pct = None
             advice = market.get("signal", "CHƯA CÓ TÍN HIỆU")
+            recommendation = advise_position(
+                position, market, strategy_rows_by_symbol.get(symbol, []), settings
+            )
+            estimated_sell_value = (
+                recommendation["quantity"] * current
+                * (1 - float(settings["fee_sell"]) - float(settings["sell_tax"]))
+                if current is not None and recommendation["quantity"] > 0 else None
+            )
             display_rows.append({
                 "Mã": symbol,
                 "Số lượng": quantity,
@@ -810,9 +826,29 @@ def show_portfolio():
                 "Lãi/lỗ (%)": round(pnl_pct, 2) if pnl_pct is not None else None,
                 "Tín hiệu mới nhất": SIGNAL_NAMES.get(advice, advice),
                 "Chiến lược": market.get("strategy", "—"),
+                "ĐỀ XUẤT": recommendation["label"],
+                "SL đề xuất bán": recommendation["quantity"] or "—",
+                "Giá trị bán ròng ước tính": round(estimated_sell_value, 0) if estimated_sell_value is not None else None,
+                "Lý do đề xuất": recommendation["reason"],
             })
-        st.subheader("Vị thế đang nắm giữ")
-        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+        st.subheader("Khuyến nghị hành động cho từng mã")
+        advice_df = pd.DataFrame(display_rows)
+        advice_columns = [
+            "Mã", "ĐỀ XUẤT", "SL đề xuất bán", "Giá tham chiếu (nghìn đồng/cp)",
+            "Giá trị bán ròng ước tính", "Lãi/lỗ (%)", "Lý do đề xuất", "Nguồn giá",
+        ]
+        st.dataframe(advice_df[advice_columns], use_container_width=True, hide_index=True)
+        st.caption(
+            "BÁN HẾT ưu tiên khi giá chạm ngưỡng cắt lỗ; BÁN MỘT PHẦN khi chạm mục tiêu hoặc có đồng thuận suy yếu. "
+            "Khối lượng bán được làm tròn theo lô 100 cổ phiếu. Đây là khuyến nghị, không phải lệnh giao dịch."
+        )
+        st.subheader("Chi tiết vị thế đang nắm giữ")
+        detail_columns = [
+            "Mã", "Số lượng", "Giá vốn TB (nghìn đồng/cp, gồm phí)",
+            "Giá tham chiếu (nghìn đồng/cp)", "Ngày dữ liệu giá", "Lãi/lỗ tạm tính",
+            "Lãi/lỗ (%)", "Tín hiệu mới nhất", "Chiến lược",
+        ]
+        st.dataframe(advice_df[detail_columns], use_container_width=True, hide_index=True)
         st.metric("Lãi/lỗ tạm tính sau phí bán và thuế (các mã có giá)", money(total_unrealized))
         st.caption(f"Đã định giá {priced_positions}/{len(positions)} mã đang nắm giữ. Các mã chưa có giá hợp lệ không được cộng vào tổng này.")
         st.caption(
