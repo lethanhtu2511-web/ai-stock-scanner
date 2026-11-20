@@ -7,6 +7,7 @@ No future bars are used to create a signal.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from typing import Iterable
 
 import pandas as pd
@@ -203,6 +204,10 @@ def run_historical_backtest(
     selected = [symbol for symbol, _ in ranked[:max(1, int(max_symbols))]]
     all_trades = []
     signal_eval_errors = []
+    signal_diagnostics = {
+        strategy: {"evaluated": 0, "BUY": 0, "WAIT": 0, "WATCH": 0, "SKIP": 0, "FILTERED": 0, "scores": [], "blockers": Counter()}
+        for strategy in strategy_keys
+    }
     strategy_keys = list(ALL_HORIZONS) if strategy_filter == "ALL" else (
         list(EARLY_HORIZONS) if strategy_filter == "EARLY" else [strategy_filter]
     )
@@ -270,10 +275,21 @@ def run_historical_backtest(
                     continue
                 if strategy in STRATEGY_HORIZONS:
                     item = analysis["strategies"][strategy]
-                    is_signal = item["signal"] == "BUY" and item["confirmed"]
+                    state = str(item.get("signal", "WAIT")).upper()
+                    diagnostic = signal_diagnostics[strategy]
+                    diagnostic["evaluated"] += 1
+                    diagnostic[state] = diagnostic.get(state, 0) + 1
+                    diagnostic["scores"].append(int(item.get("score", 0) or 0))
+                    diagnostic["blockers"].update(item.get("blockers", []) or [])
+                    is_signal = state == "BUY" and item.get("confirmed") is True
                     trade_plan = item
                 else:
-                    is_signal = early.get("early_signal") == strategy
+                    early_state = early.get("early_signal")
+                    diagnostic = signal_diagnostics[strategy]
+                    diagnostic["evaluated"] += 1
+                    diagnostic["scores"].append(int(early.get("early_score", 0) or 0))
+                    diagnostic["blockers"].update(early.get("early_risks", []) or [])
+                    is_signal = early_state == strategy
                     # Early setups have no confirmed stop/target; measure a fixed
                     # five-session forward return instead of inventing price levels.
                     trade_plan = {"stop_loss": None, "target_price": None}
@@ -299,6 +315,25 @@ def run_historical_backtest(
             ["entry_date", "symbol", "strategy"]
         ).reset_index(drop=True)
 
+    diagnostics_output = {}
+    for strategy, detail in signal_diagnostics.items():
+        scores = pd.Series(detail["scores"], dtype="float64")
+        diagnostics_output[strategy] = {
+            "evaluated": int(detail["evaluated"]),
+            "signal_counts": {
+                key: int(value) for key, value in detail.items()
+                if key in {"BUY", "WAIT", "WATCH", "SKIP", "FILTERED"}
+            },
+            "score_percentiles": (
+                {str(q): round(float(scores.quantile(q)), 2) for q in (0.25, 0.5, 0.75, 0.9)}
+                if not scores.empty else {}
+            ),
+            "top_blockers_or_risks": [
+                {"reason": reason, "count": int(count)}
+                for reason, count in detail["blockers"].most_common(10)
+            ],
+        }
+
     by_strategy = []
     if not trades_df.empty:
         for strategy, group in trades_df.groupby("strategy"):
@@ -316,6 +351,7 @@ def run_historical_backtest(
         "data_errors": errors,
         "signal_evaluation_error_count": len(signal_eval_errors),
         "signal_evaluation_errors_sample": signal_eval_errors,
+        "signal_diagnostics": diagnostics_output,
         "selected_symbols": selected,
         "costs": costs_used,
         "lookback_sessions": int(lookback_sessions),
