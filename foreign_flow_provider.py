@@ -57,6 +57,22 @@ def normalize_foreign_flow(raw):
     return d[["date", "buy_vol", "buy_val", "sell_vol", "sell_val", "net_vol", "net_val"]].reset_index(drop=True)
 
 
+
+def _resolve_foreign_history():
+    """Resolve the settled foreign-history API across package export layouts."""
+    import_errors = []
+    try:
+        from vn_market_data import get_foreign_history
+        return get_foreign_history
+    except (ImportError, AttributeError) as exc:
+        import_errors.append(f"package export: {exc}")
+    try:
+        from vn_market_data.adapter import get_foreign_history
+        return get_foreign_history
+    except (ImportError, AttributeError) as exc:
+        import_errors.append(f"adapter export: {exc}")
+    raise ImportError("; ".join(import_errors))
+
 def fetch_foreign_flow(symbol: str, start: str | None = None, end: str | None = None, length: int = 120, force_refresh: bool = False):
     symbol = str(symbol or "").strip().upper()
     if not symbol:
@@ -71,21 +87,7 @@ def fetch_foreign_flow(symbol: str, start: str | None = None, end: str | None = 
     if not force_refresh and cached and time.monotonic() - cached[0] < CACHE_SECONDS:
         return cached[1].copy()
     try:
-        # v0.4.x has shipped builds where the function exists in adapter.py
-        # but is not re-exported by the package root. Support both public paths.
-        get_history = None
-        import_errors = []
-        try:
-            from vn_market_data import get_foreign_history as get_history
-        except (ImportError, AttributeError) as exc:
-            import_errors.append(f"package export: {exc}")
-        if get_history is None:
-            try:
-                from vn_market_data.adapter import get_foreign_history as get_history
-            except (ImportError, AttributeError) as exc:
-                import_errors.append(f"adapter export: {exc}")
-        if get_history is None:
-            raise ImportError("; ".join(import_errors))
+        get_history = _resolve_foreign_history()
         response = get_history(symbol, start, end)
         source, rows = response if isinstance(response, tuple) and len(response) == 2 else ("vn-market-data", response)
         result = normalize_foreign_flow(rows)
