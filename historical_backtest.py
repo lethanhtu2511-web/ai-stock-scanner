@@ -215,6 +215,7 @@ def run_historical_backtest(
         strategy: {
             "evaluated": 0, "BUY": 0, "WAIT": 0, "WATCH": 0,
             "SKIP": 0, "FILTERED": 0, "scores": [],
+            "early_signal_counts": Counter(),
             "blockers": Counter(), "adaptive_statuses": Counter(),
             "adaptive_scores": [],
         }
@@ -277,8 +278,9 @@ def run_historical_backtest(
                 continue
             for strategy in strategy_keys:
                 horizon = ALL_HORIZONS[strategy]
-                # Do not count immature trades that lack a full forward window.
-                if signal_idx + horizon >= len(d) or signal_idx < next_available[strategy]:
+                # Count every date with a complete forward horizon, even when
+                # an earlier simulated position is still open.
+                if signal_idx + horizon >= len(d):
                     continue
                 if strategy in STRATEGY_HORIZONS:
                     item = analysis["strategies"][strategy]
@@ -295,16 +297,20 @@ def run_historical_backtest(
                     is_signal = state == "BUY" and item.get("confirmed") is True
                     trade_plan = item
                 else:
-                    early_state = early.get("early_signal")
+                    early_state = str(early.get("early_signal", "UNAVAILABLE")).upper()
                     diagnostic = signal_diagnostics[strategy]
                     diagnostic["evaluated"] += 1
+                    diagnostic["early_signal_counts"].update([early_state])
                     diagnostic["scores"].append(int(early.get("early_score", 0) or 0))
                     diagnostic["blockers"].update(early.get("early_risks", []) or [])
                     is_signal = early_state == strategy
                     # Early setups have no confirmed stop/target; measure a fixed
                     # five-session forward return instead of inventing price levels.
                     trade_plan = {"stop_loss": None, "target_price": None}
-                if is_signal:
+
+                # Keep overlapping setup dates in diagnostics, but suppress
+                # overlapping simulated positions for the same symbol/strategy.
+                if is_signal and signal_idx >= next_available[strategy]:
                     trade = _simulate_trade(
                         symbol, strategy, d, signal_idx, trade_plan, costs_used
                     )
@@ -339,6 +345,9 @@ def run_historical_backtest(
             "signal_counts": {
                 key: int(value) for key, value in detail.items()
                 if key in {"BUY", "WAIT", "WATCH", "SKIP", "FILTERED"}
+            },
+            "early_signal_counts": {
+                key: int(value) for key, value in detail["early_signal_counts"].items()
             },
             "score_percentiles": (
                 {str(q): round(float(scores.quantile(q)), 2) for q in (0.25, 0.5, 0.75, 0.9)}
