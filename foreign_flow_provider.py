@@ -96,7 +96,7 @@ def fetch_foreign_flow(symbol: str, start: str | None = None, end: str | None = 
     raise RuntimeError("Không lấy được dữ liệu khối ngoại: " + " | ".join(errors))
 
 
-def summarize_foreign_flow(flow: pd.DataFrame, as_of=None) -> dict:
+def summarize_foreign_flow(flow: pd.DataFrame, as_of=None, market_turnover_5d=None) -> dict:
     empty = {
         "foreign_flow_status": "UNAVAILABLE",
         "foreign_buy_value": None, "foreign_sell_value": None,
@@ -123,13 +123,25 @@ def summarize_foreign_flow(flow: pd.DataFrame, as_of=None) -> dict:
     buy = _num(row["buy_val"])
     sell = _num(row["sell_val"])
     net_today = _num(row["net_val"])
-    # Signed net flow relative to matched traded value; only compute when caller
-    # adds total market turnover later, so no false denominator is fabricated.
+    ratio = (
+        net5 / float(market_turnover_5d)
+        if net5 is not None and market_turnover_5d and float(market_turnover_5d) > 0
+        else None
+    )
     score = 0
-    if net5 is not None and net5 > 0:
-        score = 6 if net_today > 0 else 3
+    if ratio is not None:
+        if ratio >= 0.02:
+            score = 6
+        elif ratio >= 0.005:
+            score = 3
+        elif ratio <= -0.02:
+            score = -6
+        elif ratio <= -0.005:
+            score = -3
+    elif net5 is not None and net5 > 0:
+        score = 3 if net_today > 0 else 0
     elif net5 is not None and net5 < 0:
-        score = -6 if net_today < 0 else -3
+        score = -3 if net_today < 0 else 0
     return {
         "foreign_flow_status": "AVAILABLE",
         "foreign_buy_value": buy, "foreign_sell_value": sell,
@@ -138,7 +150,7 @@ def summarize_foreign_flow(flow: pd.DataFrame, as_of=None) -> dict:
         "foreign_sell_volume": _num(row["sell_vol"]),
         "foreign_net_volume": _num(row["net_vol"]),
         "foreign_net_3d": net3, "foreign_net_5d": net5,
-        "foreign_net_10d": net10, "foreign_net_ratio": None,
+        "foreign_net_10d": net10, "foreign_net_ratio": ratio,
         "foreign_signal": "ACCUMULATING" if score > 0 else ("DISTRIBUTING" if score < 0 else "NEUTRAL"),
         "foreign_score_adjustment": score,
         "foreign_data_date": pd.Timestamp(row["date"]).strftime("%Y-%m-%d"),
