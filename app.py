@@ -201,7 +201,18 @@ def display_scan_table(rows):
         "foreign_flow_status": "Dữ liệu khối ngoại",
     }
 
+    if "adaptive_research" in df.columns:
+        adaptive = df["adaptive_research"].apply(
+            lambda value: value if isinstance(value, dict) else {}
+        )
+        df["adaptive_status"] = adaptive.apply(lambda value: value.get("status", "—"))
+        df["adaptive_score"] = adaptive.apply(lambda value: value.get("score"))
+
     df = df.rename(columns=rename)
+    df = df.rename(columns={
+        "adaptive_status": "Adaptive (thử nghiệm)",
+        "adaptive_score": "Điểm Adaptive",
+    })
 
     preferred = [
         "Mã",
@@ -210,6 +221,8 @@ def display_scan_table(rows):
         "Chiến lược",
         "Tín hiệu",
         "Điểm",
+        "Điểm Adaptive",
+        "Adaptive (thử nghiệm)",
         "Khối ngoại ròng (đ)",
         "Khối ngoại ròng 5 phiên (đ)",
         "Xu hướng khối ngoại",
@@ -273,6 +286,17 @@ def show_strategy_metrics(df):
 
 def show_signal_detail(row):
     st.subheader(f"Phân tích {row.get('symbol', '')}")
+
+    adaptive = row.get("adaptive_research")
+    if isinstance(adaptive, dict):
+        st.markdown("**Đánh giá Adaptive (thử nghiệm, không phải tín hiệu mua)**")
+        st.metric("Điểm Adaptive", adaptive.get("score", "—"))
+        st.write(f"Trạng thái: {adaptive.get('status', '—')}")
+        if adaptive.get("hard_risks"):
+            st.warning("Rủi ro chặn: " + "; ".join(adaptive["hard_risks"]))
+        if adaptive.get("soft_confirmations_missing"):
+            st.info("Yếu tố cần xác nhận thêm: " + "; ".join(adaptive["soft_confirmations_missing"]))
+        st.caption(adaptive.get("note", "Chỉ dùng để tham khảo nghiên cứu."))
 
     st.write(
         f"**Chiến lược:** "
