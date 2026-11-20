@@ -346,7 +346,8 @@ def run_historical_backtest(
     if not trades_df.empty:
         for strategy, group in trades_df.groupby("strategy"):
             by_strategy.append({"strategy": strategy, **_summarize(group)})
-    portfolio = _simulate_portfolio(trades_df, initial_capital=10_000_000, max_positions=5)
+    executable_trades = trades_df[trades_df["strategy"].isin(STRATEGY_HORIZONS)] if not trades_df.empty else trades_df
+    portfolio = _simulate_portfolio(executable_trades, initial_capital=10_000_000, max_positions=5)
     return {
         "summary": _summarize(trades_df),
         "portfolio": portfolio,
