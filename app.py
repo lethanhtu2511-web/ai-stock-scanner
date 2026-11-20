@@ -1,6 +1,5 @@
 
 import os
-import threading
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
@@ -14,7 +13,7 @@ from scan_store import (
     get_scan_summary,
 )
 from signal_evaluator import evaluate_signal_history
-from worker import run_scan
+from worker import run_scan, ScanAlreadyRunningError
 from portfolio import (
     add_transaction,
     get_positions,
@@ -360,11 +359,6 @@ def show_signal_detail(row):
 # PERIODIC SCAN AND DISPLAY
 # =========================================================
 
-@st.cache_resource
-def get_scan_lock():
-    return threading.Lock()
-
-
 @st.fragment(run_every=AUTO_REFRESH_SECONDS)
 def auto_refresh_panel(show_details=True):
     summary = get_scan_summary(DB_PATH)
@@ -372,20 +366,16 @@ def auto_refresh_panel(show_details=True):
     now = datetime.now(VN_TZ)
 
     if auto_scan_due(now, latest_time):
-        lock = get_scan_lock()
-        if lock.acquire(blocking=False):
-            try:
-                with st.spinner("Đang cập nhật dữ liệu và quét HOSE/HNX..."):
-                    saved = run_scan()
-                st.success(f"Đã hoàn tất lượt quét tự động, lưu {saved:,} dòng.")
-                summary = get_scan_summary(DB_PATH)
-                latest_time = summary.get("latest_scan_at")
-            except Exception as exc:
-                st.error(f"Lượt quét tự động chưa thành công: {exc}")
-            finally:
-                lock.release()
-        else:
-            st.info("Một phiên khác đang thực hiện lượt quét; kết quả sẽ được cập nhật sau.")
+        try:
+            with st.spinner("Đang cập nhật dữ liệu và quét HOSE/HNX..."):
+                saved = run_scan()
+            st.success(f"Đã hoàn tất lượt quét tự động, lưu {saved:,} dòng.")
+            summary = get_scan_summary(DB_PATH)
+            latest_time = summary.get("latest_scan_at")
+        except ScanAlreadyRunningError:
+            st.info("Đang có lượt quét khác xử lý. Trang sẽ tự kiểm tra lại sau, không tạo lượt quét trùng.")
+        except Exception as exc:
+            st.error(f"Lượt quét tự động chưa thành công: {exc}")
 
     latest_dt = parse_scan_time(latest_time)
     if latest_dt:
@@ -598,6 +588,8 @@ def show_scanner():
                 saved = run_scan()
             st.success(f"Đã hoàn tất lượt quét, lưu {saved:,} dòng kết quả.")
             st.rerun()
+        except ScanAlreadyRunningError:
+            st.info("Một lượt quét khác đang chạy. Bot sẽ cập nhật kết quả khi lượt đó hoàn tất.")
         except Exception as exc:
             st.error(f"Quét thất bại: {exc}")
 
