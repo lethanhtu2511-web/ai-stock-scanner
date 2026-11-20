@@ -6,14 +6,18 @@ out-of-sample validation. Adaptive scores are ranking/diagnostic outputs only.
 from __future__ import annotations
 
 HARD_RISK_TERMS = (
-    "biến động", "ATR", "thanh khoản", "GTGD", "bán ròng mạnh",
+    "biến động", "atr", "thanh khoản", "gtgd", "bán ròng mạnh",
     "reward/risk", "tỷ lệ lợi nhuận/rủi ro", "dữ liệu",
-    "realtime", "quote", "mua đuổi",
+    "realtime", "quote", "mua đuổi", "áp lực bán",
 )
 
+HARD_RISK_PHRASES = ("phá đáy", "mất ema50", "đã mất ema50")
+
 SOFT_CONFIRMATION_TERMS = (
-    "RSI", "MACD", "khối lượng", "nến", "EMA20", "EMA50",
-    "OBV", "MFI", "pullback", "hồi phục", "xu hướng",
+    "rsi", "macd", "khối lượng", "nến", "ema20", "ema50",
+    "obv", "mfi", "pullback", "hồi phục", "xu hướng",
+    "đường trung bình", "cấu trúc giá", "chưa lấy lại",
+    "cách xa ema20", "chưa ở vùng pullback",
 )
 
 
@@ -51,11 +55,14 @@ def adaptive_assessment(detail, *, liquidity_ok=True, risk_plan=None,
     soft = []
     for blocker in blockers:
         lower = str(blocker).lower()
-        if any(term.lower() in lower for term in HARD_RISK_TERMS):
+        if any(phrase in lower for phrase in HARD_RISK_PHRASES):
             hard.append(str(blocker))
-        elif any(term.lower() in lower for term in SOFT_CONFIRMATION_TERMS):
+        elif any(term in lower for term in HARD_RISK_TERMS):
+            hard.append(str(blocker))
+        elif any(term in lower for term in SOFT_CONFIRMATION_TERMS):
             soft.append(str(blocker))
         else:
+            # Fail closed: unknown blockers are never silently downgraded.
             hard.append(str(blocker))
 
     if not liquidity_ok:
