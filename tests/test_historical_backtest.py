@@ -73,7 +73,7 @@ class HistoricalBacktestTests(unittest.TestCase):
         })
         seen_lengths = []
 
-        def fake_analyze(symbol, history, market_df=None):
+        def fake_analyze(symbol, history, market_df=None, foreign_flow=None):
             seen_lengths.append(len(history))
             return {
                 "strategies": {
