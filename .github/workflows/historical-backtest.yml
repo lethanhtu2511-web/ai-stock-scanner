@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths:
       - "historical_backtest.py"
+      - "validation_report.py"
       - "run_historical_validation.py"
       - "strategy_engine.py"
       - "scanner.py"
