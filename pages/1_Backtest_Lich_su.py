@@ -91,8 +91,8 @@ if result:
     c4.metric("Profit factor", "—" if summary["profit_factor"] is None else f'{summary["profit_factor"]:.2f}')
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tổng lợi nhuận mô phỏng", f'{summary["total_return_pct"]:.2f}%')
-    c2.metric("Drawdown tối đa", f'{summary["max_drawdown_pct"]:.2f}%')
+    c1.metric("Lũy kế chuỗi lệnh (tham khảo)", f'{summary["total_return_pct"]:.2f}%')
+    c2.metric("Sụt giảm chuỗi lệnh", f'{summary["max_drawdown_pct"]:.2f}%')
     c3.metric("Lãi/lỗ trung vị", f'{summary["median_return_pct"]:.2f}%')
     c4.metric("Thời gian nắm giữ TB", f'{summary["avg_holding_sessions"]:.1f} phiên')
 
