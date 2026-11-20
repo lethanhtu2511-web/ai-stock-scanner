@@ -69,7 +69,7 @@ Hàm restore từ chối chạy nếu không truyền xác nhận tường minh 
 
 ## Dữ liệu và giới hạn
 
-- Dữ liệu khối ngoại: lấy lịch sử mua/bán theo mã qua vnstock Market.foreign_flow, ưu tiên DNSE, dự phòng FHSC/SSI; cache 15 phút.
+- Dữ liệu khối ngoại: lấy lịch sử mua/bán đã chốt theo mã qua get_foreign_history của vn-market-data, nguồn CafeF; cache cục bộ theo cơ chế của provider. Dữ liệu lịch sử hiện được công bố khoảng 63 phiên, không đủ bao phủ toàn bộ backtest 120 phiên.
 - Khối ngoại hiển thị giá trị/khối lượng mua, bán, ròng và tổng ròng 3/5/10 phiên; điểm cộng/trừ được chuẩn hóa theo tổng GTGD 5 phiên.
 - Bán ròng 5 phiên có tỷ lệ từ 2% GTGD 5 phiên trở lên sẽ hạ tín hiệu BUY xuống WAIT; mua ròng chỉ hỗ trợ điểm, không tự tạo lệnh mua.
 - Khi thiếu dữ liệu khối ngoại, bot ghi UNAVAILABLE và không giả định là mua ròng hay bán ròng.
