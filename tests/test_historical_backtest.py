@@ -97,6 +97,10 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertTrue(seen_lengths)
         self.assertTrue(all(length <= 240 for length in seen_lengths))
         self.assertGreater(result["summary"]["trades"], 0)
+        diagnostic = result["signal_diagnostics"]["SWING"]
+        self.assertGreater(diagnostic["evaluated"], 0)
+        self.assertGreater(diagnostic["signal_counts"]["BUY"], 0)
+        self.assertIn("score_percentiles", diagnostic)
         for trade in result["trades"].to_dict("records"):
             self.assertLess(trade["signal_date"], trade["entry_date"])
             self.assertLessEqual(trade["holding_sessions"], 5)
