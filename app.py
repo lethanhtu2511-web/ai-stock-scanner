@@ -366,125 +366,29 @@ def show_signal_detail(row):
 
 
 # =========================================================
-# SCAN LOCK
-# =========================================================
-
-@st.cache_resource
-def get_scan_lock():
-    return threading.Lock()
-
-
-# =========================================================
-# AUTO REFRESH AND SCAN
+# DISPLAY SAVED SCAN RESULTS
 # =========================================================
 
 def auto_refresh_panel(show_details=True):
-
-    # Chỉ hiển thị kết quả đã lưu; không tự gọi nguồn dữ liệu ở các lần rerun.
     summary = get_scan_summary(DB_PATH)
-
     latest_time = summary.get("latest_scan_at")
-
-    lock = get_scan_lock()
-
-    if (
-        AUTO_SCAN_ENABLED
-        and auto_scan_due(now, latest_time)
-    ):
-
-        acquired = lock.acquire(blocking=False)
-
-        if acquired:
-            try:
-                summary = get_scan_summary(DB_PATH)
-
-                latest_time = summary.get("latest_scan_at")
-
-                now = datetime.now(VN_TZ)
-
-                if auto_scan_due(now, latest_time):
-
-                    with st.spinner(
-                        "Đang cập nhật giá và quét HOSE/HNX..."
-                    ):
-                        saved = run_scan()
-
-                    if saved:
-                        st.success(
-                            f"Đã cập nhật {saved:,} dòng kết quả."
-                        )
-                    else:
-                        st.warning(
-                            "Lượt quét chưa lưu được kết quả. "
-                            "Kiểm tra nhật ký Streamlit Cloud."
-                        )
-
-            except Exception as exc:
-                st.error(
-                    f"Không thể tự động quét: {exc}"
-                )
-
-            finally:
-                lock.release()
-
-        else:
-            st.info(
-                "Một phiên khác đang thực hiện lượt quét."
-            )
-
-    summary = get_scan_summary(DB_PATH)
-
-    latest_time = summary.get("latest_scan_at")
-
     latest_dt = parse_scan_time(latest_time)
 
     if latest_dt:
-        age_seconds = max(
-            0,
-            (
-                datetime.now(VN_TZ) - latest_dt
-            ).total_seconds(),
-        )
-
+        age_seconds = max(0, (datetime.now(VN_TZ) - latest_dt).total_seconds())
         st.caption(
-            f"Lượt quét gần nhất: "
-            f"{latest_dt.strftime('%d/%m/%Y %H:%M:%S')} "
+            f"Lượt quét gần nhất: {latest_dt.strftime('%d/%m/%Y %H:%M:%S')} "
             f"· Cách đây {int(age_seconds)} giây"
         )
-
     else:
         st.caption("Chưa có lượt quét nào được lưu.")
 
-    if is_market_session() and AUTO_SCAN_ENABLED:
-        st.info(
-            "Đang trong giờ giao dịch. Bot tự quét lại "
-            "sau mỗi 300 giây khi trang đang được mở."
-        )
-
-    elif is_market_session() and not AUTO_SCAN_ENABLED:
-        st.info(
-            "Tự động quét do worker nền đảm nhiệm; "
-            "giao diện làm mới kết quả mỗi 300 giây."
-        )
-
-    else:
-        st.warning(
-            "Ngoài giờ giao dịch: không thể xác nhận giá realtime. "
-            "Sau 15:35 bot chỉ thực hiện lượt quét D1 cuối ngày một lần."
-        )
-
-    latest = current_strategy_rows(
-        get_latest_scan(DB_PATH)
-    )
-
+    latest = current_strategy_rows(get_latest_scan(DB_PATH))
     if not latest:
-        st.warning(
-            "Chưa có kết quả. Hãy nhấn QUÉT NGAY để chạy lượt đầu tiên."
-        )
+        st.warning("Chưa có kết quả quét. Vào mục Quét cổ phiếu và bấm Quét lại.")
         return
 
     df = pd.DataFrame(latest)
-
     st.subheader("Trạng thái dữ liệu")
 
     status_source = (
