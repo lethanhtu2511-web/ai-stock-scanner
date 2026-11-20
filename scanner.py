@@ -9,6 +9,7 @@ from strategy_engine import (
     STRATEGIES,
 )
 from early_signal_engine import evaluate_early_signal
+from foreign_flow_provider import summarize_foreign_flow
 
 # =====================================================
 # AI STOCK SCANNER 3.0 - D1 + VERIFIED REALTIME
@@ -480,7 +481,7 @@ def _make_reason(signal, blockers, reasons, penalties):
     )
 
 
-def analyze_historical_signal(df, symbol, market_df=None):
+def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
     """Evaluate a completed D1 bar with production technical/liquidity/RR rules.
 
     Unlike live scanning, this intentionally omits the realtime-quote gate:
@@ -507,6 +508,10 @@ def analyze_historical_signal(df, symbol, market_df=None):
         liquidity_blockers.append("GTGD trung vị 20 phiên dưới 3 tỷ")
 
     price = float(d.iloc[-1]["Close"])
+    foreign = summarize_foreign_flow(
+        foreign_flow,
+        as_of=pd.Timestamp(d.iloc[-1]["Date"]),
+    )
     atr = _number(analysis.get("atr"))
     resistance = _number(analysis.get("resistance"))
     strategies = {}
@@ -519,15 +524,20 @@ def analyze_historical_signal(df, symbol, market_df=None):
         else:
             signal, signal_blockers = _strategy_signal(detail, risk_plan)
             blockers = list(detail.get("blockers", [])) + signal_blockers
+            # Strong, persistent foreign net selling is a risk veto, not a buy trigger.
+            if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_5d"] < -50_000_000_000:
+                signal = "WAIT"
+                blockers.append("Khối ngoại bán ròng mạnh 5 phiên; chờ áp lực bán suy yếu")
         strategies[strategy] = {
             "signal": signal,
             "confirmed": signal == "BUY",
-            "score": int(detail.get("score", 0)),
+            "score": max(0, min(100, int(detail.get("score", 0)) + foreign["foreign_score_adjustment"])),
             "stop_loss": risk_plan["stop_loss"] if risk_plan else None,
             "target_price": risk_plan["target_price"] if risk_plan else None,
             "reward_risk": risk_plan["reward_risk"] if risk_plan else None,
             "blockers": list(dict.fromkeys(blockers)),
             "reasons": list(detail.get("reasons", [])),
+            **foreign,
         }
 
     return {
@@ -574,6 +584,7 @@ def analyze_stock(
     symbol=None,
     realtime_quote=None,
     market_df=None,
+    foreign_flow=None,
 ):
     symbol = str(
         symbol or ""
@@ -707,6 +718,10 @@ def analyze_stock(
         d,
         market_df=market_df,
     )
+    foreign = summarize_foreign_flow(
+        foreign_flow,
+        as_of=data_date,
+    )
 
     # Nhãn bối cảnh chỉ để hiển thị; không thay đổi điểm hay điều kiện BUY/WAIT.
     analysis["market_regime"] = _classify_market_regime(market_df)
@@ -788,6 +803,13 @@ def analyze_stock(
                     "rủi ro mua đuổi"
                 )
 
+        # Khối ngoại bán ròng mạnh liên tục là điều kiện cảnh báo rủi ro.
+        if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_5d"] < -50_000_000_000:
+            signal = "WAIT"
+            blockers.append(
+                "Khối ngoại bán ròng mạnh 5 phiên; chờ áp lực bán suy yếu"
+            )
+
         # Không xác nhận BUY nếu không có quote realtime hợp lệ.
         if signal == "BUY" and not has_realtime:
             signal = "WAIT"
@@ -816,7 +838,8 @@ def analyze_stock(
                 strategy,
             ),
             "signal": signal,
-            "score": score,
+            "score": max(0, min(100, score + foreign["foreign_score_adjustment"])),
+            **foreign,
             "early_signal": early_signal.get("early_signal", "UNAVAILABLE"),
             "early_score": early_signal.get("early_score", 0),
             "early_reasons": early_signal.get("early_reasons", []),
@@ -1002,11 +1025,18 @@ def scan_market(
                 length=260,
             )
 
+            foreign_flow = None
+            try:
+                from foreign_flow_provider import fetch_foreign_flow
+                foreign_flow = fetch_foreign_flow(symbol, length=20)
+            except Exception:
+                pass
             stock_results = analyze_stock(
                 history,
                 symbol,
                 realtime_quote=realtime_quotes.get(symbol),
                 market_df=market_df,
+                foreign_flow=foreign_flow,
             )
 
             results.extend(stock_results)
