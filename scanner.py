@@ -480,6 +480,65 @@ def _make_reason(signal, blockers, reasons, penalties):
     )
 
 
+def analyze_historical_signal(df, symbol, market_df=None):
+    """Evaluate a completed D1 bar with production technical/liquidity/RR rules.
+
+    Unlike live scanning, this intentionally omits the realtime-quote gate:
+    the historical signal is formed at the completed D1 close, then simulated
+    from the next session open. It does not use future bars.
+    """
+    d = _validate_history(df)
+    symbol = str(symbol or "").strip().upper()
+    if not symbol:
+        raise ValueError("Thiếu mã cổ phiếu.")
+
+    analysis = analyze_strategy_stock(symbol, d, market_df=market_df)
+    turnover = d["Close"] * d["Volume"]
+    previous_turnover = turnover.shift(1).dropna().tail(20)
+    if len(previous_turnover) < 20:
+        raise ValueError("Không đủ 20 phiên để đánh giá thanh khoản.")
+
+    liquidity_blockers = []
+    avg_turnover = float(previous_turnover.mean())
+    median_turnover = float(previous_turnover.median())
+    if avg_turnover < MIN_AVG_TURNOVER:
+        liquidity_blockers.append("GTGD bình quân 20 phiên dưới 5 tỷ")
+    if median_turnover < MIN_MEDIAN_TURNOVER:
+        liquidity_blockers.append("GTGD trung vị 20 phiên dưới 3 tỷ")
+
+    price = float(d.iloc[-1]["Close"])
+    atr = _number(analysis.get("atr"))
+    resistance = _number(analysis.get("resistance"))
+    strategies = {}
+
+    for strategy, detail in analysis["strategies"].items():
+        risk_plan = _risk_plan(price, atr, resistance, strategy)
+        if liquidity_blockers:
+            signal = "FILTERED"
+            blockers = list(detail.get("blockers", [])) + liquidity_blockers
+        else:
+            signal, signal_blockers = _strategy_signal(detail, risk_plan)
+            blockers = list(detail.get("blockers", [])) + signal_blockers
+        strategies[strategy] = {
+            "signal": signal,
+            "confirmed": signal == "BUY",
+            "score": int(detail.get("score", 0)),
+            "stop_loss": risk_plan["stop_loss"] if risk_plan else None,
+            "target_price": risk_plan["target_price"] if risk_plan else None,
+            "reward_risk": risk_plan["reward_risk"] if risk_plan else None,
+            "blockers": list(dict.fromkeys(blockers)),
+            "reasons": list(detail.get("reasons", [])),
+        }
+
+    return {
+        "symbol": symbol,
+        "price": price,
+        "atr": analysis.get("atr"),
+        "strategies": strategies,
+        "relative_strength": analysis.get("relative_strength"),
+    }
+
+
 # =====================================================
 # ANALYZE ONE STOCK
 # =====================================================
