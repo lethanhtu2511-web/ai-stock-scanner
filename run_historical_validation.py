@@ -1,4 +1,4 @@
-"""Run a reproducible representative-universe validation and write artifacts."""
+"""Run reproducible representative-universe validation and write artifacts."""
 from __future__ import annotations
 
 import json
@@ -8,10 +8,9 @@ from pathlib import Path
 import pandas as pd
 
 from historical_backtest import run_historical_backtest
+from validation_report import build_validation_report
 
 
-# Representative liquid names from both HOSE and HNX. This is a sample,
-# not a claim that the list equals every currently listed security.
 SAMPLE_SYMBOLS = [
     "ACB", "BCM", "BID", "CTG", "DCM", "DGC", "DPM", "FPT", "GAS",
     "GVR", "HDB", "HPG", "MBB", "MSN", "MWG", "NLG", "PLX", "PVS",
@@ -32,13 +31,23 @@ def main() -> None:
     )
 
     trades = result["trades"]
-    trades.to_csv(output / "trades.csv", index=False, encoding="utf-8-sig")
+    trades.to_csv(output / "all_signal_outcomes.csv", index=False, encoding="utf-8-sig")
+    validation = build_validation_report(trades)
+    executable = trades[trades["strategy"].astype(str).str.upper().isin(
+        {"SWING", "REVERSAL", "PULLBACK"}
+    )].copy() if not trades.empty else trades.copy()
+    early = trades[trades["strategy"].astype(str).str.upper().isin(
+        {"EARLY_BREAKOUT", "PREPARE"}
+    )].copy() if not trades.empty else trades.copy()
+    executable.to_csv(output / "executable_trades.csv", index=False, encoding="utf-8-sig")
+    early.to_csv(output / "early_warning_research.csv", index=False, encoding="utf-8-sig")
 
     summary = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "universe_type": "representative_sample_not_full_market",
         "sample_symbols": SAMPLE_SYMBOLS,
-        "summary": result["summary"],
+        "legacy_combined_signal_summary": result["summary"],
+        "validation": validation,
         "by_strategy": result["by_strategy"],
         "symbols_requested": result["symbols_requested"],
         "symbols_tested": result["symbols_tested"],
