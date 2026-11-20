@@ -13,6 +13,7 @@ import pandas as pd
 
 from data_provider import fetch_exchange_symbols, fetch_stock_history
 from strategy_engine import analyze_stock
+from early_signal_engine import evaluate_early_signal
 
 
 DEFAULT_COSTS = {
@@ -22,6 +23,8 @@ DEFAULT_COSTS = {
     "slippage": 0.0020,
 }
 STRATEGY_HORIZONS = {"SWING": 5, "REVERSAL": 10, "PULLBACK": 7}
+EARLY_HORIZONS = {"EARLY_BREAKOUT": 5, "PREPARE": 5}
+ALL_HORIZONS = {**STRATEGY_HORIZONS, **EARLY_HORIZONS}
 
 
 def _clean_history(raw: pd.DataFrame) -> pd.DataFrame:
@@ -62,7 +65,7 @@ def _simulate_trade(symbol: str, strategy: str, d: pd.DataFrame,
     entry = entry_raw * (1 + costs["slippage"])
     stop = float(result.get("stop_loss") or 0)
     target = float(result.get("target_price") or 0)
-    horizon = STRATEGY_HORIZONS[strategy]
+    horizon = ALL_HORIZONS[strategy]
     last_idx = min(len(d) - 1, entry_idx + horizon - 1)
     exit_raw = float(d.iloc[last_idx]["close"])
     exit_idx = last_idx
@@ -189,31 +192,44 @@ def run_historical_backtest(
     ranked.sort(key=lambda item: item[1], reverse=True)
     selected = [symbol for symbol, _ in ranked[:max(1, int(max_symbols))]]
     all_trades = []
-    strategy_keys = list(STRATEGY_HORIZONS) if strategy_filter == "ALL" else [strategy_filter]
-    invalid_strategy = [s for s in strategy_keys if s not in STRATEGY_HORIZONS]
+    strategy_keys = list(ALL_HORIZONS) if strategy_filter == "ALL" else (
+        list(EARLY_HORIZONS) if strategy_filter == "EARLY" else [strategy_filter]
+    )
+    invalid_strategy = [s for s in strategy_keys if s not in ALL_HORIZONS]
     if invalid_strategy:
         raise ValueError("Chiến lược không hợp lệ: " + ", ".join(invalid_strategy))
 
     for symbol_index, symbol in enumerate(selected):
         d = histories[symbol].reset_index(drop=True)
-        start_idx = max(200, len(d) - max(1, int(lookback_sessions)) - max(STRATEGY_HORIZONS.values()))
+        start_idx = max(200, len(d) - max(1, int(lookback_sessions)) - max(ALL_HORIZONS.values()))
         next_available = {key: 0 for key in strategy_keys}
         for signal_idx in range(start_idx, len(d) - 1):
             # Strict point-in-time slice: no bar after signal_idx enters the model.
             point_in_time = d.iloc[:signal_idx + 1].copy()
             try:
-                analysis = analyze_stock(symbol, point_in_time)
+                analysis = analyze_stock(symbol, point_in_time) if any(
+                    key in STRATEGY_HORIZONS for key in strategy_keys
+                ) else None
+                early = evaluate_early_signal(point_in_time)
             except Exception:
                 continue
             for strategy in strategy_keys:
-                horizon = STRATEGY_HORIZONS[strategy]
+                horizon = ALL_HORIZONS[strategy]
                 # Do not count immature trades that lack a full forward window.
                 if signal_idx + horizon >= len(d) or signal_idx < next_available[strategy]:
                     continue
-                item = analysis["strategies"][strategy]
-                if item["signal"] == "MUA" and item["confirmed"]:
+                if strategy in STRATEGY_HORIZONS:
+                    item = analysis["strategies"][strategy]
+                    is_signal = item["signal"] == "MUA" and item["confirmed"]
+                    trade_plan = analysis
+                else:
+                    is_signal = early.get("early_signal") == strategy
+                    # Early setups have no confirmed stop/target; measure a fixed
+                    # five-session forward return instead of inventing price levels.
+                    trade_plan = {"stop_loss": None, "target_price": None}
+                if is_signal:
                     trade = _simulate_trade(
-                        symbol, strategy, d, signal_idx, analysis, costs_used
+                        symbol, strategy, d, signal_idx, trade_plan, costs_used
                     )
                     if trade:
                         all_trades.append(trade)
@@ -254,6 +270,8 @@ def run_historical_backtest(
         "method_note": (
             "Tín hiệu được tính bằng dữ liệu đến hết phiên T; mô phỏng mua tại giá mở cửa T+1. "
             "Tính phí mua 0,15%, phí bán 0,15%, thuế bán 0,10% và trượt giá 0,20% mỗi chiều. "
+            "EARLY_BREAKOUT/PREPARE được đánh giá riêng bằng lợi nhuận đóng cửa sau 5 phiên, "
+            "chỉ dùng D1 và không giả định quote realtime. "
             "Nếu cùng một nến chạm cả stop và target, giả định stop khớp trước để thận trọng. "
             "Đây là backtest D1 mô phỏng. Danh sách mã hiện tại có thể gây survivorship bias "
             "do không bao gồm cổ phiếu đã hủy niêm yết; nguồn dữ liệu lịch sử có thể đã điều chỉnh "
