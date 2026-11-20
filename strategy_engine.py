@@ -2,6 +2,8 @@
 import numpy as np
 import pandas as pd
 
+from candlestick_patterns import detect_candlestick_patterns
+
 STRATEGIES = {
     "SWING": "LƯỚT SÓNG 2–5 PHIÊN",
     "REVERSAL": "ĐẢO CHIỀU 5–10 PHIÊN",
@@ -576,6 +578,26 @@ def analyze_stock(symbol, df, market_df=None):
     swing = _score_swing(m)
     reversal = _score_reversal(m, data)
     pullback = _score_pullback(m)
+    candle = detect_candlestick_patterns(data)
+    bullish_confirmed = candle.get("confirmed_bullish", [])
+    bearish_confirmed = candle.get("confirmed_bearish", [])
+
+    # Nến chỉ bổ trợ điểm khi có xác nhận vị trí và khối lượng.
+    # Nến giảm đã xác nhận sẽ chặn tín hiệu mua mới của chiến lược đó.
+    if bullish_confirmed:
+        reversal[0] += 8
+        reversal[1].append("Mô hình nến tăng xác nhận: " + ", ".join(bullish_confirmed))
+        pullback[0] += 5
+        pullback[1].append("Nến hồi phục xác nhận tại vùng hỗ trợ: " + ", ".join(bullish_confirmed))
+        if "Three White Soldiers" in bullish_confirmed:
+            swing[0] += 4
+            swing[1].append("Three White Soldiers được xác nhận")
+    if bearish_confirmed:
+        warning = "Mô hình nến giảm xác nhận: " + ", ".join(bearish_confirmed)
+        for raw in (swing, reversal, pullback):
+            raw[0] -= 8
+            raw[2].append(warning)
+            raw[3].append("Tạm chặn mua mới do xuất hiện mô hình nến giảm được xác nhận")
 
     strategies_raw = {
         "SWING": swing,
@@ -639,6 +661,7 @@ def analyze_stock(symbol, df, market_df=None):
             if atr > 0 else None
         ),
         "strategies": strategies,
+        "candlestick_analysis": candle,
         "best_strategy": best[0],
         "best_score": best[1]["score"],
         "best_signal": best[1]["signal"],
