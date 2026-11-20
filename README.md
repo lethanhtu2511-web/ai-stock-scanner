@@ -90,3 +90,13 @@ docker build --tag ai-stock-scanner .
 ```
 
 GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh làm việc.
+
+
+## Đọc đúng báo cáo backtest
+
+- `EARLY_BREAKOUT` và `PREPARE` là cảnh báo sớm/nghiên cứu setup, không phải lệnh mua đã xác nhận.
+- Chỉ `SWING`, `REVERSAL`, `PULLBACK` có tín hiệu BUY xác nhận mới được tính vào phần giao dịch thực thi giả lập.
+- Báo cáo mới xuất riêng `executable_trades.csv` và `early_warning_research.csv`; không gộp hai nhóm để đánh giá hiệu quả mua bán.
+- Mô phỏng danh mục dùng vốn tiền mặt 10 triệu đồng, rủi ro mục tiêu 2% vốn/vị thế, tối đa 5 vị thế (mỗi vị thế tối đa 20% vốn), khối lượng theo lô 100 và chỉ nhận giao dịch có stop-loss hợp lệ.
+- Nếu không có BUY xác nhận hoặc không đủ điều kiện khối lượng theo lô, báo cáo phải ghi rõ không có giao dịch; không được suy diễn tỷ lệ thắng/lợi nhuận từ cảnh báo sớm.
+- Đây vẫn là mô phỏng nghiên cứu trên mẫu đại diện, không phải cam kết lợi nhuận hay xác nhận chiến lược đã sẵn sàng giao dịch thật.
