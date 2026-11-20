@@ -98,8 +98,7 @@ def market_regime(market_df: pd.DataFrame | None) -> str:
     return "NEUTRAL"
 
 
-def universe_check(df: pd.DataFrame, *, suspended: bool = False, controlled: bool = False) -> tuple[bool, list[str]]:
-    d = _indicators(df)
+def _universe_check_indicators(d: pd.DataFrame, *, suspended: bool = False, controlled: bool = False) -> tuple[bool, list[str]]:
     reasons = []
     if len(d) < 250:
         reasons.append("Lịch sử dưới 250 phiên")
@@ -117,6 +116,10 @@ def universe_check(df: pd.DataFrame, *, suspended: bool = False, controlled: boo
     if controlled:
         reasons.append("Mã thuộc diện kiểm soát")
     return not reasons, reasons
+
+
+def universe_check(df: pd.DataFrame, *, suspended: bool = False, controlled: bool = False) -> tuple[bool, list[str]]:
+    return _universe_check_indicators(_indicators(df), suspended=suspended, controlled=controlled)
 
 
 def trend_filter(r: pd.Series) -> bool:
@@ -187,13 +190,15 @@ def _risk_plan(entry: float, stop: float, atr: float, *, setup: str, liquidity_h
 
 def analyze_daily_setup(symbol: str, df: pd.DataFrame, market_df: pd.DataFrame | None,
                         *, suspended: bool = False, controlled: bool = False,
-                        sector: str | None = None, liquidity_high: bool = True) -> dict[str, Any]:
-    d = _indicators(df)
+                        sector: str | None = None, liquidity_high: bool = True,
+                        indicators_precomputed: bool = False,
+                        market_regime_override: str | None = None) -> dict[str, Any]:
+    d = df.copy() if indicators_precomputed else _indicators(df)
     if len(d) < 250:
         return {"symbol": symbol, "candidates": [], "blocked": ["Cần tối thiểu 250 phiên"]}
     r, prev = d.iloc[-1], d.iloc[-2]
-    regime = market_regime(market_df)
-    eligible, universe_blockers = universe_check(df, suspended=suspended, controlled=controlled)
+    regime = market_regime_override if market_regime_override is not None else market_regime(market_df)
+    eligible, universe_blockers = _universe_check_indicators(d, suspended=suspended, controlled=controlled)
     out = {"symbol": str(symbol).upper(), "market_regime": regime, "sector": sector,
            "universe_eligible": eligible, "universe_blockers": universe_blockers, "candidates": []}
     if not eligible or regime in ("BEARISH", "UNKNOWN"):
