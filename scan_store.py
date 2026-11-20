@@ -418,6 +418,33 @@ def get_scan_history(
 def get_scan_summary(db_path=DEFAULT_DB_PATH):
     init_scan_db(db_path)
 
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote = (
+                client.table("scan_results")
+                .select("scanned_at,signal")
+                .order("scanned_at", desc=True)
+                .limit(5000)
+                .execute().data or []
+            )
+            if remote:
+                latest = remote[0]["scanned_at"]
+                batch = [r for r in remote if r["scanned_at"] == latest]
+                signals = [r.get("signal") for r in batch]
+                return {
+                    "latest_scan_at": latest,
+                    "total_rows": len(remote),
+                    "latest_batch_rows": len(batch),
+                    "buy_count": signals.count("BUY"),
+                    "wait_count": signals.count("WAIT"),
+                    "watch_count": signals.count("WATCH"),
+                }
+    except Exception:
+        import logging
+        logging.getLogger("scan_store").exception("Không đọc được summary Supabase; dùng SQLite.")
+
     with connect(db_path) as conn:
         row = conn.execute("""
             SELECT
