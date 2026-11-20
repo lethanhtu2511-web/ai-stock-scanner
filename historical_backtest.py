@@ -12,7 +12,7 @@ from typing import Iterable
 import pandas as pd
 
 from data_provider import fetch_exchange_symbols, fetch_stock_history
-from strategy_engine import analyze_stock
+from scanner import analyze_historical_signal
 from early_signal_engine import evaluate_early_signal
 
 
@@ -164,6 +164,13 @@ def run_historical_backtest(
     universe = sorted(universe)
 
     histories, errors = {}, []
+    market_history = None
+    try:
+        market_history = _clean_history(
+            fetch_stock_history("VNINDEX", length=600, is_index=True)
+        )
+    except Exception as exc:
+        errors.append({"symbol": "VNINDEX", "error": f"Không có benchmark VN-Index: {exc}"})
     ranked = []
     for i, symbol in enumerate(universe):
         try:
@@ -207,9 +214,24 @@ def run_historical_backtest(
             # Strict point-in-time slice: no bar after signal_idx enters the model.
             point_in_time = d.iloc[:signal_idx + 1].copy()
             try:
-                analysis = analyze_stock(symbol, point_in_time) if any(
-                    key in STRATEGY_HORIZONS for key in strategy_keys
-                ) else None
+                market_asof = None
+                if market_history is not None:
+                    market_asof = market_history.loc[
+                        market_history["date"] <= point_in_time.iloc[-1]["date"]
+                    ].copy()
+                analysis = analyze_historical_signal(
+                    point_in_time.rename(columns={
+                        "date": "Date", "open": "Open", "high": "High",
+                        "low": "Low", "close": "Close", "volume": "Volume",
+                    }),
+                    symbol,
+                    market_df=(
+                        market_asof.rename(columns={
+                            "date": "Date", "open": "Open", "high": "High",
+                            "low": "Low", "close": "Close", "volume": "Volume",
+                        }) if market_asof is not None else None
+                    ),
+                ) if any(key in STRATEGY_HORIZONS for key in strategy_keys) else None
                 early = evaluate_early_signal(point_in_time)
             except Exception:
                 continue
@@ -220,8 +242,8 @@ def run_historical_backtest(
                     continue
                 if strategy in STRATEGY_HORIZONS:
                     item = analysis["strategies"][strategy]
-                    is_signal = item["signal"] == "MUA" and item["confirmed"]
-                    trade_plan = analysis
+                    is_signal = item["signal"] == "BUY" and item["confirmed"]
+                    trade_plan = item
                 else:
                     is_signal = early.get("early_signal") == strategy
                     # Early setups have no confirmed stop/target; measure a fixed
@@ -267,8 +289,11 @@ def run_historical_backtest(
             max(pd.Timestamp(frame.iloc[-1]["date"]) for frame in histories.values()).strftime("%Y-%m-%d")
             if histories else None
         ),
+        "benchmark_available": market_history is not None,
         "method_note": (
-            "Tín hiệu được tính bằng dữ liệu đến hết phiên T; mô phỏng mua tại giá mở cửa T+1. "
+            "Tín hiệu được tính bằng bộ quy tắc D1/than khoản/RR giống scanner production, "
+            "dùng VN-Index đến hết phiên T nếu tải được; mô phỏng mua tại giá mở cửa T+1. "
+            "Backtest bỏ qua cổng xác minh quote realtime vì kiểm định tín hiệu sau khi nến D1 hoàn tất. "
             "Tính phí mua 0,15%, phí bán 0,15%, thuế bán 0,10% và trượt giá 0,20% mỗi chiều. "
             "EARLY_BREAKOUT/PREPARE được đánh giá riêng bằng lợi nhuận đóng cửa sau 5 phiên, "
             "chỉ dùng D1 và không giả định quote realtime. "
