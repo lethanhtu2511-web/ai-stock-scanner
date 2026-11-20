@@ -36,10 +36,8 @@ APP_VERSION = "3.0"
 
 AUTO_REFRESH_SECONDS = 300
 
-AUTO_SCAN_ENABLED = (
-    os.getenv("AUTO_SCAN_ENABLED", "0").strip().lower()
-    not in {"0", "false", "no", "off"}
-)
+# Market scans are owned by the Windows worker; Streamlit Cloud is UI/control only.
+AUTO_SCAN_ENABLED = False
 
 st.set_page_config(
     page_title=f"AI Stock Scanner {APP_VERSION}",
@@ -673,7 +671,7 @@ def show_scanner():
             ["Chạy không liên tục", "Chạy liên tục"],
             index=1 if current_mode == "continuous" else 0,
             horizontal=True,
-            key="runtime_mode_choice",
+            key="runtime_mode_" + str(control.get("updated_at") or current_mode),
         )
         requested_mode = "continuous" if choice == "Chạy liên tục" else "on_demand"
         if requested_mode != current_mode:
