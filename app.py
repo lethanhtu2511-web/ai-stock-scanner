@@ -13,6 +13,7 @@ from scan_store import (
     get_scan_history,
     get_scan_summary,
 )
+from signal_evaluator import evaluate_signal_history
 from worker import run_scan
 from portfolio import (
     add_transaction,
@@ -603,6 +604,53 @@ def show_scanner():
     auto_refresh_panel(show_details=True)
 
 
+def show_self_evaluation():
+    st.title("🧪 TỰ ĐÁNH GIÁ TÍN HIỆU")
+    st.caption(
+        "Đối chiếu tín hiệu BUY và cảnh báo sớm với diễn biến giá D1 "
+        "sau 1, 3, 5 và 10 phiên."
+    )
+
+    with st.spinner("Đang tổng hợp lịch sử tín hiệu..."):
+        history = get_scan_history(limit=5000, db_path=DB_PATH)
+        evaluation = evaluate_signal_history(history)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Tín hiệu đã ghi nhận", evaluation["predictions_recorded"])
+    c2.metric("Mẫu đã đủ 5 phiên", evaluation["five_session_matured"])
+    c3.metric("Mẫu chưa đủ 5 phiên", evaluation["open_predictions"])
+
+    metrics = evaluation["metrics"]
+    if not metrics:
+        st.info(
+            "Chưa có đủ dữ liệu lịch sử để đánh giá. Bot sẽ tự tích lũy "
+            "các tín hiệu và giá đóng cửa D1 qua những phiên tiếp theo."
+        )
+    else:
+        df = pd.DataFrame(metrics)
+        df = df.rename(columns={
+            "strategy": "Chiến lược",
+            "signal_type": "Loại tín hiệu",
+            "horizon": "Số phiên",
+            "sample_size": "Số mẫu",
+            "win_rate_pct": "Tỷ lệ tăng (%)",
+            "average_return_pct": "Lợi nhuận TB (%)",
+            "median_return_pct": "Trung vị (%)",
+            "best_return_pct": "Tốt nhất (%)",
+            "worst_return_pct": "Thấp nhất (%)",
+        })
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "Tỷ lệ tăng được tính từ giá đóng cửa D1 ngày phát tín hiệu "
+            "đến giá đóng cửa ở mốc tương ứng; không phải tỷ lệ thắng theo "
+            "lệnh thực tế. Cần tối thiểu 30 mẫu cho mỗi nhóm trước khi "
+            "dùng thống kê để cân nhắc điều chỉnh chiến lược."
+        )
+
+    st.warning(evaluation["method_note"])
+
+
 def show_history():
 
     st.title("🕘 LỊCH SỬ QUÉT")
@@ -869,6 +917,7 @@ def main():
                 "Tổng quan",
                 "Quét cổ phiếu",
                 "Lịch sử quét",
+                "Tự đánh giá",
                 "Quản lý danh mục",
                 "Thông tin hệ thống",
             ],
@@ -890,6 +939,9 @@ def main():
 
     elif page == "Lịch sử quét":
         show_history()
+
+    elif page == "Tự đánh giá":
+        show_self_evaluation()
 
     elif page == "Quản lý danh mục":
         show_portfolio()
