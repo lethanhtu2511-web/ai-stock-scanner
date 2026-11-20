@@ -2,6 +2,7 @@
 import os
 import time
 import logging
+import sqlite3
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
@@ -12,6 +13,8 @@ from realtime_provider import (
     RealtimeDataError,
 )
 from scan_store import save_scan_results, get_scan_summary
+from scan_lock import scan_lock
+from backup_manager import backup_database
 
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -27,6 +30,9 @@ MAX_SYMBOLS = max(
 )
 
 DAILY_SCAN_TIME = dt_time(15, 35)
+DAILY_BACKUP_TIME = dt_time(15, 45)
+BACKUP_DIR = os.getenv("BACKUP_DIR", "/app/data/backups")
+BACKUP_RETENTION = max(1, int(os.getenv("BACKUP_RETENTION", "14")))
 
 DB_PATH = os.getenv(
     "DATABASE_PATH",
@@ -90,41 +96,54 @@ def should_run_intraday_scan():
         return True
 
 
+def daily_scan_due(now, last_run_date=None):
+    """Quyết định quét D1 dựa trên giờ địa phương và ngày chạy đã lưu."""
+    if now.weekday() >= 5 or now.time() < DAILY_SCAN_TIME:
+        return False
+    return last_run_date != now.date().isoformat()
+
+
 def should_run_daily_scan():
     """Chỉ quét tự động sau 15:35 các ngày trong tuần."""
-
     now = datetime.now(VN_TZ)
-
-    if now.weekday() >= 5:
-        return False
-
-    if now.time() < DAILY_SCAN_TIME:
-        return False
-
     try:
-        summary = get_scan_summary(DB_PATH)
-        latest = summary.get("latest_scan_at")
-
-        if not latest:
-            return True
-
-        latest_time = datetime.fromisoformat(latest)
-
-        if latest_time.tzinfo is None:
-            latest_time = latest_time.replace(tzinfo=VN_TZ)
-
-        latest_time = latest_time.astimezone(VN_TZ)
-
-        return not (
-            latest_time.date() == now.date()
-            and latest_time.time() >= DAILY_SCAN_TIME
-        )
-
+        with sqlite3.connect(DB_PATH, timeout=30) as conn:
+            row = conn.execute(
+                "SELECT run_date FROM worker_daily_runs WHERE job_name = 'd1_scan'"
+            ).fetchone()
+        last_run_date = row[0] if row else None
+        return daily_scan_due(now, last_run_date)
+    except sqlite3.OperationalError:
+        # Bảng chưa tồn tại ở lần chạy đầu.
+        return daily_scan_due(now, None)
     except Exception:
-        logger.exception(
-            "Không kiểm tra được lịch sử quét."
-        )
-        return True
+        logger.exception("Không kiểm tra được trạng thái quét D1 hằng ngày.")
+        return daily_scan_due(now, None)
+
+
+def mark_daily_scan_complete(rows_saved=0):
+    """Ghi nhận đã thử quét D1 hôm nay, kể cả khi không có dòng kết quả."""
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS worker_daily_runs (
+                job_name TEXT PRIMARY KEY,
+                run_date TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                rows_saved INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
+            INSERT INTO worker_daily_runs(job_name, run_date, completed_at, rows_saved)
+            VALUES ('d1_scan', ?, ?, ?)
+            ON CONFLICT(job_name) DO UPDATE SET
+                run_date = excluded.run_date,
+                completed_at = excluded.completed_at,
+                rows_saved = excluded.rows_saved
+        """, (
+            datetime.now(VN_TZ).date().isoformat(),
+            datetime.now(VN_TZ).isoformat(timespec="seconds"),
+            int(rows_saved or 0),
+        ))
 
 
 def get_symbols():
@@ -253,7 +272,11 @@ def _emit_progress(callback, percent, message):
         )
 
 
-def run_scan(progress_callback=None):
+class ScanExecutionError(RuntimeError):
+    """Raised when a scan could not complete and persist a result batch."""
+
+
+def _run_scan_unlocked(progress_callback=None):
     """
     Một lượt quét gồm hai giai đoạn:
 
@@ -294,7 +317,7 @@ def run_scan(progress_callback=None):
             100,
             "Không lấy được danh sách cổ phiếu."
         )
-        return 0
+        raise ScanExecutionError("Không lấy được danh sách cổ phiếu; lượt quét chưa hoàn tất.")
 
     total = len(symbols)
 
@@ -530,7 +553,60 @@ def run_scan(progress_callback=None):
             "Quét thất bại. Hãy kiểm tra nhật ký lỗi."
         )
 
-        return 0
+        raise ScanExecutionError("Lượt quét thất bại; chưa ghi nhận hoàn tất.") from None
+
+
+
+
+class ScanAlreadyRunningError(RuntimeError):
+    """Raised when another process currently owns the market scan lock."""
+
+
+def run_scan(progress_callback=None):
+    """
+    Chạy quét với khóa SQLite dùng chung giữa giao diện và worker.
+    Chỉ một tiến trình được quét tại một thời điểm.
+    """
+    with scan_lock(DB_PATH) as acquired:
+        if not acquired:
+            raise ScanAlreadyRunningError(
+                "Một lượt quét khác đang chạy. Vui lòng đợi lượt đó hoàn tất."
+            )
+
+        return _run_scan_unlocked(
+            progress_callback=progress_callback
+        )
+
+
+def should_run_daily_backup():
+    """Tạo một bản sao lưu SQLite sau khi hoàn tất lượt D1 cuối ngày."""
+    now = datetime.now(VN_TZ)
+    if now.weekday() >= 5 or now.time() < DAILY_BACKUP_TIME:
+        return False
+    try:
+        from pathlib import Path
+        backups = sorted(
+            Path(BACKUP_DIR).glob(f"{os.path.splitext(os.path.basename(DB_PATH))[0]}_*.sqlite3"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not backups:
+            return True
+        latest = datetime.fromtimestamp(backups[0].stat().st_mtime, VN_TZ)
+        return latest.date() != now.date()
+    except Exception:
+        logger.exception("Không kiểm tra được bản sao lưu gần nhất.")
+        return True
+
+
+def run_daily_backup():
+    path = backup_database(
+        DB_PATH,
+        backup_dir=BACKUP_DIR,
+        keep=BACKUP_RETENTION,
+    )
+    logger.info("Đã tạo bản sao lưu SQLite: %s", path)
+    return path
 
 
 def run_worker():
@@ -579,11 +655,15 @@ def run_worker():
                 )
 
                 saved = run_scan()
+                mark_daily_scan_complete(saved)
 
                 logger.info(
                     "Hoàn tất quét D1 cuối ngày; đã lưu %s dòng.",
                     saved,
                 )
+
+            elif should_run_daily_backup():
+                run_daily_backup()
 
             else:
                 logger.info(
