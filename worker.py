@@ -222,6 +222,13 @@ def convert_results(scan_results):
         "price_data_message",
         "live_change_pct",
         "market_regime",
+        "early_signal",
+        "early_score",
+        "early_reasons",
+        "early_risks",
+        "early_volume_ratio",
+        "early_resistance",
+        "early_quote_verified",
     ]
 
     for item in scan_results:
