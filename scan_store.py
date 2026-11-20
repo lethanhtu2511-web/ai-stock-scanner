@@ -18,6 +18,7 @@ JSON_FIELDS = {
     "penalties",
     "early_reasons",
     "early_risks",
+    "adaptive_research",
 }
 
 
@@ -85,7 +86,8 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
                 early_risks TEXT,
                 early_volume_ratio REAL,
                 early_resistance REAL,
-                early_quote_verified INTEGER
+                early_quote_verified INTEGER,
+                adaptive_research TEXT
             )
         """)
 
@@ -119,6 +121,9 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
         for column, sql_type in early_columns.items():
             if column not in existing_columns:
                 conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {sql_type}")
+
+        if "adaptive_research" not in existing_columns:
+            conn.execute("ALTER TABLE scan_results ADD COLUMN adaptive_research TEXT")
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS
@@ -183,7 +188,7 @@ def _format_row(row):
         try:
             parsed = json.loads(value)
             result[field] = (
-                parsed if isinstance(parsed, list) else []
+                parsed if isinstance(parsed, (list, dict)) else []
             )
         except (TypeError, ValueError):
             result[field] = []
@@ -253,6 +258,7 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
         "early_volume_ratio",
         "early_resistance",
         "early_quote_verified",
+        "adaptive_research",
     ]
 
     placeholders = ", ".join(["?"] * len(columns))
