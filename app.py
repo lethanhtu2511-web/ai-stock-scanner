@@ -32,7 +32,7 @@ from portfolio import (
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DB_PATH = os.getenv("DATABASE_PATH", "data/stock_scanner.sqlite3")
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 AUTO_REFRESH_SECONDS = 300
 
 
@@ -195,6 +195,10 @@ def display_scan_table(rows):
         "price_data_status": "Trạng thái giá",
         "reason": "Lý do",
         "data_date": "Ngày D1",
+        "foreign_net_value": "Khối ngoại ròng (đ)",
+        "foreign_net_5d": "Khối ngoại ròng 5 phiên (đ)",
+        "foreign_signal": "Xu hướng khối ngoại",
+        "foreign_flow_status": "Dữ liệu khối ngoại",
     }
 
     df = df.rename(columns=rename)
@@ -206,6 +210,9 @@ def display_scan_table(rows):
         "Chiến lược",
         "Tín hiệu",
         "Điểm",
+        "Khối ngoại ròng (đ)",
+        "Khối ngoại ròng 5 phiên (đ)",
+        "Xu hướng khối ngoại",
         "Giá realtime",
         "Đóng cửa D1",
         "Biến động phiên (%)",
@@ -271,6 +278,25 @@ def show_signal_detail(row):
         f"**Chiến lược:** "
         f"{STRATEGY_NAMES.get(row.get('strategy'), row.get('strategy'))}"
     )
+
+    if row.get("foreign_flow_status") == "AVAILABLE":
+        st.write("**Khối ngoại:**")
+        st.write(
+            f"Mua {money(row.get('foreign_buy_value'))} · "
+            f"Bán {money(row.get('foreign_sell_value'))} · "
+            f"Ròng {money(row.get('foreign_net_value'))}"
+        )
+        st.write(
+            f"Mua ròng/bán ròng 3 phiên: {money(row.get('foreign_net_3d'))} · "
+            f"5 phiên: {money(row.get('foreign_net_5d'))} · "
+            f"10 phiên: {money(row.get('foreign_net_10d'))}"
+        )
+        st.caption(
+            f"Ngày dữ liệu: {row.get('foreign_data_date')} · "
+            f"Trạng thái: {row.get('foreign_signal')}"
+        )
+    else:
+        st.info("Chưa có dữ liệu giao dịch khối ngoại đáng tin cậy cho mã này.")
 
     st.write(
         f"**Tín hiệu:** "
