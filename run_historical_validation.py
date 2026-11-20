@@ -43,6 +43,8 @@ def main() -> None:
         "symbols_requested": result["symbols_requested"],
         "symbols_tested": result["symbols_tested"],
         "data_errors": result["data_errors"],
+        "signal_evaluation_error_count": result.get("signal_evaluation_error_count", 0),
+        "signal_evaluation_errors_sample": result.get("signal_evaluation_errors_sample", []),
         "selected_symbols": result["selected_symbols"],
         "costs": result["costs"],
         "lookback_sessions": result["lookback_sessions"],
