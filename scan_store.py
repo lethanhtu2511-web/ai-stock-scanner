@@ -268,6 +268,39 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
     with connect(db_path) as conn:
         conn.executemany(sql, values)
 
+    # Mirror completed scan batches to Supabase so the Windows worker and
+    # Streamlit Cloud UI share one result store. Service key stays server-side.
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote_rows = []
+            for row in rows:
+                symbol = str(row.get("symbol", "")).strip().upper()
+                strategy = str(row.get("strategy", "")).strip().upper()
+                if not symbol or not strategy:
+                    continue
+                payload = {
+                    key: _serialize_value(key, value)
+                    for key, value in row.items()
+                }
+                remote_rows.append({
+                    "scanned_at": scanned_at,
+                    "symbol": symbol,
+                    "strategy": strategy,
+                    "signal": row.get("signal"),
+                    "score": row.get("score"),
+                    "payload": payload,
+                })
+            for offset in range(0, len(remote_rows), 500):
+                client.table("scan_results").insert(
+                    remote_rows[offset:offset + 500]
+                ).execute()
+    except Exception:
+        # Keep local results; caller logs and can diagnose missing cloud sync.
+        import logging
+        logging.getLogger("scan_store").exception("Không đồng bộ được scan batch lên Supabase.")
+
     return len(values)
 
 
@@ -283,42 +316,60 @@ def get_latest_scan(db_path=DEFAULT_DB_PATH):
 
     init_scan_db(db_path)
 
-    with connect(db_path) as conn:
-        latest_batch = conn.execute("""
-            SELECT MAX(scanned_at)
-            FROM scan_results
-        """).fetchone()[0]
+    # Prefer shared Supabase results so phone/cloud UI can see PC worker scans.
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote = (
+                client.table("scan_results")
+                .select("scanned_at,symbol,strategy,signal,score,payload")
+                .order("scanned_at", desc=True)
+                .limit(5000)
+                .execute().data or []
+            )
+            if remote:
+                latest_batch = remote[0]["scanned_at"]
+                selected = [r for r in remote if r["scanned_at"] == latest_batch]
+                output = []
+                for item in selected:
+                    payload = item.get("payload") or {}
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except (TypeError, ValueError):
+                            payload = {}
+                    payload.setdefault("symbol", item.get("symbol"))
+                    payload.setdefault("strategy", item.get("strategy"))
+                    payload.setdefault("signal", item.get("signal"))
+                    payload.setdefault("score", item.get("score"))
+                    payload["scanned_at"] = latest_batch
+                    for field in JSON_FIELDS:
+                        value = payload.get(field)
+                        if isinstance(value, str):
+                            try:
+                                parsed = json.loads(value)
+                                payload[field] = parsed if isinstance(parsed, list) else []
+                            except (TypeError, ValueError):
+                                payload[field] = []
+                        elif value is None:
+                            payload[field] = []
+                    output.append(payload)
+                return output
+    except Exception:
+        import logging
+        logging.getLogger("scan_store").exception("Không đọc được scan batch từ Supabase; dùng SQLite.")
 
+    with connect(db_path) as conn:
+        latest_batch = conn.execute("SELECT MAX(scanned_at) FROM scan_results").fetchone()[0]
         if not latest_batch:
             return []
-
         rows = conn.execute("""
-            SELECT *
-            FROM scan_results
-            WHERE scanned_at = ?
-            ORDER BY
-                CASE signal
-                    WHEN 'BUY' THEN 5
-                    WHEN 'WAIT' THEN 4
-                    WHEN 'WATCH' THEN 3
-                    WHEN 'SKIP' THEN 2
-                    WHEN 'FILTERED' THEN 1
-                    ELSE 0
-                END DESC,
-                COALESCE(score, 0) DESC,
-                CASE strategy
-                    WHEN 'SWING' THEN 1
-                    WHEN 'REVERSAL' THEN 2
-                    WHEN 'PULLBACK' THEN 3
-                    ELSE 4
-                END ASC,
-                symbol ASC
+            SELECT * FROM scan_results WHERE scanned_at = ?
+            ORDER BY CASE signal WHEN 'BUY' THEN 5 WHEN 'WAIT' THEN 4 WHEN 'WATCH' THEN 3 WHEN 'SKIP' THEN 2 WHEN 'FILTERED' THEN 1 ELSE 0 END DESC,
+            COALESCE(score, 0) DESC, symbol ASC
         """, (latest_batch,)).fetchall()
-
-    return [
-        _format_row(row)
-        for row in rows
-    ]
+    return [_format_row(row) for row in rows]
 
 
 # =====================================================
