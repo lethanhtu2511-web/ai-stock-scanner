@@ -68,29 +68,27 @@ def fetch_foreign_flow(symbol: str, start: str | None = None, end: str | None = 
         return cached[1].copy()
     errors = []
     try:
-        from vnstock import Market
+        from vn_market_data import get_foreign_history
     except Exception as exc:
-        raise RuntimeError(f"Không import được vnstock Market: {exc}") from exc
+        raise RuntimeError(f"Không import được get_foreign_history: {exc}") from exc
 
-    for source in SOURCES:
-        try:
-            market = Market(source)
-            equity = market.equity(symbol)
-            kwargs = {"interval": "1D", "compat": "v6"}
-            if start:
-                kwargs["start"] = start
-            if end:
-                kwargs["end"] = end
-            if not start and not end:
-                kwargs["length"] = max(10, int(length))
-            raw = equity.foreign_flow(**kwargs)
-            result = normalize_foreign_flow(raw)
-            if not result.empty:
-                _CACHE[cache_key] = (time.monotonic(), result.copy())
-                return result
-            errors.append(f"{source}: không có bản ghi")
-        except Exception as exc:
-            errors.append(f"{source}: {exc}")
+    if not end:
+        end = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").strftime("%Y-%m-%d")
+    if not start:
+        # Provider archive is approximately 63 sessions deep; request a
+        # generous calendar window to cover holidays/weekends.
+        start = (pd.Timestamp(end) - pd.Timedelta(days=max(120, int(length) * 2))).strftime("%Y-%m-%d")
+    try:
+        response = get_foreign_history(symbol, start, end)
+        source, rows = response if isinstance(response, tuple) and len(response) == 2 else ("vn-market-data", response)
+        result = normalize_foreign_flow(rows)
+        if not result.empty:
+            result.attrs["source"] = str(source)
+            _CACHE[cache_key] = (time.monotonic(), result.copy())
+            return result
+        errors.append(f"{source}: không có bản ghi trong khoảng {start} đến {end}")
+    except Exception as exc:
+        errors.append(f"vn-market-data: {exc}")
     if cached:
         return cached[1].copy()
     raise RuntimeError("Không lấy được dữ liệu khối ngoại: " + " | ".join(errors))
