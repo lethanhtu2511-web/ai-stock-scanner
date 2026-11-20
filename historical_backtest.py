@@ -156,9 +156,9 @@ def run_historical_backtest(
     universe = list(dict.fromkeys(str(s).strip().upper() for s in universe if str(s).strip()))
     if not universe:
         raise ValueError("Không có danh sách mã để backtest.")
-    # Keep each run bounded and reproducible. The exchange list is already
-    # normalized; users can increase max_symbols for broader coverage.
-    universe = sorted(universe)[:max(1, int(max_symbols))]
+    # Download the available universe first, then choose the most liquid
+    # symbols by their own trailing 20-session traded value.
+    universe = sorted(universe)
 
     histories, errors = {}, []
     ranked = []
@@ -176,9 +176,9 @@ def run_historical_backtest(
         if progress_callback:
             progress_callback(i + 1, len(universe), f"Tải dữ liệu {symbol}")
 
-    # Report only successfully downloaded symbols, ranked by observed liquidity.
+    # Select the most liquid symbols after fetching comparable histories.
     ranked.sort(key=lambda item: item[1], reverse=True)
-    selected = [symbol for symbol, _ in ranked]
+    selected = [symbol for symbol, _ in ranked[:max(1, int(max_symbols))]]
     all_trades = []
     strategy_keys = list(STRATEGY_HORIZONS) if strategy_filter == "ALL" else [strategy_filter]
     invalid_strategy = [s for s in strategy_keys if s not in STRATEGY_HORIZONS]
