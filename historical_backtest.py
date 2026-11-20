@@ -14,6 +14,7 @@ import pandas as pd
 from data_provider import fetch_exchange_symbols, fetch_stock_history
 from scanner import analyze_historical_signal
 from early_signal_engine import evaluate_early_signal
+from foreign_flow_provider import fetch_foreign_flow
 
 
 DEFAULT_COSTS = {
@@ -206,8 +207,19 @@ def run_historical_backtest(
     if invalid_strategy:
         raise ValueError("Chiến lược không hợp lệ: " + ", ".join(invalid_strategy))
 
+    foreign_histories = {}
+    for symbol in selected:
+        try:
+            foreign_histories[symbol] = fetch_foreign_flow(
+                symbol, length=max(120, int(lookback_sessions) + 30)
+            )
+        except Exception as exc:
+            foreign_histories[symbol] = pd.DataFrame()
+            errors.append({"symbol": symbol, "error": f"Khối ngoại: {exc}"})
+
     for symbol_index, symbol in enumerate(selected):
         d = histories[symbol].reset_index(drop=True)
+        foreign_history = foreign_histories.get(symbol, pd.DataFrame())
         start_idx = max(200, len(d) - max(1, int(lookback_sessions)) - max(ALL_HORIZONS.values()))
         next_available = {key: 0 for key in strategy_keys}
         for signal_idx in range(start_idx, len(d) - 1):
@@ -219,6 +231,12 @@ def run_historical_backtest(
                     market_asof = market_history.loc[
                         market_history["date"] <= point_in_time.iloc[-1]["date"]
                     ].copy()
+                foreign_asof = (
+                    foreign_history.loc[
+                        foreign_history["date"] <= pd.Timestamp(point_in_time.iloc[-1]["date"])
+                    ].copy()
+                    if not foreign_history.empty else pd.DataFrame()
+                )
                 analysis = analyze_historical_signal(
                     point_in_time.rename(columns={
                         "date": "Date", "open": "Open", "high": "High",
@@ -231,6 +249,7 @@ def run_historical_backtest(
                             "low": "Low", "close": "Close", "volume": "Volume",
                         }) if market_asof is not None else None
                     ),
+                    foreign_flow=foreign_asof,
                 ) if any(key in STRATEGY_HORIZONS for key in strategy_keys) else None
                 early = evaluate_early_signal(point_in_time)
             except Exception:
@@ -290,11 +309,20 @@ def run_historical_backtest(
             if histories else None
         ),
         "benchmark_available": market_history is not None,
+        "foreign_flow_symbols": sum(
+            1 for frame in foreign_histories.values() if not frame.empty
+        ),
+        "foreign_flow_missing_symbols": [
+            symbol for symbol, frame in foreign_histories.items() if frame.empty
+        ],
         "method_note": (
             "Tín hiệu được tính bằng bộ quy tắc D1/than khoản/RR giống scanner production, "
             "dùng VN-Index đến hết phiên T nếu tải được; mô phỏng mua tại giá mở cửa T+1. "
             "Backtest bỏ qua cổng xác minh quote realtime vì kiểm định tín hiệu sau khi nến D1 hoàn tất. "
             "Tính phí mua 0,15%, phí bán 0,15%, thuế bán 0,10% và trượt giá 0,20% mỗi chiều. "
+            "Dữ liệu khối ngoại được cắt tại đúng ngày tín hiệu; bán ròng 5 phiên vượt 50 tỷ "
+            "được dùng làm điều kiện hạ BUY xuống WAIT, còn mua ròng chỉ cộng điểm cảnh báo "
+            "và không tự tạo tín hiệu mua. "
             "EARLY_BREAKOUT/PREPARE được đánh giá riêng bằng lợi nhuận đóng cửa sau 5 phiên, "
             "chỉ dùng D1 và không giả định quote realtime. "
             "Nếu cùng một nến chạm cả stop và target, giả định stop khớp trước để thận trọng. "
