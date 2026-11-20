@@ -38,6 +38,35 @@ class AdaptiveStrategyTests(unittest.TestCase):
         self.assertEqual(result["score"], 74)
         self.assertFalse(result["hard_risks"])
 
+    def test_common_technical_confirmations_are_soft_but_structure_break_is_hard(self):
+        result = adaptive_assessment(
+            {"score": 76, "reasons": ["trend", "volume"],
+             "blockers": [
+                 "Đường trung bình chưa cùng hướng tăng",
+                 "Giá chưa lấy lại EMA20",
+                 "Giá đã mất EMA50",
+             ]},
+            liquidity_ok=True,
+            risk_plan={"reward_risk": 2.2},
+            atr_pct=3.0,
+        )
+        self.assertEqual(result["soft_confirmations_missing"], [
+            "Đường trung bình chưa cùng hướng tăng",
+            "Giá chưa lấy lại EMA20",
+        ])
+        self.assertIn("Giá đã mất EMA50", result["hard_risks"])
+        self.assertEqual(result["status"], "RISK_BLOCKED")
+
+    def test_unknown_blocker_fails_closed(self):
+        result = adaptive_assessment(
+            {"score": 90, "reasons": ["trend", "volume", "RSI"],
+             "blockers": ["Điều kiện lạ chưa được phân loại"]},
+            liquidity_ok=True,
+            risk_plan={"reward_risk": 2.5},
+            atr_pct=3.0,
+        )
+        self.assertEqual(result["status"], "RISK_BLOCKED")
+
     def test_market_regime_requires_enough_history(self):
         import pandas as pd
         self.assertEqual(
