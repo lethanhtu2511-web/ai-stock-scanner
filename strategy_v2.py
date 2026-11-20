@@ -230,9 +230,9 @@ def analyze_daily_setup(symbol: str, df: pd.DataFrame, market_df: pd.DataFrame |
                 entry = float(r.close)
                 stop = min(float(d.low.iloc[-5:].min()), entry-1.5*float(r.atr))-0.2*float(r.atr)
                 plan = _risk_plan(entry, stop, float(r.atr), setup="PULLBACK", liquidity_high=liquidity_high)
-                out["candidates"].append({"setup":"PULLBACK","score":score,"max_score":9,
+                out["candidates"].append({"setup":"PULLBACK","score":score,"max_score":8,
                     "priority_note":"Biến thể reclaim được ưu tiên trong ngày" if reclaim else "",
-                    "reasons":why,"entry_type":"NEXT_OPEN","gap_limit_atr":1.0,
+                    "reasons":why,"entry_type":"NEXT_OPEN","gap_limit_atr":1.0,"atr":float(r.atr),
                     "holding_sessions":[3,20],"risk_factor":risk_factor,"risk_plan":plan,
                     "exit_rule":"50% tại 2R; phần còn lại Chandelier 22 phiên - 3 ATR; thoát tối đa 20 phiên nếu chưa đạt 1R và mất EMA21"})
     # Swing breakout: base range and volume contraction.
@@ -256,7 +256,7 @@ def analyze_daily_setup(symbol: str, df: pd.DataFrame, market_df: pd.DataFrame |
                 plan = _risk_plan(entry, stop, float(r.atr), setup="SWING_BREAKOUT", liquidity_high=liquidity_high)
                 out["candidates"].append({"setup":"SWING_BREAKOUT","score":score,"max_score":7,
                     "reasons":why+["Nền <=12%, khối lượng co hẹp"],"base_range_pct":round(base_range*100,2),
-                    "entry_type":"NEXT_OPEN","gap_limit_atr":1.5,"holding_sessions":[3,30],
+                    "entry_type":"NEXT_OPEN","gap_limit_atr":1.5,"atr":float(r.atr),"holding_sessions":[3,30],
                     "risk_factor":risk_factor,"risk_plan":plan,
                     "exit_rule":"1/3 tại 2R, 1/3 tại 3R hoặc swing high; phần còn lại Chandelier; tối đa 30 phiên"})
     # Reversal: separate, higher-risk satellite; no trend filter by design.
