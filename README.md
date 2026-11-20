@@ -100,3 +100,11 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - Mô phỏng danh mục dùng vốn tiền mặt 10 triệu đồng, rủi ro mục tiêu 2% vốn/vị thế, tối đa 5 vị thế (mỗi vị thế tối đa 20% vốn), khối lượng theo lô 100 và chỉ nhận giao dịch có stop-loss hợp lệ.
 - Nếu không có BUY xác nhận hoặc không đủ điều kiện khối lượng theo lô, báo cáo phải ghi rõ không có giao dịch; không được suy diễn tỷ lệ thắng/lợi nhuận từ cảnh báo sớm.
 - Đây vẫn là mô phỏng nghiên cứu trên mẫu đại diện, không phải cam kết lợi nhuận hay xác nhận chiến lược đã sẵn sàng giao dịch thật.
+
+## Adaptive research profile (experimental)
+
+- The scanner now attaches `adaptive_research` assessments to historical strategy evaluations and reports status/score distributions in walk-forward diagnostics.
+- The experimental profile separates hard risk gates (liquidity, ATR, reward/risk and strong foreign net selling) from softer technical confirmations. Missing a soft confirmation reduces conviction rather than automatically vetoing a setup.
+- Market regime (bullish/neutral/bearish) is computed only from benchmark bars available as of the signal date.
+- **Important:** Adaptive v1 is research-only. It never emits an executable BUY and does not change production BUY/WAIT decisions, position sizing, or order permissions. Promote it only after a broader out-of-sample comparison across market regimes, with costs and realistic execution assumptions.
+- The baseline strategy remains the production reference so adaptive results can be compared without contaminating the existing strategy.
