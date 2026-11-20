@@ -15,6 +15,7 @@ from data_provider import fetch_exchange_symbols, fetch_stock_history
 from scanner import analyze_historical_signal
 from early_signal_engine import evaluate_early_signal
 from foreign_flow_provider import fetch_foreign_flow
+from validation_report import build_validation_report
 
 
 DEFAULT_COSTS = {
@@ -141,50 +142,6 @@ def _summarize(trades: pd.DataFrame) -> dict:
     }
 
 
-
-def _simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000, max_positions: int = 5) -> dict:
-    if initial_capital <= 0 or max_positions < 1:
-        raise ValueError('Vốn ban đầu phải dương và max_positions >= 1.')
-    if trades.empty:
-        return {'initial_capital': float(initial_capital), 'ending_equity': float(initial_capital), 'total_return_pct': 0.0, 'max_drawdown_pct': 0.0, 'accepted_trades': 0, 'skipped_capacity': 0, 'max_concurrent_positions': 0, 'equity_curve': []}
-    required = {'entry_date', 'exit_date', 'net_return_pct'}
-    if not required.issubset(trades.columns):
-        raise ValueError('Thiếu cột để mô phỏng danh mục.')
-    rows = trades.copy()
-    rows['entry_date'] = pd.to_datetime(rows['entry_date'], errors='coerce')
-    rows['exit_date'] = pd.to_datetime(rows['exit_date'], errors='coerce')
-    rows['net_return_pct'] = pd.to_numeric(rows['net_return_pct'], errors='coerce')
-    rows = rows.dropna(subset=['entry_date', 'exit_date', 'net_return_pct']).sort_values(['entry_date', 'exit_date']).to_dict('records')
-    events = {}
-    for idx, trade in enumerate(rows):
-        entry_day, exit_day = trade['entry_date'].normalize(), trade['exit_date'].normalize()
-        events.setdefault(entry_day, {'exit': [], 'entry': []})
-        events.setdefault(exit_day, {'exit': [], 'entry': []})
-        events[entry_day]['entry'].append((idx, trade))
-        events[exit_day]['exit'].append((idx, trade))
-    equity = float(initial_capital)
-    active = {}
-    curve = []
-    peak = equity
-    max_dd = 0.0
-    accepted = skipped = max_active = 0
-    fraction = 1.0 / max_positions
-    for day in sorted(events):
-        for idx, trade in events[day]['exit']:
-            position = active.pop(idx, None)
-            if position is not None:
-                equity += position['capital'] * (float(trade['net_return_pct']) / 100.0)
-        for idx, trade in events[day]['entry']:
-            if len(active) >= max_positions:
-                skipped += 1
-                continue
-            active[idx] = {'capital': equity * fraction}
-            accepted += 1
-        max_active = max(max_active, len(active))
-        peak = max(peak, equity)
-        max_dd = min(max_dd, equity / peak - 1 if peak else 0.0)
-        curve.append({'date': day.strftime('%Y-%m-%d'), 'equity': round(equity, 2), 'open_positions': len(active)})
-    return {'initial_capital': round(initial_capital, 2), 'ending_equity': round(equity, 2), 'total_return_pct': round((equity / initial_capital - 1) * 100, 3), 'max_drawdown_pct': round(max_dd * 100, 3), 'accepted_trades': accepted, 'skipped_capacity': skipped, 'max_concurrent_positions': max_active, 'equity_curve': curve}
 
 def run_historical_backtest(
     symbols: Iterable[str] | None = None,
@@ -347,7 +304,8 @@ def run_historical_backtest(
         for strategy, group in trades_df.groupby("strategy"):
             by_strategy.append({"strategy": strategy, **_summarize(group)})
     executable_trades = trades_df[trades_df["strategy"].isin(STRATEGY_HORIZONS)] if not trades_df.empty else trades_df
-    portfolio = _simulate_portfolio(executable_trades, initial_capital=10_000_000, max_positions=5)
+    validation = build_validation_report(executable_trades)
+    portfolio = validation["executable_trading"]["portfolio_simulation"]
     return {
         "summary": _summarize(trades_df),
         "portfolio": portfolio,
