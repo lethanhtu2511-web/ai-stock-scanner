@@ -71,8 +71,22 @@ def fetch_foreign_flow(symbol: str, start: str | None = None, end: str | None = 
     if not force_refresh and cached and time.monotonic() - cached[0] < CACHE_SECONDS:
         return cached[1].copy()
     try:
-        from vn_market_data import get_foreign_history
-        response = get_foreign_history(symbol, start, end)
+        # v0.4.x has shipped builds where the function exists in adapter.py
+        # but is not re-exported by the package root. Support both public paths.
+        get_history = None
+        import_errors = []
+        try:
+            from vn_market_data import get_foreign_history as get_history
+        except (ImportError, AttributeError) as exc:
+            import_errors.append(f"package export: {exc}")
+        if get_history is None:
+            try:
+                from vn_market_data.adapter import get_foreign_history as get_history
+            except (ImportError, AttributeError) as exc:
+                import_errors.append(f"adapter export: {exc}")
+        if get_history is None:
+            raise ImportError("; ".join(import_errors))
+        response = get_history(symbol, start, end)
         source, rows = response if isinstance(response, tuple) and len(response) == 2 else ("vn-market-data", response)
         result = normalize_foreign_flow(rows)
         result.attrs["source"] = str(source)
