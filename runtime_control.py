@@ -1,4 +1,4 @@
-"""Supabase-backed global runtime control for the Windows scanner worker."""
+"""Supabase-backed global runtime control for the independent scanner worker."""
 from __future__ import annotations
 from datetime import datetime, timezone
 import os
