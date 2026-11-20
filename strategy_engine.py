@@ -585,19 +585,18 @@ def analyze_stock(symbol, df, market_df=None):
     # Nến chỉ bổ trợ điểm khi có xác nhận vị trí và khối lượng.
     # Nến giảm đã xác nhận sẽ chặn tín hiệu mua mới của chiến lược đó.
     if bullish_confirmed:
-        reversal[0] += 8
-        reversal[1].append("Mô hình nến tăng xác nhận: " + ", ".join(bullish_confirmed))
-        pullback[0] += 5
-        pullback[1].append("Nến hồi phục xác nhận tại vùng hỗ trợ: " + ", ".join(bullish_confirmed))
+        bullish_note = "Mô hình nến tăng xác nhận: " + ", ".join(bullish_confirmed)
+        pullback_note = "Nến hồi phục xác nhận tại vùng hỗ trợ: " + ", ".join(bullish_confirmed)
+        reversal = (reversal[0] + 8, reversal[1] + [bullish_note], reversal[2], reversal[3])
+        pullback = (pullback[0] + 5, pullback[1] + [pullback_note], pullback[2], pullback[3])
         if "Three White Soldiers" in bullish_confirmed:
-            swing[0] += 4
-            swing[1].append("Three White Soldiers được xác nhận")
+            swing = (swing[0] + 4, swing[1] + ["Three White Soldiers được xác nhận"], swing[2], swing[3])
     if bearish_confirmed:
         warning = "Mô hình nến giảm xác nhận: " + ", ".join(bearish_confirmed)
-        for raw in (swing, reversal, pullback):
-            raw[0] -= 8
-            raw[2].append(warning)
-            raw[3].append("Tạm chặn mua mới do xuất hiện mô hình nến giảm được xác nhận")
+        blocker = "Tạm chặn mua mới do xuất hiện mô hình nến giảm được xác nhận"
+        def penalize(raw):
+            return (raw[0] - 8, raw[1], raw[2] + [warning], raw[3] + [blocker])
+        swing, reversal, pullback = penalize(swing), penalize(reversal), penalize(pullback)
 
     strategies_raw = {
         "SWING": swing,
