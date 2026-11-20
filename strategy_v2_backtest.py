@@ -19,7 +19,8 @@ COST_SELL = 0.0015
 TAX_SELL = 0.001
 SLIPPAGE_HIGH = 0.001
 SLIPPAGE_LOW = 0.0025
-MAX_SYMBOLS = 40
+MAX_SYMBOLS = 10
+PILOT_SYMBOLS = ["FPT", "HPG", "SSI", "MBB", "CTG", "VCB", "VNM", "MWG", "TCB", "GAS"]
 TEST_SESSIONS = 250
 
 
@@ -80,15 +81,18 @@ def simulate(d, signal_i, candidate):
 
 
 def main():
-    symbols=fetch_exchange_symbols()
+    listed=set(fetch_exchange_symbols())
+    symbols=[s for s in PILOT_SYMBOLS if s in listed]
+    missing=[s for s in PILOT_SYMBOLS if s not in listed]
     market=clean(fetch_stock_history("VNINDEX",length=900,is_index=True))
     ranked=[]
     histories={}
-    errors=[]
+    errors=[{"symbol":s,"error":"Không có trong danh sách HOSE/HNX hiện tại."} for s in missing]
     for s in symbols:
         try:
             d=clean(fetch_stock_history(s,length=900))
             if len(d)<500:
+                errors.append({"symbol":s,"error":f"Chỉ lấy được {len(d)} phiên; cần 500 phiên cho warm-up + 250 phiên kiểm thử."})
                 continue
             # Universe selection from the beginning of the held-out interval.
             cutoff=max(250,len(d)-TEST_SESSIONS-30)
@@ -98,6 +102,12 @@ def main():
             avg=float((d.close*d.volume).iloc[:cutoff+1].tail(20).mean())
             histories[s]=d
             ranked.append((s,avg))
+            progress=Path("strategy_v2_output"); progress.mkdir(exist_ok=True)
+            (progress/"progress.json").write_text(json.dumps({
+                "downloaded_symbols": list(histories.keys()),
+                "eligible_symbols": [x[0] for x in ranked],
+                "errors": errors
+            },ensure_ascii=False,indent=2),encoding="utf-8")
         except Exception as exc:
             errors.append({"symbol":s,"error":str(exc)[:180]})
     ranked.sort(key=lambda x:x[1],reverse=True)
@@ -137,12 +147,13 @@ def main():
             summary[setup]={"trades":0,"win_rate_pct":0,"avg_net_return_pct":0,"profit_factor":None}
     out=Path("strategy_v2_output"); out.mkdir(exist_ok=True)
     frame.to_csv(out/"trades.csv",index=False)
-    report={"symbols_tested":len(chosen),"symbols_eligible":len(ranked),
+    report={"pilot_symbols_requested":PILOT_SYMBOLS,"symbols_found_on_exchange":symbols,
+        "symbols_tested":len(chosen),"symbols_eligible":len(ranked),
         "market_data_end":str(market.date.max().date()),"test_sessions":TEST_SESSIONS,
         "diagnostics":diagnostics,"performance":summary,"data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
                  "slippage": "0.10% high-liquidity; 0.25% low-liquidity"},
-        "limitations":["Initial candidate research only; 40-symbol cap.",
+        "limitations":["Initial pilot research only; 10-symbol cap (FPT, HPG, SSI, MBB, CTG, VCB, VNM, MWG, TCB, GAS).",
           "Single target exit proxy; partial take-profit and Chandelier trailing not yet simulated.",
           "No portfolio concurrency, industry cap, daily circuit breaker or walk-forward 3y/1y aggregation yet.",
           "Current listing universe can create survivorship bias."]}
