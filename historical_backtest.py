@@ -200,6 +200,7 @@ def run_historical_backtest(
     ranked.sort(key=lambda item: item[1], reverse=True)
     selected = [symbol for symbol, _ in ranked[:max(1, int(max_symbols))]]
     all_trades = []
+    signal_eval_errors = []
     strategy_keys = list(ALL_HORIZONS) if strategy_filter == "ALL" else (
         list(EARLY_HORIZONS) if strategy_filter == "EARLY" else [strategy_filter]
     )
@@ -252,7 +253,13 @@ def run_historical_backtest(
                     foreign_flow=foreign_asof,
                 ) if any(key in STRATEGY_HORIZONS for key in strategy_keys) else None
                 early = evaluate_early_signal(point_in_time)
-            except Exception:
+            except Exception as exc:
+                if len(signal_eval_errors) < 50:
+                    signal_eval_errors.append({
+                        "symbol": symbol,
+                        "date": pd.Timestamp(point_in_time.iloc[-1]["date"]).strftime("%Y-%m-%d"),
+                        "error": str(exc)[:300],
+                    })
                 continue
             for strategy in strategy_keys:
                 horizon = ALL_HORIZONS[strategy]
@@ -301,6 +308,8 @@ def run_historical_backtest(
         "symbols_requested": len(universe),
         "symbols_tested": len(selected),
         "data_errors": errors,
+        "signal_evaluation_error_count": len(signal_eval_errors),
+        "signal_evaluation_errors_sample": signal_eval_errors,
         "selected_symbols": selected,
         "costs": costs_used,
         "lookback_sessions": int(lookback_sessions),
@@ -320,7 +329,7 @@ def run_historical_backtest(
             "dùng VN-Index đến hết phiên T nếu tải được; mô phỏng mua tại giá mở cửa T+1. "
             "Backtest bỏ qua cổng xác minh quote realtime vì kiểm định tín hiệu sau khi nến D1 hoàn tất. "
             "Tính phí mua 0,15%, phí bán 0,15%, thuế bán 0,10% và trượt giá 0,20% mỗi chiều. "
-            "Dữ liệu khối ngoại được cắt tại đúng ngày tín hiệu; bán ròng 5 phiên vượt 50 tỷ "
+            "Dữ liệu khối ngoại được cắt tại đúng ngày tín hiệu; bán ròng 5 phiên có giá trị tuyệt đối vượt 2% GTGD 5 phiên "
             "được dùng làm điều kiện hạ BUY xuống WAIT, còn mua ròng chỉ cộng điểm cảnh báo "
             "và không tự tạo tín hiệu mua. "
             "EARLY_BREAKOUT/PREPARE được đánh giá riêng bằng lợi nhuận đóng cửa sau 5 phiên, "
