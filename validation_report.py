@@ -68,10 +68,14 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
             skipped += 1
             continue
 
-        entry = float(row.get("entry_price") or 0)
-        stop = float(row.get("stop_loss") or 0)
-        ret = float(row.get("net_return_pct") or 0) / 100
-        if entry <= 0 or stop <= 0 or stop >= entry or not math.isfinite(ret):
+        try:
+            entry = float(row.get("entry_price"))
+            stop = float(row.get("stop_loss"))
+            ret = float(row.get("net_return_pct")) / 100
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        if not all(math.isfinite(value) for value in (entry, stop, ret)) or entry <= 0 or stop <= 0 or stop >= entry:
             skipped += 1
             continue
 
