@@ -1,0 +1,76 @@
+import unittest
+from unittest.mock import patch
+
+import pandas as pd
+
+import historical_backtest as hb
+
+
+class HistoricalBacktestTests(unittest.TestCase):
+    def test_costs_reduce_gross_return(self):
+        gross = 10 / 100
+        net = hb._net_return(100, 110, hb.DEFAULT_COSTS)
+        self.assertLess(net, gross)
+        self.assertGreater(net, 0)
+
+    def test_stop_is_prioritized_when_stop_and_target_hit_same_bar(self):
+        dates = pd.bdate_range("2025-01-01", periods=8)
+        frame = pd.DataFrame({
+            "date": dates,
+            "open": [100, 100, 100, 100, 100, 100, 100, 100],
+            "high": [101, 106, 101, 101, 101, 101, 101, 101],
+            "low": [99, 94, 99, 99, 99, 99, 99, 99],
+            "close": [100] * 8,
+            "volume": [100000] * 8,
+        })
+        trade = hb._simulate_trade(
+            "TST", "SWING", frame, 0,
+            {"stop_loss": 95, "target_price": 105},
+            hb.DEFAULT_COSTS,
+        )
+        self.assertEqual(trade["exit_reason"], "STOP LOSS")
+        self.assertEqual(trade["holding_sessions"], 1)
+
+    def test_walk_forward_uses_only_past_bars_and_full_horizon(self):
+        dates = pd.bdate_range("2025-01-01", periods=240)
+        close = [100 + i * 0.05 for i in range(240)]
+        frame = pd.DataFrame({
+            "date": dates,
+            "open": close,
+            "high": [x * 1.01 for x in close],
+            "low": [x * 0.99 for x in close],
+            "close": close,
+            "volume": [1_000_000] * 240,
+        })
+        seen_lengths = []
+
+        def fake_analyze(symbol, history, market_df=None):
+            seen_lengths.append(len(history))
+            return {
+                "strategies": {
+                    key: {"signal": "MUA", "confirmed": True}
+                    for key in hb.STRATEGY_HORIZONS
+                },
+                "stop_loss": 0,
+                "target_price": 0,
+            }
+
+        with patch.object(hb, "fetch_exchange_symbols", return_value=["TST"]), \
+             patch.object(hb, "fetch_stock_history", return_value=frame), \
+             patch.object(hb, "analyze_stock", side_effect=fake_analyze):
+            result = hb.run_historical_backtest(
+                lookback_sessions=20,
+                max_symbols=1,
+                strategy_filter="SWING",
+            )
+
+        self.assertTrue(seen_lengths)
+        self.assertTrue(all(length <= 240 for length in seen_lengths))
+        self.assertGreater(result["summary"]["trades"], 0)
+        for trade in result["trades"].to_dict("records"):
+            self.assertLess(trade["signal_date"], trade["entry_date"])
+            self.assertLessEqual(trade["holding_sessions"], 5)
+
+
+if __name__ == "__main__":
+    unittest.main()
