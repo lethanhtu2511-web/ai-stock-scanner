@@ -59,6 +59,12 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertTrue(
             (result["trades"]["holding_sessions"] <= 5).all()
         )
+        early_counts = result["signal_diagnostics"]["EARLY_BREAKOUT"]["early_signal_counts"]
+        self.assertGreater(early_counts.get("EARLY_BREAKOUT", 0), 0)
+        self.assertGreater(
+            result["signal_diagnostics"]["EARLY_BREAKOUT"]["evaluated"],
+            len(result["trades"]),
+        )
 
     def test_walk_forward_uses_only_past_bars_and_full_horizon(self):
         dates = pd.bdate_range("2025-01-01", periods=240)
