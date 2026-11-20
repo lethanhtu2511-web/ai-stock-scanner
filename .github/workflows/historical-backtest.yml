@@ -7,6 +7,8 @@ on:
       - "historical_backtest.py"
       - "run_historical_validation.py"
       - "strategy_engine.py"
+      - "scanner.py"
+      - "early_signal_engine.py"
       - "data_provider.py"
       - ".github/workflows/historical-backtest.yml"
   workflow_dispatch:
