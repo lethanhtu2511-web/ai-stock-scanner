@@ -532,9 +532,13 @@ def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
             if signal == "BUY" and foreign["foreign_net_5d"] is not None and foreign["foreign_net_ratio"] is not None and foreign["foreign_net_ratio"] <= -0.02:
                 signal = "WAIT"
                 blockers.append("Khối ngoại bán ròng mạnh 5 phiên; chờ áp lực bán suy yếu")
+        # Historical path must derive these values from the current strategy
+        # detail; unlike the live path, it has no outer-loop score/reasons vars.
+        score = int(detail.get("score", 0) or 0)
+        reasons = list(detail.get("reasons", []) or [])
         adaptive_detail = {
             **detail,
-            "score": score + foreign["foreign_score_adjustment"],
+            "score": max(0, min(100, score + foreign["foreign_score_adjustment"])),
             "blockers": blockers,
             "reasons": reasons,
         }
