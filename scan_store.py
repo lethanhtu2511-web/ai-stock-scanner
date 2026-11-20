@@ -410,35 +410,60 @@ def get_scan_history(
     db_path=DEFAULT_DB_PATH,
 ):
     init_scan_db(db_path)
-
     try:
         limit = max(1, min(int(limit), 5000))
     except (TypeError, ValueError):
         limit = 150
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote = (
+                client.table("scan_results")
+                .select("scanned_at,symbol,strategy,signal,score,payload")
+                .order("scanned_at", desc=True)
+                .limit(limit)
+                .execute().data or []
+            )
+            if remote:
+                output = []
+                for item in remote:
+                    payload = item.get("payload") or {}
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except (TypeError, ValueError):
+                            payload = {}
+                    payload.setdefault("symbol", item.get("symbol"))
+                    payload.setdefault("strategy", item.get("strategy"))
+                    payload.setdefault("signal", item.get("signal"))
+                    payload.setdefault("score", item.get("score"))
+                    payload["scanned_at"] = item.get("scanned_at")
+                    for field in JSON_FIELDS:
+                        value = payload.get(field)
+                        if isinstance(value, str):
+                            try:
+                                parsed = json.loads(value)
+                                payload[field] = parsed if isinstance(parsed, list) else []
+                            except (TypeError, ValueError):
+                                payload[field] = []
+                        elif value is None:
+                            payload[field] = []
+                    output.append(payload)
+                return output
+    except Exception:
+        import logging
+        logging.getLogger("scan_store").exception("Không đọc được scan history từ Supabase; dùng SQLite.")
 
     with connect(db_path) as conn:
         rows = conn.execute("""
-            SELECT *
-            FROM scan_results
-            ORDER BY
-                scanned_at DESC,
-                CASE signal
-                    WHEN 'BUY' THEN 5
-                    WHEN 'WAIT' THEN 4
-                    WHEN 'WATCH' THEN 3
-                    WHEN 'SKIP' THEN 2
-                    WHEN 'FILTERED' THEN 1
-                    ELSE 0
-                END DESC,
+            SELECT * FROM scan_results
+            ORDER BY scanned_at DESC,
+                CASE signal WHEN 'BUY' THEN 5 WHEN 'WAIT' THEN 4 WHEN 'WATCH' THEN 3 WHEN 'SKIP' THEN 2 WHEN 'FILTERED' THEN 1 ELSE 0 END DESC,
                 COALESCE(score, 0) DESC
             LIMIT ?
         """, (limit,)).fetchall()
-
-    return [
-        _format_row(row)
-        for row in rows
-    ]
-
+    return [_format_row(row) for row in rows]
 
 # =====================================================
 # SCAN SUMMARY
