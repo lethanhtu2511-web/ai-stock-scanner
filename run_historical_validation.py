@@ -47,6 +47,7 @@ def main() -> None:
         "costs": result["costs"],
         "lookback_sessions": result["lookback_sessions"],
         "data_end_date": result.get("data_end_date"),
+        "benchmark_available": result.get("benchmark_available"),
         "method_note": result["method_note"],
     }
     (output / "summary.json").write_text(
