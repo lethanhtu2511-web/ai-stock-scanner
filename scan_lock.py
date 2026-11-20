@@ -47,7 +47,9 @@ def scan_lock(db_path, lease_seconds=LOCK_LEASE_SECONDS):
             "SELECT owner_token, expires_at FROM runtime_locks WHERE lock_name = ?",
             (LOCK_NAME,),
         ).fetchone()
-        if row is None or float(row[1]) <= now:
+        # Reclaim legacy two-hour locks created before heartbeat support.
+        legacy_lease = row is not None and (float(row[1]) - now) > lease + 30
+        if row is None or float(row[1]) <= now or legacy_lease:
             conn.execute("""
                 INSERT INTO runtime_locks(lock_name, owner_token, expires_at)
                 VALUES (?, ?, ?)
