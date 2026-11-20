@@ -1,0 +1,24 @@
+services:
+  - type: worker
+    name: ai-stock-scanner-worker
+    runtime: docker
+    plan: starter
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python worker.py
+    autoDeploy: true
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: DATABASE_PATH
+        value: /tmp/stock_scanner.sqlite3
+      - key: SCAN_INTERVAL
+        value: "300"
+      - key: BACKUP_DIR
+        value: /tmp/backups
+      - key: BACKUP_RETENTION
+        value: "1"
+      - key: TZ
+        value: Asia/Ho_Chi_Minh
