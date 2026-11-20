@@ -8,6 +8,7 @@ from strategy_engine import (
     analyze_stock as analyze_strategy_stock,
     STRATEGIES,
 )
+from early_signal_engine import evaluate_early_signal
 
 # =====================================================
 # AI STOCK SCANNER 3.0 - D1 + VERIFIED REALTIME
@@ -545,6 +546,13 @@ def analyze_stock(
     )
 
     has_realtime = quote is not None
+    early_signal = evaluate_early_signal(
+        d.rename(columns={
+            "Date": "date", "Open": "open", "High": "high",
+            "Low": "low", "Close": "close", "Volume": "volume",
+        }),
+        quote=quote,
+    )
 
     raw_quote = (
         realtime_quote
@@ -721,6 +729,13 @@ def analyze_stock(
             ),
             "signal": signal,
             "score": score,
+            "early_signal": early_signal.get("early_signal", "UNAVAILABLE"),
+            "early_score": early_signal.get("early_score", 0),
+            "early_reasons": early_signal.get("early_reasons", []),
+            "early_risks": early_signal.get("early_risks", []),
+            "early_volume_ratio": early_signal.get("early_volume_ratio"),
+            "early_resistance": early_signal.get("early_resistance"),
+            "early_quote_verified": early_signal.get("early_quote_verified", False),
 
             "price": round(price),
             "d1_close": round(d1_close),

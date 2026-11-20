@@ -16,6 +16,8 @@ JSON_FIELDS = {
     "blockers",
     "reasons",
     "penalties",
+    "early_reasons",
+    "early_risks",
 }
 
 
@@ -76,7 +78,14 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
                 price_data_status TEXT,
                 price_data_message TEXT,
                 live_change_pct REAL,
-                market_regime TEXT
+                market_regime TEXT,
+                early_signal TEXT,
+                early_score REAL,
+                early_reasons TEXT,
+                early_risks TEXT,
+                early_volume_ratio REAL,
+                early_resistance REAL,
+                early_quote_verified INTEGER
             )
         """)
 
@@ -97,6 +106,19 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
             conn.execute(
                 "ALTER TABLE scan_results ADD COLUMN market_regime TEXT"
             )
+
+        early_columns = {
+            "early_signal": "TEXT",
+            "early_score": "REAL",
+            "early_reasons": "TEXT",
+            "early_risks": "TEXT",
+            "early_volume_ratio": "REAL",
+            "early_resistance": "REAL",
+            "early_quote_verified": "INTEGER",
+        }
+        for column, sql_type in early_columns.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE scan_results ADD COLUMN {column} {sql_type}")
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS
@@ -224,6 +246,13 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
         "price_data_message",
         "live_change_pct",
         "market_regime",
+        "early_signal",
+        "early_score",
+        "early_reasons",
+        "early_risks",
+        "early_volume_ratio",
+        "early_resistance",
+        "early_quote_verified",
     ]
 
     placeholders = ", ".join(["?"] * len(columns))
@@ -268,6 +297,39 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
     with connect(db_path) as conn:
         conn.executemany(sql, values)
 
+    # Mirror completed scan batches to Supabase so the Windows worker and
+    # Streamlit Cloud UI share one result store. Service key stays server-side.
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote_rows = []
+            for row in rows:
+                symbol = str(row.get("symbol", "")).strip().upper()
+                strategy = str(row.get("strategy", "")).strip().upper()
+                if not symbol or not strategy:
+                    continue
+                payload = {
+                    key: _serialize_value(key, value)
+                    for key, value in row.items()
+                }
+                remote_rows.append({
+                    "scanned_at": scanned_at,
+                    "symbol": symbol,
+                    "strategy": strategy,
+                    "signal": row.get("signal"),
+                    "score": row.get("score"),
+                    "payload": payload,
+                })
+            for offset in range(0, len(remote_rows), 500):
+                client.table("scan_results").insert(
+                    remote_rows[offset:offset + 500]
+                ).execute()
+    except Exception:
+        # Keep local results; caller logs and can diagnose missing cloud sync.
+        import logging
+        logging.getLogger("scan_store").exception("Không đồng bộ được scan batch lên Supabase.")
+
     return len(values)
 
 
@@ -283,42 +345,60 @@ def get_latest_scan(db_path=DEFAULT_DB_PATH):
 
     init_scan_db(db_path)
 
-    with connect(db_path) as conn:
-        latest_batch = conn.execute("""
-            SELECT MAX(scanned_at)
-            FROM scan_results
-        """).fetchone()[0]
+    # Prefer shared Supabase results so phone/cloud UI can see PC worker scans.
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote = (
+                client.table("scan_results")
+                .select("scanned_at,symbol,strategy,signal,score,payload")
+                .order("scanned_at", desc=True)
+                .limit(5000)
+                .execute().data or []
+            )
+            if remote:
+                latest_batch = remote[0]["scanned_at"]
+                selected = [r for r in remote if r["scanned_at"] == latest_batch]
+                output = []
+                for item in selected:
+                    payload = item.get("payload") or {}
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except (TypeError, ValueError):
+                            payload = {}
+                    payload.setdefault("symbol", item.get("symbol"))
+                    payload.setdefault("strategy", item.get("strategy"))
+                    payload.setdefault("signal", item.get("signal"))
+                    payload.setdefault("score", item.get("score"))
+                    payload["scanned_at"] = latest_batch
+                    for field in JSON_FIELDS:
+                        value = payload.get(field)
+                        if isinstance(value, str):
+                            try:
+                                parsed = json.loads(value)
+                                payload[field] = parsed if isinstance(parsed, list) else []
+                            except (TypeError, ValueError):
+                                payload[field] = []
+                        elif value is None:
+                            payload[field] = []
+                    output.append(payload)
+                return output
+    except Exception:
+        import logging
+        logging.getLogger("scan_store").exception("Không đọc được scan batch từ Supabase; dùng SQLite.")
 
+    with connect(db_path) as conn:
+        latest_batch = conn.execute("SELECT MAX(scanned_at) FROM scan_results").fetchone()[0]
         if not latest_batch:
             return []
-
         rows = conn.execute("""
-            SELECT *
-            FROM scan_results
-            WHERE scanned_at = ?
-            ORDER BY
-                CASE signal
-                    WHEN 'BUY' THEN 5
-                    WHEN 'WAIT' THEN 4
-                    WHEN 'WATCH' THEN 3
-                    WHEN 'SKIP' THEN 2
-                    WHEN 'FILTERED' THEN 1
-                    ELSE 0
-                END DESC,
-                COALESCE(score, 0) DESC,
-                CASE strategy
-                    WHEN 'SWING' THEN 1
-                    WHEN 'REVERSAL' THEN 2
-                    WHEN 'PULLBACK' THEN 3
-                    ELSE 4
-                END ASC,
-                symbol ASC
+            SELECT * FROM scan_results WHERE scanned_at = ?
+            ORDER BY CASE signal WHEN 'BUY' THEN 5 WHEN 'WAIT' THEN 4 WHEN 'WATCH' THEN 3 WHEN 'SKIP' THEN 2 WHEN 'FILTERED' THEN 1 ELSE 0 END DESC,
+            COALESCE(score, 0) DESC, symbol ASC
         """, (latest_batch,)).fetchall()
-
-    return [
-        _format_row(row)
-        for row in rows
-    ]
+    return [_format_row(row) for row in rows]
 
 
 # =====================================================
@@ -330,35 +410,60 @@ def get_scan_history(
     db_path=DEFAULT_DB_PATH,
 ):
     init_scan_db(db_path)
-
     try:
         limit = max(1, min(int(limit), 5000))
     except (TypeError, ValueError):
         limit = 150
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote = (
+                client.table("scan_results")
+                .select("scanned_at,symbol,strategy,signal,score,payload")
+                .order("scanned_at", desc=True)
+                .limit(limit)
+                .execute().data or []
+            )
+            if remote:
+                output = []
+                for item in remote:
+                    payload = item.get("payload") or {}
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except (TypeError, ValueError):
+                            payload = {}
+                    payload.setdefault("symbol", item.get("symbol"))
+                    payload.setdefault("strategy", item.get("strategy"))
+                    payload.setdefault("signal", item.get("signal"))
+                    payload.setdefault("score", item.get("score"))
+                    payload["scanned_at"] = item.get("scanned_at")
+                    for field in JSON_FIELDS:
+                        value = payload.get(field)
+                        if isinstance(value, str):
+                            try:
+                                parsed = json.loads(value)
+                                payload[field] = parsed if isinstance(parsed, list) else []
+                            except (TypeError, ValueError):
+                                payload[field] = []
+                        elif value is None:
+                            payload[field] = []
+                    output.append(payload)
+                return output
+    except Exception:
+        import logging
+        logging.getLogger("scan_store").exception("Không đọc được scan history từ Supabase; dùng SQLite.")
 
     with connect(db_path) as conn:
         rows = conn.execute("""
-            SELECT *
-            FROM scan_results
-            ORDER BY
-                scanned_at DESC,
-                CASE signal
-                    WHEN 'BUY' THEN 5
-                    WHEN 'WAIT' THEN 4
-                    WHEN 'WATCH' THEN 3
-                    WHEN 'SKIP' THEN 2
-                    WHEN 'FILTERED' THEN 1
-                    ELSE 0
-                END DESC,
+            SELECT * FROM scan_results
+            ORDER BY scanned_at DESC,
+                CASE signal WHEN 'BUY' THEN 5 WHEN 'WAIT' THEN 4 WHEN 'WATCH' THEN 3 WHEN 'SKIP' THEN 2 WHEN 'FILTERED' THEN 1 ELSE 0 END DESC,
                 COALESCE(score, 0) DESC
             LIMIT ?
         """, (limit,)).fetchall()
-
-    return [
-        _format_row(row)
-        for row in rows
-    ]
-
+    return [_format_row(row) for row in rows]
 
 # =====================================================
 # SCAN SUMMARY
@@ -366,6 +471,33 @@ def get_scan_history(
 
 def get_scan_summary(db_path=DEFAULT_DB_PATH):
     init_scan_db(db_path)
+
+    try:
+        from portfolio import _get_supabase
+        client = _get_supabase()
+        if client is not None:
+            remote = (
+                client.table("scan_results")
+                .select("scanned_at,signal")
+                .order("scanned_at", desc=True)
+                .limit(5000)
+                .execute().data or []
+            )
+            if remote:
+                latest = remote[0]["scanned_at"]
+                batch = [r for r in remote if r["scanned_at"] == latest]
+                signals = [r.get("signal") for r in batch]
+                return {
+                    "latest_scan_at": latest,
+                    "total_rows": len(remote),
+                    "latest_batch_rows": len(batch),
+                    "buy_count": signals.count("BUY"),
+                    "wait_count": signals.count("WAIT"),
+                    "watch_count": signals.count("WATCH"),
+                }
+    except Exception:
+        import logging
+        logging.getLogger("scan_store").exception("Không đọc được summary Supabase; dùng SQLite.")
 
     with connect(db_path) as conn:
         row = conn.execute("""

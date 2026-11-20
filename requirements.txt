@@ -7,3 +7,5 @@ requests>=2.32.0
 
 vn-market-data @ git+https://github.com/trangcm/vn-market-data@v0.3.0
 supabase>=2.10.0
+
+python-dotenv>=1.0.1
