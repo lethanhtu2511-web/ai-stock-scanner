@@ -1,10 +1,28 @@
 import unittest
+import sys
+import types
+from unittest.mock import patch
 import pandas as pd
 
-from foreign_flow_provider import normalize_foreign_flow, summarize_foreign_flow
+from foreign_flow_provider import (
+    normalize_foreign_flow, summarize_foreign_flow, _resolve_foreign_history,
+)
 
 
 class ForeignFlowTests(unittest.TestCase):
+
+    def test_resolves_foreign_history_from_adapter_when_not_root_exported(self):
+        package = types.ModuleType("vn_market_data")
+        package.__path__ = []
+        adapter = types.ModuleType("vn_market_data.adapter")
+        marker = lambda symbol, start, end=None: ("CafeF", [])
+        adapter.get_foreign_history = marker
+        with patch.dict(sys.modules, {
+            "vn_market_data": package,
+            "vn_market_data.adapter": adapter,
+        }):
+            self.assertIs(_resolve_foreign_history(), marker)
+
     def test_normalize_foreign_flow_and_net_value(self):
         raw = pd.DataFrame([
             {"time": "2026-11-17", "buy_val": 120, "sell_val": 80, "buy_vol": 12, "sell_vol": 8},
