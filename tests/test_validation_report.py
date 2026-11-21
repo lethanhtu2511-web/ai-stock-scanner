@@ -58,5 +58,22 @@ class ValidationReportTests(unittest.TestCase):
         )
 
 
+    def test_portfolio_sizing_explains_both_board_lot_constraints(self):
+        trades = pd.DataFrame([{
+            "symbol": "HIGH", "strategy": "SWING",
+            "entry_date": "2026-01-02", "entry_price": 100_000,
+            "stop_loss": 90_000, "exit_date": "2026-01-06",
+            "net_return_pct": 5.0,
+        }])
+        result = simulate_portfolio(trades, initial_capital=10_000_000)
+        detail = result["sizing_diagnostics"][0]
+        self.assertEqual(detail["minimum_lot_value"], 10_000_000)
+        self.assertEqual(detail["risk_for_one_lot"], 1_000_000)
+        self.assertTrue(detail["allocation_constraint_failed"])
+        self.assertTrue(detail["risk_constraint_failed"])
+        self.assertEqual(detail["risk_budget"], 200_000)
+        self.assertEqual(detail["allocation_limit"], 2_000_000)
+
+
 if __name__ == "__main__":
     unittest.main()
