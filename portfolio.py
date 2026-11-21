@@ -181,6 +181,11 @@ def _remote_transactions(client):
     return response.data or []
 
 
+def get_storage_backend():
+    """Identify whether portfolio records use durable remote storage or local SQLite."""
+    return "SUPABASE" if _get_supabase() is not None else "SQLITE"
+
+
 def get_settings(db_path=DEFAULT_DB_PATH):
     init_db(db_path)
     client = _get_supabase()
