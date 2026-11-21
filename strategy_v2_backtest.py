@@ -337,3 +337,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
+# Expanded-universe validation rerun requested on 2026-11-21; keep MAX_SYMBOLS=0 for all listed HOSE/HNX symbols.
