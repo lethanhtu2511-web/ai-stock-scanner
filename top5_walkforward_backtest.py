@@ -25,6 +25,14 @@ MAX_DAILY_PICKS = 3
 MIN_NORMALIZED_SCORE = 0.65
 
 
+def select_candidates(ranked: list[dict], *, max_picks: int = MAX_DAILY_PICKS,
+                      setup: str | None = None) -> list[dict]:
+    """Select already-ranked candidates, optionally restricting to one setup."""
+    pool = ranked if setup is None else [
+        item for item in ranked if item["candidate"].get("setup") == setup
+    ]
+    return pool[:max_picks]
+
 
 def candidate_diagnostics(past: pd.DataFrame, market_past: pd.DataFrame,
                           candidate: dict, trade: dict | None) -> dict:
@@ -132,6 +140,7 @@ def main():
 
     market_dates = pd.to_datetime(market_ind.date).to_numpy()
     window_rows, selection_rows = [], []
+    swing_only_rows = []
     all_selected_returns = []
 
     for window_no, market_i in enumerate(checkpoints, 1):
@@ -183,7 +192,10 @@ def main():
         ranked.sort(key=lambda x: (
             x["rank_score"], x["avg_turnover20"]
         ), reverse=True)
-        selected = ranked[:MAX_DAILY_PICKS]
+        selected = select_candidates(ranked)
+        # Parallel research arm: at most three Swing Breakout candidates only.
+        # It does not alter the baseline ranking or production BUY logic.
+        swing_selected = select_candidates(ranked, setup="SWING_BREAKOUT")
         returns = []
         selected_names = []
 
@@ -220,6 +232,21 @@ def main():
                 "risk_factor": float(item["candidate"].get("risk_factor", 1.0)),
                 "normalized_score": round(item["normalized_score"], 4),
                 **features,
+            })
+
+        for swing_rank, item in enumerate(swing_selected, 1):
+            trade = simulate(histories[item["symbol"]], item["index"], item["candidate"])
+            swing_only_rows.append({
+                "window": window_no,
+                "asof_date": str(asof_date.date()),
+                "rank": swing_rank,
+                "symbol": item["symbol"],
+                "setup": item["candidate"]["setup"],
+                "normalized_score": round(item["normalized_score"], 4),
+                "net_return_pct": float(trade["net_return_pct"]) if trade else None,
+                "outcome": trade["exit_reason"] if trade else "NO_EXECUTION",
+                "entry_date": trade["entry_date"] if trade else None,
+                "exit_date": trade["exit_date"] if trade else None,
             })
 
         forward_market_return = (
@@ -259,6 +286,12 @@ def main():
         out / "portfolio_skipped_trades.csv", index=False
     )
     executed_df = trades_df[trades_df["net_return_pct"].notna()].copy() if not trades_df.empty else pd.DataFrame()
+    swing_df = pd.DataFrame(swing_only_rows)
+    swing_executed_df = (
+        swing_df[swing_df["net_return_pct"].notna()].copy()
+        if not swing_df.empty else pd.DataFrame()
+    )
+    swing_df.to_csv(out / "swing_only_research.csv", index=False)
 
     def performance_by(frame, field):
         result = {}
@@ -297,6 +330,13 @@ def main():
                          if any(x < 0 for x in valid) else None,
         "diagnostics": {
             "by_setup": performance_by(executed_df, "setup"),
+            "swing_only_parallel_experiment": {
+                "selected_slots": int(len(swing_df)),
+                "no_execution_selections": int((swing_df["outcome"] == "NO_EXECUTION").sum()) if not swing_df.empty else 0,
+                "executed_trades": int(len(swing_executed_df)),
+                "performance": performance_by(swing_executed_df.assign(setup="SWING_BREAKOUT"), "setup"),
+                "note": "Parallel research arm using the same point-in-time candidate pool, dates, execution simulator and costs; baseline ranking is unchanged. Small samples are descriptive, not proof of edge."
+            },
             "winner_loser_feature_medians": feature_outcome_diagnostics(executed_df),
             "by_exit_reason": performance_by(executed_df, "outcome"),
             "by_market_regime": performance_by(executed_df, "market_regime"),
@@ -333,6 +373,7 @@ def main():
             "Cash portfolio uses 10m VND, 2% risk per trade, 20% maximum allocation per position, five concurrent positions and 100-share board lots.",
             "Portfolio drawdown is realized-only; daily mark-to-market drawdown requires a daily equity curve and is not claimed here.",
             "A small number of selected/executed trades is not sufficient evidence of a persistent statistical edge.",
+            "The parallel swing-only arm is a research comparison and does not change production signals or the baseline top-three selection.",
             "This is a research simulation, not a live portfolio or guaranteed return; no production BUY rules are changed.",
         ],
     }
