@@ -46,7 +46,7 @@ def main() -> None:
     if not listed_symbols:
         raise SystemExit("Không lấy được danh sách mã HOSE/HNX; dừng kiểm định.")
 
-    max_symbols = int(os.getenv("SCANNER_VALIDATION_MAX_SYMBOLS", "120"))
+    max_symbols = int(os.getenv("SCANNER_VALIDATION_MAX_SYMBOLS", "250"))
     if max_symbols < 0:
         raise SystemExit("SCANNER_VALIDATION_MAX_SYMBOLS phải >= 0; dùng 0 để kiểm định toàn bộ.")
     backtest_symbols = len(listed_symbols) if max_symbols == 0 else min(max_symbols, len(listed_symbols))
@@ -88,7 +88,9 @@ def main() -> None:
             "max_allocation_per_position_pct": 20.0,
             "board_lot_shares": 100,
         },
-        "legacy_combined_signal_summary": result["summary"],
+        "all_signal_trade_sequence_metrics_not_portfolio": result["summary"],
+        "aggregate_metric_warning": "Thống kê gộp mọi tín hiệu/các mã là thống kê chuỗi giao dịch, không phải lợi nhuận danh mục thực tế; không dùng total_return/max_drawdown của chuỗi này để đánh giá hiệu quả đầu tư. Chỉ mục portfolio mô phỏng vốn mới phản ánh giới hạn lô, vốn và rủi ro đã cấu hình.",
+        "sample_scope_warning": "Danh sách mã được phát hiện trên HOSE/HNX, nhưng chỉ nhóm mã thanh khoản cao được chọn để backtest theo giới hạn cấu hình. Đây không phải kiểm định lịch sử toàn bộ mã đang niêm yết.",
         "portfolio": result.get("portfolio", {}),
         "validation": validation,
         "by_strategy": result["by_strategy"],
