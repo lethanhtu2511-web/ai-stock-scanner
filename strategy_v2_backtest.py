@@ -72,7 +72,11 @@ def simulate(d, signal_i, candidate):
         trigger = float(candidate["entry_trigger"])
         if float(row.high) < trigger:
             return None
-        if float(row.close) < float(candidate["cancel_if_close_below_confirmation_low"]):
+        # A stop-entry order that is triggered intraday cannot be retroactively
+        # cancelled using that session's closing price. Only invalidate it
+        # before entry when the session opens below the structural confirmation
+        # low; once triggered, the normal protective-stop logic handles risk.
+        if float(row.open) < float(candidate["cancel_if_close_below_confirmation_low"]):
             return None
         raw_entry = max(float(row.open), trigger)
 
