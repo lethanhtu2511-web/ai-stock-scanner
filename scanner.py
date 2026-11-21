@@ -1004,6 +1004,33 @@ def analyze_stock(
     return rows
 
 
+def _cap_buy_recommendations(results, max_buy=3):
+    """Keep only the strongest BUY rows; downgrade all other BUY rows."""
+    buys = [row for row in results if row.get("signal") == "BUY"]
+    buys.sort(
+        key=lambda row: (
+            _number(row.get("score")),
+            _number(row.get("reward_risk")),
+            _number(row.get("relative_strength")),
+            _number(row.get("avg_turnover_20d")),
+        ),
+        reverse=True,
+    )
+    keep = {id(row) for row in buys[:max(0, int(max_buy))]}
+    for rank, row in enumerate(buys, 1):
+        if id(row) in keep:
+            row["recommendation_rank"] = rank
+            continue
+        row["signal"] = "WAIT"
+        row["recommendation_rank"] = None
+        blockers = list(row.get("blockers") or [])
+        blockers.append(f"Ngoài top {max_buy} tín hiệu tốt nhất toàn thị trường; không khuyến nghị mua")
+        row["blockers"] = list(dict.fromkeys(blockers))
+        row["reason"] = "Không nằm trong nhóm khuyến nghị mua ưu tiên; tiếp tục theo dõi."
+    return results
+
+
+
 # =====================================================
 # SCAN MARKET
 # =====================================================
@@ -1128,12 +1155,12 @@ def scan_market(
         "FILTERED": 1,
     }
 
+    # Quality-first: retain at most three fully confirmed BUY recommendations.
+    _cap_buy_recommendations(results, max_buy=3)
+
     results.sort(
         key=lambda item: (
-            priority.get(
-                item.get("signal"),
-                0,
-            ),
+            priority.get(item.get("signal"), 0),
             _number(item.get("score")),
             _number(item.get("reward_risk")),
         ),
