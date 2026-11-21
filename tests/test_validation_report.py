@@ -54,7 +54,7 @@ class ValidationReportTests(unittest.TestCase):
         self.assertEqual(result["accepted_trades"], 0)
         self.assertEqual(result["skipped_trades"], 1)
         self.assertEqual(
-            result["skip_reasons"]["RISK_BUDGET_TOO_SMALL_FOR_BOARD_LOT"], 1
+            result["skip_reasons"]["INSUFFICIENT_ALLOCATION_FOR_BOARD_LOT"], 1
         )
 
 
