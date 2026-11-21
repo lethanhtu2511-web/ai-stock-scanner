@@ -1,35 +1,16 @@
-"""Run reproducible representative-universe validation and write artifacts."""
+"""Run reproducible exchange-wide discovery and liquid-universe validation."""
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
+from data_provider import fetch_exchange_symbols
 from historical_backtest import run_historical_backtest
 from validation_report import build_validation_report
-
-
-SAMPLE_SYMBOLS = [
-    # Banks
-    "ACB", "BID", "CTG", "EIB", "HDB", "LPB", "MBB", "MSB", "OCB", "SHB",
-    "SSB", "STB", "TCB", "TPB", "VCB", "VIB", "VPB",
-    # Brokers
-    "BSI", "CTS", "FTS", "HCM", "MBS", "SHS", "SSI", "VCI", "VND",
-    # Real estate, construction and industrial parks
-    "BCM", "CEO", "CII", "DIG", "DXG", "HDC", "HDG", "KBC", "KDH",
-    "NLG", "NVL", "PDR", "SZC", "VCG", "VHM", "VRE",
-    # Steel, materials and chemicals
-    "DGC", "DCM", "DPM", "GVR", "HPG", "NKG", "PHR", "PLC",
-    # Consumer, retail and technology
-    "FPT", "FRT", "MCH", "MSN", "MWG", "PNJ", "SAB", "VNM",
-    # Energy, oil and gas, transport
-    "BSR", "GAS", "PVS", "PVD", "PLX", "POW", "PVT",
-    # Large cap / diversified
-    "BVH", "VIC", "VJC", "VTP",
-]
-SAMPLE_SYMBOLS = list(dict.fromkeys(SAMPLE_SYMBOLS))
 
 
 def grouped_performance(frame: pd.DataFrame, group_columns: list[str]) -> dict:
@@ -53,20 +34,38 @@ def grouped_performance(frame: pd.DataFrame, group_columns: list[str]) -> dict:
         }
     return output
 
+
 def main() -> None:
     output = Path("backtest_output")
     output.mkdir(exist_ok=True)
 
+    # Discover all currently listed HOSE/HNX stocks. The historical run then
+    # ranks symbols by turnover known at the start of the test window and
+    # evaluates the top N to keep the walk-forward job bounded and reproducible.
+    listed_symbols = fetch_exchange_symbols()
+    if not listed_symbols:
+        raise SystemExit("Không lấy được danh sách mã HOSE/HNX; dừng kiểm định.")
+
+    max_symbols = int(os.getenv("SCANNER_VALIDATION_MAX_SYMBOLS", "120"))
+    if max_symbols < 0:
+        raise SystemExit("SCANNER_VALIDATION_MAX_SYMBOLS phải >= 0; dùng 0 để kiểm định toàn bộ.")
+    backtest_symbols = len(listed_symbols) if max_symbols == 0 else min(max_symbols, len(listed_symbols))
+
+    initial_capital = float(os.getenv("SCANNER_VALIDATION_CAPITAL", "10000000"))
+    if initial_capital <= 0:
+        raise SystemExit("SCANNER_VALIDATION_CAPITAL phải lớn hơn 0.")
+
     result = run_historical_backtest(
-        symbols=SAMPLE_SYMBOLS,
+        symbols=listed_symbols,
         lookback_sessions=250,
-        max_symbols=len(SAMPLE_SYMBOLS),
+        max_symbols=backtest_symbols,
         strategy_filter="ALL",
+        initial_capital=initial_capital,
     )
 
     trades = result["trades"]
     trades.to_csv(output / "all_signal_outcomes.csv", index=False, encoding="utf-8-sig")
-    validation = build_validation_report(trades)
+    validation = build_validation_report(trades, initial_capital=initial_capital)
     executable = trades[trades["strategy"].astype(str).str.upper().isin(
         {"SWING", "REVERSAL", "PULLBACK"}
     )].copy() if not trades.empty else trades.copy()
@@ -78,9 +77,17 @@ def main() -> None:
 
     summary = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "universe_type": "expanded_liquid_representative_sample_not_full_market",
-        "validation_design": "250_session_walk_forward_with_regime_breakdown",
-        "sample_symbols": SAMPLE_SYMBOLS,
+        "universe_type": "all_current_HOSE_HNX_listings_discovered_top_liquid_subset_backtested",
+        "universe_symbols_available": len(listed_symbols),
+        "backtest_symbol_limit": max_symbols,
+        "validation_design": "250_session_point_in_time_walk_forward_with_market_regime_breakdown",
+        "capital_assumptions": {
+            "initial_capital_vnd": initial_capital,
+            "risk_per_trade_pct": 2.0,
+            "max_positions": 5,
+            "max_allocation_per_position_pct": 20.0,
+            "board_lot_shares": 100,
+        },
         "legacy_combined_signal_summary": result["summary"],
         "portfolio": result.get("portfolio", {}),
         "validation": validation,
