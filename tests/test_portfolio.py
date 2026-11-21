@@ -7,6 +7,8 @@ from portfolio import (
     get_positions,
     get_portfolio_summary,
     get_cash_summary,
+    get_settings,
+    save_settings,
 )
 
 
@@ -39,6 +41,13 @@ class PortfolioLedgerTests(unittest.TestCase):
         cash = get_cash_summary(self.db_path)
         self.assertAlmostEqual(cash["net_buys"], 2_003_000)
         self.assertAlmostEqual(cash["net_sells"], 1_097_250)
+
+    def test_new_install_has_unconfigured_capital(self):
+        self.assertEqual(get_settings(self.db_path)["capital"], 0)
+
+    def test_existing_user_capital_of_10m_is_preserved(self):
+        save_settings({"capital": 10_000_000}, self.db_path)
+        self.assertEqual(get_settings(self.db_path)["capital"], 10_000_000)
 
     def test_cannot_sell_more_than_held(self):
         add_transaction("MUA", "FPT", 100, 20_000, db_path=self.db_path)
