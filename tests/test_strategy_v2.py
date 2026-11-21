@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from strategy_v2_backtest import simulate
+from top5_walkforward_backtest import candidate_diagnostics
 
 from strategy_v2 import (
     analyze_daily_setup,
@@ -96,6 +97,28 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertAlmostEqual(result["initial_stop"], 94.6, places=1)
         self.assertEqual(result["exit_reason"], "TIME_EXIT")
+
+    def test_candidate_diagnostics_use_only_supplied_point_in_time_rows(self):
+        from strategy_v2 import _indicators
+
+        stock = _indicators(make_bars(n=320))
+        market = _indicators(make_bars(n=320, start=20000, drift=0.0004))
+        past_stock = stock.iloc[:310].copy()
+        past_market = market.iloc[:310].copy()
+        candidate = {"setup": "SWING_BREAKOUT"}
+        trade = {"actual_entry": 15000.0, "initial_stop": 14500.0}
+        result = candidate_diagnostics(past_stock, past_market, candidate, trade)
+
+        self.assertEqual(result["setup"], "SWING_BREAKOUT")
+        self.assertIsNotNone(result["relative_strength_20s_pct"])
+        self.assertAlmostEqual(result["stop_distance_pct"], (500 / 15000) * 100, places=3)
+        # Appending future bars must not change a snapshot made from the past slice.
+        changed_future = stock.copy()
+        changed_future.loc[310:, ["open", "high", "low", "close", "volume"]] *= 3
+        repeated = candidate_diagnostics(
+            changed_future.iloc[:310], past_market, candidate, trade
+        )
+        self.assertEqual(result, repeated)
 
     def test_reversal_stop_entry_is_not_cancelled_by_same_day_close(self):
         d = make_bars(n=331)
