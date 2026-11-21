@@ -108,3 +108,13 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - Market regime (bullish/neutral/bearish) is computed only from benchmark bars available as of the signal date.
 - **Important:** Adaptive v1 is research-only. It never emits an executable BUY and does not change production BUY/WAIT decisions, position sizing, or order permissions. Promote it only after a broader out-of-sample comparison across market regimes, with costs and realistic execution assumptions.
 - The baseline strategy remains the production reference so adaptive results can be compared without contaminating the existing strategy.
+
+
+## Cash-constrained top-five portfolio research
+
+- `top5_walkforward_backtest.py` selects at most five highest-ranked eligible setups at each of 30 point-in-time checkpoints, spaced five trading sessions apart.
+- `portfolio_execution.py` then simulates cash reservation/release, duplicate-ticker prevention, at most five concurrent positions, 2% target risk per trade, 20% maximum capital allocation per position, and 100-share board lots.
+- Position sizing includes the strategy's estimated slippage plus buy fee, sell fee and sell tax. Net trade outcomes already include the same round-trip costs; the portfolio layer does not subtract them twice.
+- Outputs include `portfolio_accepted_trades.csv`, `portfolio_skipped_trades.csv` and `cash_portfolio_simulation` in `report.json`.
+- The portfolio drawdown is realized-only because this trade-level report does not contain daily mark-to-market equity. It must not be interpreted as intraday or floating drawdown.
+- This is research-only. It does not alter production BUY rules, place orders, or establish that any strategy has positive expected returns.
