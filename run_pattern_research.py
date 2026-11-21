@@ -7,7 +7,7 @@ import pandas as pd
 from data_provider import fetch_exchange_symbols, fetch_stock_history
 from foreign_flow_provider import fetch_foreign_flow
 from adaptive_strategy import classify_market_regime
-from pattern_research import HORIZONS, analyze_patterns, extract_point_in_time_features, label_forward_outcome
+from pattern_research import HORIZONS, walk_forward_validation, extract_point_in_time_features, label_forward_outcome
 
 OUT = Path("pattern_research_output")
 OUT.mkdir(exist_ok=True)
@@ -37,7 +37,9 @@ def main():
             d = clean(fetch_stock_history(symbol, length=lookback))
             if len(d) < 230:
                 raise ValueError(f"Chỉ có {len(d)} phiên")
-            ranks.append((symbol, float((d["close"] * d["volume"]).tail(20).mean())))
+            cutoff_idx = max(200, len(d) - min(lookback, 300) - max(HORIZONS.values()))
+            known_turnover = (d["close"] * d["volume"]).iloc[:cutoff_idx + 1].tail(20)
+            ranks.append((symbol, float(known_turnover.mean())))
             histories[symbol] = d
         except Exception as exc:
             errors.append({"symbol": symbol, "error": str(exc)[:250]})
@@ -72,7 +74,7 @@ def main():
     if events.empty:
         raise RuntimeError("Không tạo được quan sát nghiên cứu; kiểm tra nguồn dữ liệu.")
     events.to_csv(OUT / "pattern_events.csv", index=False)
-    report = analyze_patterns(events)
+    report = walk_forward_validation(events)
     report.update({
         "universe_discovered": len(symbols),
         "symbols_with_history": len(histories),
@@ -87,7 +89,19 @@ def main():
         "universe_warning": "Universe is current HOSE/HNX listings, so delisted stocks are absent (survivorship bias). Recent top-liquidity selection is for coverage, not an investable historical universe.",
     })
     (OUT / "pattern_research_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ("universe_discovered","symbols_tested","observations","data_start","data_end","by_strategy","confluence_patterns")}, ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "universe_discovered": report["universe_discovered"],
+        "symbols_tested": report["symbols_tested"],
+        "observations": report["observations"],
+        "data_start": report["data_start"],
+        "data_end": report["data_end"],
+        "walk_forward_status": report["status"],
+        "discovery_cutoff": report.get("discovery_cutoff"),
+        "training_observations": report.get("training_observations"),
+        "holdout_observations": report.get("holdout_observations"),
+        "holdout_by_strategy": report.get("holdout_by_strategy"),
+        "pattern_holdout": report.get("pattern_holdout"),
+    }, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
