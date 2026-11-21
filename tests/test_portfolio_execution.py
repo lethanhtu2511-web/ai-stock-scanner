@@ -67,6 +67,21 @@ class CashPortfolioTests(unittest.TestCase):
         self.assertEqual(result["accepted_trades"], 0)
         self.assertEqual(result["skip_reasons"]["INVALID_RISK_FACTOR"], 1)
 
+
+    def test_zero_risk_factor_is_rejected(self):
+        result = simulate_cash_portfolio(
+            [{**self.trade(), "risk_factor": 0.0}], initial_capital=10_000_000
+        )
+        self.assertEqual(result["accepted_trades"], 0)
+        self.assertEqual(result["skip_reasons"]["INVALID_RISK_FACTOR"], 1)
+
+    def test_nan_risk_factor_is_rejected(self):
+        result = simulate_cash_portfolio(
+            [{**self.trade(), "risk_factor": float("nan")}], initial_capital=10_000_000
+        )
+        self.assertEqual(result["accepted_trades"], 0)
+        self.assertEqual(result["skip_reasons"]["INVALID_RISK_FACTOR"], 1)
+
     def test_invalid_stop_is_rejected(self):
         result = simulate_cash_portfolio(
             [self.trade(stop=11000)], initial_capital=10_000_000
