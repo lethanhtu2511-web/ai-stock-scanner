@@ -24,6 +24,16 @@ class SignalQualityGateTests(unittest.TestCase):
         self.assertEqual(sum(row["signal"] == "WAIT" for row in rows), 2)
         self.assertTrue(all(row.get("recommendation_rank") for row in rows[:3]))
 
+    def test_only_one_buy_per_ticker(self):
+        rows = [
+            {"symbol": "AAA", "strategy": "SWING", "signal": "BUY", "score": 95},
+            {"symbol": "AAA", "strategy": "PULLBACK", "signal": "BUY", "score": 90},
+            {"symbol": "BBB", "strategy": "SWING", "signal": "BUY", "score": 88},
+        ]
+        _cap_buy_recommendations(rows, max_buy=3)
+        self.assertEqual(sum(row["signal"] == "BUY" for row in rows), 2)
+        self.assertEqual(rows[1]["signal"], "WAIT")
+
     def test_zero_cap_means_no_buy_recommendations(self):
         rows = [{"signal": "BUY", "score": 90}, {"signal": "BUY", "score": 80}]
         _cap_buy_recommendations(rows, max_buy=0)
