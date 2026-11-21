@@ -131,6 +131,37 @@ if result:
     else:
         st.info("Không phát sinh giao dịch đạt điều kiện MUA trong giai đoạn kiểm định.")
 
+    portfolio = result.get("portfolio", {})
+    st.subheader("Mô phỏng quản trị vốn 10 triệu đồng")
+    if portfolio:
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Lệnh được nhận", portfolio.get("accepted_trades", 0))
+        p2.metric("Lệnh bị bỏ qua", portfolio.get("skipped_trades", 0))
+        p3.metric("Vốn cuối kỳ", f'{portfolio.get("ending_equity", 0):,.0f} đ')
+        p4.metric("Hiệu suất danh mục", f'{portfolio.get("return_pct", 0):.2f}%')
+        skip_reasons = portfolio.get("skip_reasons", {})
+        if skip_reasons:
+            reason_labels = {
+                "MAX_POSITIONS": "Đã đủ số vị thế tối đa",
+                "DUPLICATE_SYMBOL_POSITION": "Trùng mã đang nắm giữ",
+                "MISSING_OR_INVALID_FIELDS": "Thiếu dữ liệu đầu vào",
+                "INVALID_STOP_OR_PRICE": "Stop-loss/giá không hợp lệ",
+                "INSUFFICIENT_ALLOCATION_FOR_BOARD_LOT": "Không đủ hạn mức vốn cho lô 100",
+                "RISK_BUDGET_TOO_SMALL_FOR_BOARD_LOT": "Ngân sách rủi ro không đủ cho lô 100",
+                "INSUFFICIENT_SHARES_AFTER_ROUNDING": "Không đủ cổ phiếu sau khi làm tròn lô",
+            }
+            st.caption("Lý do bỏ qua lệnh:")
+            st.dataframe(
+                pd.DataFrame([
+                    {"Lý do": reason_labels.get(key, key), "Số lệnh": value}
+                    for key, value in skip_reasons.items()
+                ]),
+                use_container_width=True, hide_index=True,
+            )
+        st.caption(portfolio.get("note", ""))
+    else:
+        st.info("Chưa có dữ liệu mô phỏng danh mục.")
+
     st.subheader("Phạm vi và chất lượng dữ liệu")
     st.caption(
         f"Ngày dữ liệu cuối: {result.get('data_end_date') or 'không xác định'} · "
