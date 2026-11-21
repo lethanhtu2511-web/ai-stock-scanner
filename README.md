@@ -110,9 +110,9 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - The baseline strategy remains the production reference so adaptive results can be compared without contaminating the existing strategy.
 
 
-## Cash-constrained top-five portfolio research
+## Cash-constrained top-three portfolio research
 
-- `top5_walkforward_backtest.py` selects at most five highest-ranked eligible setups at each of 30 point-in-time checkpoints, spaced five trading sessions apart.
+- `top5_walkforward_backtest.py` selects at most three highest-ranked eligible setups at each of 30 point-in-time checkpoints, spaced five trading sessions apart.
 - `portfolio_execution.py` then simulates cash reservation/release, duplicate-ticker prevention, at most five concurrent positions, 2% target risk per trade, 20% maximum capital allocation per position, and 100-share board lots.
 - Position sizing includes the strategy's estimated slippage plus buy fee, sell fee and sell tax. Net trade outcomes already include the same round-trip costs; the portfolio layer does not subtract them twice.
 - Outputs include `portfolio_accepted_trades.csv`, `portfolio_skipped_trades.csv` and `cash_portfolio_simulation` in `report.json`.
@@ -127,3 +127,11 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - Portfolio sizing applies each candidate's regime/setup risk_factor to the base per-trade risk budget, reducing exposure for lower-conviction setups.
 - This adaptive selection is research-only and does not change production scanner BUY/WAIT signals or permit automatic orders.
 - A successful code/test run is not evidence of a profitable strategy; require a new out-of-sample report before considering promotion.
+
+
+## Top-three diagnostic research report
+
+- The 30-checkpoint research script is named for historical compatibility but its active limit is three candidates per checkpoint, with a minimum normalized score of 0.65.
+- The report includes executed-trade diagnostics by setup, exit reason, market regime and normalized-score band, plus the number of selected candidates that could not be simulated.
+- The VNINDEX five-session return is contextual only and is not presented as a matched benchmark for trades with varying holding periods.
+- No strategy is promoted or production BUY logic changed solely because a workflow or unit test passes. Promotion requires adequate trade count, positive out-of-sample expectancy after costs, and robust results across multiple regimes.
