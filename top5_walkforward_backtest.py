@@ -1,7 +1,7 @@
-"""30-window point-in-time top-5 market selection test.
+"""30-window point-in-time top-3 market selection and diagnostic test.
 
 At each checkpoint, use only completed daily data through that date, rank
-eligible HOSE/HNX candidates, select at most five, enter next session and
+eligible HOSE/HNX candidates, select at most three, enter next session and
 simulate a 2-5 session swing trade. Research only; no orders.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ MIN_NORMALIZED_SCORE = 0.65
 
 
 def main():
-    out = Path("top5_walkforward_output")
+    out = Path("top3_walkforward_output")
     out.mkdir(exist_ok=True)
     listed = sorted(set(fetch_exchange_symbols()))
     symbols = listed if MAX_SYMBOLS == 0 else listed[:MAX_SYMBOLS]
@@ -141,6 +141,7 @@ def main():
                 "stop_loss": trade["initial_stop"] if trade else None,
                 "slippage_rate": item["candidate"]["risk_plan"].get("slippage_rate", 0.001),
                 "risk_factor": float(item["candidate"].get("risk_factor", 1.0)),
+                "normalized_score": round(item["normalized_score"], 4),
             })
 
         forward_market_return = (
@@ -164,7 +165,7 @@ def main():
 
     trades_df = pd.DataFrame(selection_rows)
     windows_df = pd.DataFrame(window_rows)
-    trades_df.to_csv(out / "top5_selections.csv", index=False)
+    trades_df.to_csv(out / "top3_selections.csv", index=False)
     windows_df.to_csv(out / "30_window_summary.csv", index=False)
 
     valid = [x for x in all_selected_returns]
@@ -179,13 +180,36 @@ def main():
     pd.DataFrame(portfolio.get("skipped_trade_details", [])).to_csv(
         out / "portfolio_skipped_trades.csv", index=False
     )
+    executed_df = trades_df[trades_df["net_return_pct"].notna()].copy() if not trades_df.empty else pd.DataFrame()
+
+    def performance_by(frame, field):
+        result = {}
+        if frame.empty or field not in frame:
+            return result
+        for key, group in frame.groupby(field, dropna=False):
+            values = pd.to_numeric(group["net_return_pct"], errors="coerce").dropna()
+            gains = float(values[values > 0].sum())
+            losses = abs(float(values[values < 0].sum()))
+            result[str(key)] = {
+                "trades": int(len(values)),
+                "win_rate_pct": round(float((values > 0).mean() * 100), 2) if len(values) else None,
+                "average_net_return_pct": round(float(values.mean()), 3) if len(values) else None,
+                "median_net_return_pct": round(float(values.median()), 3) if len(values) else None,
+                "profit_factor": round(gains / losses, 3) if losses > 0 else None,
+            }
+        return result
+
+    benchmark_values = pd.to_numeric(windows_df["vnindex_forward_5s_pct"], errors="coerce").dropna()
     overall = {
         "windows_requested": WINDOWS,
         "windows_completed": len(window_rows),
         "listed_symbols_from_provider": len(symbols),
         "symbols_with_history": len(histories),
         "data_errors": len(errors),
+        "max_picks_per_checkpoint": MAX_DAILY_PICKS,
+        "minimum_normalized_score": MIN_NORMALIZED_SCORE,
         "selected_slots": len(selection_rows),
+        "no_execution_selections": int((trades_df["outcome"] == "NO_EXECUTION").sum()) if not trades_df.empty else 0,
         "executed_trades": len(valid),
         "win_rate_pct": round(sum(x > 0 for x in valid) / len(valid) * 100, 2) if valid else None,
         "average_net_return_pct": round(sum(valid) / len(valid), 3) if valid else None,
@@ -193,21 +217,43 @@ def main():
         "profit_factor": round(sum(x for x in valid if x > 0) /
                                abs(sum(x for x in valid if x < 0)), 3)
                          if any(x < 0 for x in valid) else None,
+        "diagnostics": {
+            "by_setup": performance_by(executed_df, "setup"),
+            "by_exit_reason": performance_by(executed_df, "outcome"),
+            "by_market_regime": performance_by(executed_df, "market_regime"),
+            "by_normalized_score": performance_by(
+                executed_df.assign(score_band=pd.cut(
+                    executed_df["normalized_score"],
+                    bins=[0.65, 0.75, 0.85, 0.95, 1.000001],
+                    labels=["65-74%", "75-84%", "85-94%", "95-100%"],
+                    include_lowest=True
+                )), "score_band"
+            ) if not executed_df.empty else {},
+            "selection_outcomes": trades_df["outcome"].value_counts(dropna=False).to_dict()
+                if not trades_df.empty else {},
+        },
+        "benchmark_context": {
+            "vnindex_forward_5_sessions_average_pct": round(float(benchmark_values.mean()), 3) if len(benchmark_values) else None,
+            "vnindex_forward_5_sessions_median_pct": round(float(benchmark_values.median()), 3) if len(benchmark_values) else None,
+            "note": "Descriptive checkpoint context only; not a matched benchmark because candidate holding periods vary from 2 to 5 sessions."
+        },
         "cash_portfolio_simulation": portfolio,
         "method": {
             "lookback": "250 completed trading sessions for indicators/eligibility",
             "checkpoints": "30 dates spaced five trading sessions apart",
-            "selection": "At most five highest-ranked valid candidates per checkpoint",
+            "selection": f"At most {MAX_DAILY_PICKS} highest-ranked candidates per checkpoint; no forced picks",
+            "quality_filter": f"Exclude candidates below normalized setup score {MIN_NORMALIZED_SCORE:.2f}",
             "execution": "Next-session execution; 2-5 session holding; existing conservative stop/target simulator",
             "costs": "Existing strategy V2 fees, taxes and slippage",
-            "benchmark": "VNINDEX close-to-close return over the next five sessions",
+            "benchmark": "VNINDEX close-to-close return over the next five sessions, reported as context only",
         },
         "limitations": [
             "Current listed universe is used; historical delisted constituents are not reconstructed.",
             "Selection is point-in-time on each checkpoint, but the universe listing itself is current.",
-            "At most five candidates are selected per checkpoint; portfolio simulation reserves cash and prevents duplicate open tickers.",
+            f"At most {MAX_DAILY_PICKS} candidates are selected per checkpoint; portfolio simulation reserves cash and prevents duplicate open tickers.",
             "Cash portfolio uses 10m VND, 2% risk per trade, 20% maximum allocation per position, five concurrent positions and 100-share board lots.",
             "Portfolio drawdown is realized-only; daily mark-to-market drawdown requires a daily equity curve and is not claimed here.",
+            "A small number of selected/executed trades is not sufficient evidence of a persistent statistical edge.",
             "This is a research simulation, not a live portfolio or guaranteed return; no production BUY rules are changed.",
         ],
     }
