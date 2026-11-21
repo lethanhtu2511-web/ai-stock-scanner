@@ -15,7 +15,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DEFAULT_DB_PATH = "data/stock_scanner.sqlite3"
 
 DEFAULTS = {
-    "capital": 10_000_000,
+    "capital": 0,
     "risk_pct": 2.0,
     "fee_buy": 0.0015,
     "fee_sell": 0.0015,
