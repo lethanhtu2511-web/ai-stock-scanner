@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: historical-backtest-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   historical-backtest:
     runs-on: ubuntu-latest
