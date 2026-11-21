@@ -21,7 +21,9 @@ def clean(raw):
     d["date"] = pd.to_datetime(d["date"], errors="coerce")
     for c in ("open","high","low","close","volume"):
         d[c] = pd.to_numeric(d[c], errors="coerce")
-    return d.dropna(subset=["date","open","high","low","close","volume"]).sort_values("date").drop_duplicates("date").reset_index(drop=True)
+    d = d.dropna(subset=["date","open","high","low","close","volume"]).sort_values("date").drop_duplicates("date").reset_index(drop=True)
+    d.attrs["_pattern_research_clean"] = True
+    return d
 
 
 def main():
