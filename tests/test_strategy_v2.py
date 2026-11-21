@@ -4,7 +4,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from strategy_v2_backtest import simulate
+from strategy_v2_backtest import simulate, point_in_time_features, swing_filter_diagnostics
 from top5_walkforward_backtest import candidate_diagnostics, select_candidates
 
 from strategy_v2 import (
@@ -45,6 +45,41 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertEqual([x["symbol"] for x in swing_only], ["BBB", "CCC", "EEE"])
         self.assertTrue(all(x["candidate"]["setup"] == "SWING_BREAKOUT" for x in swing_only))
         self.assertLessEqual(len(swing_only), 3)
+
+    def test_point_in_time_swing_features_use_only_past_rows(self):
+        from strategy_v2 import _indicators
+        stock = _indicators(make_bars(n=330))
+        market = _indicators(make_bars(n=330, start=20000, drift=0.0002))
+        trade = {"actual_entry": float(stock.iloc[310].close)*1.01,
+                 "initial_stop": float(stock.iloc[310].close)*0.95}
+        first = point_in_time_features(stock.iloc[:311], 310, market.iloc[:311], 310, trade)
+        changed = stock.copy()
+        changed.loc[311:, ["open", "high", "low", "close", "volume"]] *= 4
+        second = point_in_time_features(changed.iloc[:311], 310, market.iloc[:311], 310, trade)
+        self.assertEqual(first, second)
+        self.assertIn("relative_strength_20s_pct", first)
+        self.assertIn("signal_stop_distance_pct", first)
+
+    def test_swing_filter_diagnostics_are_research_only_and_count_trades(self):
+        frame = pd.DataFrame([
+            {"setup":"SWING_BREAKOUT","net_return_pct":3.0,"oos_window":1,
+             "relative_strength_20s_pct":2.0,"relative_strength_60s_pct":1.0,
+             "signal_vol_ratio":1.8,"signal_adx":25.0,
+             "signal_entry_gap_pct":0.2,"signal_stop_distance_pct":5.0},
+            {"setup":"SWING_BREAKOUT","net_return_pct":-2.0,"oos_window":2,
+             "relative_strength_20s_pct":-1.0,"relative_strength_60s_pct":-2.0,
+             "signal_vol_ratio":1.2,"signal_adx":15.0,
+             "signal_entry_gap_pct":0.8,"signal_stop_distance_pct":9.0},
+            {"setup":"PULLBACK","net_return_pct":5.0,"oos_window":1,
+             "relative_strength_20s_pct":5.0,"relative_strength_60s_pct":5.0,
+             "signal_vol_ratio":2.0,"signal_adx":30.0,
+             "signal_entry_gap_pct":0.1,"signal_stop_distance_pct":4.0},
+        ])
+        result = swing_filter_diagnostics(frame)
+        self.assertEqual(result["BASELINE"]["trades"], 2)
+        self.assertEqual(result["RS20_POSITIVE"]["trades"], 1)
+        self.assertEqual(result["RS20_POSITIVE"]["average_net_return_pct"], 3.0)
+        self.assertEqual(result["RS20_POSITIVE"]["by_oos_window"]["1"]["trades"], 1)
 
     def test_market_regime_bullish(self):
         market = make_bars(drift=0.001)
