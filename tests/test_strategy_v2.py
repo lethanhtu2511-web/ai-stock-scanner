@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -69,6 +70,33 @@ class StrategyV2Tests(unittest.TestCase):
         result = analyze_daily_setup("TST", stock, market, suspended=True)
         self.assertFalse(result["universe_eligible"])
         self.assertEqual(result["candidates"], [])
+
+    def test_trailing_stop_does_not_activate_before_first_target(self):
+        d = make_bars(n=333)
+        d.loc[325:329, "low"] = 95.0
+        d.loc[329, ["open", "close", "high", "low"]] = [100.0, 100.0, 101.0, 99.0]
+        d.loc[330, ["open", "close", "high", "low"]] = [101.0, 101.0, 102.0, 100.0]
+        # The next session dips below the would-be Chandelier trail (99),
+        # but remains above the original protective stop (94.6).
+        d.loc[331, ["open", "close", "high", "low"]] = [100.0, 100.0, 102.0, 98.5]
+        d.loc[332, ["open", "close", "high", "low"]] = [100.0, 100.0, 101.0, 99.0]
+        candidate = {
+            "setup": "PULLBACK", "entry_type": "NEXT_OPEN", "gap_limit_atr": 1.0,
+            "atr": 2.0, "holding_sessions": [3, 3], "score": 5,
+            "risk_plan": {"slippage_rate": 0.001, "stop_loss": 90.0},
+        }
+        # Force a deterministic previous-close Chandelier level of 99.
+        indicators = pd.DataFrame({
+            "high22_prev": np.full(len(d), 105.0),
+            "atr": np.full(len(d), 2.0),
+            "ema21": np.full(len(d), 95.0),
+        })
+        with patch("strategy_v2_backtest._indicators", return_value=indicators):
+            result = simulate(d, 329, candidate)
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["initial_stop"], 94.6, places=1)
+        self.assertEqual(result["exit_reason"], "TIME_EXIT")
+        self.assertEqual(result["exit_legs"] if "exit_legs" in result else "", "")
 
     def test_backtest_rebuilds_pullback_stop_from_actual_fill(self):
         d = make_bars(n=331)
