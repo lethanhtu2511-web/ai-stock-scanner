@@ -34,6 +34,6 @@ jobs:
           name: strategy-v2-research-report
           path: |
             strategy_v2_output/
-            top5_walkforward_output/
+            top3_walkforward_output/
           if-no-files-found: warn
           retention-days: 30
