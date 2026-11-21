@@ -158,6 +158,23 @@ if result:
                 ]),
                 use_container_width=True, hide_index=True,
             )
+        sizing_details = portfolio.get("sizing_diagnostics", [])
+        if sizing_details:
+            st.caption("Chi tiết vì sao từng lệnh không đủ điều kiện vào danh mục:")
+            sizing_df = pd.DataFrame(sizing_details).rename(columns={
+                "symbol": "Mã", "strategy": "Chiến lược",
+                "entry_price": "Giá dự kiến", "stop_loss": "Stop-loss",
+                "risk_budget": "Ngân sách rủi ro",
+                "allocation_limit": "Hạn mức vốn/vị thế",
+                "risk_shares_before_lot": "Số cp theo rủi ro",
+                "allocation_shares_before_lot": "Số cp theo hạn mức vốn",
+                "minimum_lot_value": "Giá trị lô 100",
+                "risk_for_one_lot": "Rủi ro nếu mua lô 100",
+                "allocation_constraint_failed": "Vướng hạn mức vốn",
+                "risk_constraint_failed": "Vướng ngân sách rủi ro",
+                "reason": "Lý do chính",
+            })
+            st.dataframe(sizing_df, use_container_width=True, hide_index=True)
         st.caption(portfolio.get("note", ""))
     else:
         st.info("Chưa có dữ liệu mô phỏng danh mục.")
