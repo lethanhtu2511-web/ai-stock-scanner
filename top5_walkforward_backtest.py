@@ -21,6 +21,8 @@ LOOKBACK_SESSIONS = 250
 FORWARD_SESSIONS = 5
 HISTORY_SESSIONS = 1500
 MAX_SYMBOLS = 0  # 0 = all listed symbols returned by provider
+MAX_DAILY_PICKS = 3
+MIN_NORMALIZED_SCORE = 0.65
 
 
 def main():
@@ -95,6 +97,8 @@ def main():
             candidate = dict(candidates[0])
             candidate["holding_sessions"] = [2, FORWARD_SESSIONS]
             normalized_score = float(candidate["score"]) / max(1, float(candidate["max_score"]))
+            if normalized_score < MIN_NORMALIZED_SCORE:
+                continue
             # Rank quality first, then setup score and risk-adjusted exposure.
             rank_score = normalized_score * 100.0 + float(candidate.get("risk_factor", 1.0)) * 5.0
             ranked.append({
@@ -107,7 +111,7 @@ def main():
         ranked.sort(key=lambda x: (
             x["rank_score"], x["avg_turnover20"]
         ), reverse=True)
-        selected = ranked[:5]
+        selected = ranked[:MAX_DAILY_PICKS]
         returns = []
         selected_names = []
 
@@ -136,6 +140,7 @@ def main():
                 "entry_price": trade["actual_entry"] if trade else None,
                 "stop_loss": trade["initial_stop"] if trade else None,
                 "slippage_rate": item["candidate"]["risk_plan"].get("slippage_rate", 0.001),
+                "risk_factor": float(item["candidate"].get("risk_factor", 1.0)),
             })
 
         forward_market_return = (
