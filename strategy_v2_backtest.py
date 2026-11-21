@@ -132,14 +132,16 @@ def simulate(d, signal_i, candidate):
     for j in range(nxt, last + 1):
         b = d.iloc[j]
         # Trail from information available at the prior close only.
-        if j > nxt:
+        if j > nxt and first_target_hit:
+            # The strategy rules trail only the remaining position AFTER the
+            # first profit target has been reached. Before that, the original
+            # protective stop remains the sole exit threshold.
             prev_ind = ind.iloc[j - 1]
             if setup in ("PULLBACK", "SWING_BREAKOUT"):
                 trail = float(prev_ind.high22_prev - 3 * prev_ind.atr) if pd.notna(prev_ind.high22_prev) and pd.notna(prev_ind.atr) else stop
             else:
                 trail = float(prev_ind.ema21) if pd.notna(prev_ind.ema21) else stop
-            if first_target_hit:
-                trail = max(trail, raw_entry + 0.5 * risk)
+            trail = max(trail, raw_entry + 0.5 * risk)
             active_stop = max(stop, trail)
         else:
             active_stop = stop
