@@ -1,0 +1,47 @@
+name: Historical pattern discovery
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "pattern_research.py"
+      - "run_pattern_research.py"
+      - "tests/test_pattern_research.py"
+      - ".github/workflows/pattern-research.yml"
+      - "data_provider.py"
+      - "foreign_flow_provider.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pattern-research-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pattern-research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PATTERN_RESEARCH_MAX_SYMBOLS: "120"
+      PATTERN_RESEARCH_LOOKBACK: "420"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run pattern discovery
+        run: python run_pattern_research.py
+      - name: Upload research report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-stock-scanner-pattern-research
+          path: pattern_research_output/
+          if-no-files-found: warn
+          retention-days: 30
