@@ -97,6 +97,24 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertAlmostEqual(result["initial_stop"], 94.6, places=1)
         self.assertEqual(result["exit_reason"], "TIME_EXIT")
 
+    def test_reversal_stop_entry_is_not_cancelled_by_same_day_close(self):
+        d = make_bars(n=331)
+        d.loc[329, ["open", "high", "low", "close"]] = [100.0, 101.0, 99.0, 100.0]
+        # The next session crosses the stop-entry trigger intraday, then closes
+        # below the confirmation low. The fill must not be erased retrospectively.
+        d.loc[330, ["open", "high", "low", "close"]] = [100.0, 102.0, 98.0, 98.5]
+        candidate = {
+            "setup": "REVERSAL", "entry_type": "STOP_ABOVE_CONFIRMATION_HIGH",
+            "entry_trigger": 101.0, "confirmation_low": 99.0,
+            "cancel_if_close_below_confirmation_low": 99.0,
+            "atr": 1.0, "holding_sessions": [2, 2], "score": 4,
+            "risk_plan": {"slippage_rate": 0.001, "stop_loss": 98.5},
+        }
+        result = simulate(d, 329, candidate)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["actual_entry"], 101.0)
+        self.assertEqual(result["exit_reason"], "STOP")
+
     def test_backtest_rebuilds_pullback_stop_from_actual_fill(self):
         d = make_bars(n=331)
         d.loc[325:329, "low"] = 95.0
