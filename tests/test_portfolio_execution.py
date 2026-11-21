@@ -50,6 +50,23 @@ class CashPortfolioTests(unittest.TestCase):
         self.assertEqual(result["accepted_trades"], 1)
         self.assertEqual(result["skip_reasons"]["DUPLICATE_OPEN_SYMBOL"], 1)
 
+    def test_risk_factor_scales_position_risk_down(self):
+        base = simulate_cash_portfolio([self.trade()], initial_capital=10_000_000)
+        reduced = simulate_cash_portfolio(
+            [{**self.trade(), "risk_factor": 0.5}], initial_capital=10_000_000
+        )
+        base_qty = base["accepted_trade_details"][0]["quantity"]
+        reduced_qty = reduced["accepted_trade_details"][0]["quantity"]
+        self.assertLessEqual(reduced_qty, base_qty)
+        self.assertEqual(reduced["accepted_trade_details"][0]["risk_multiplier"], 0.5)
+
+    def test_invalid_risk_factor_is_rejected(self):
+        result = simulate_cash_portfolio(
+            [{**self.trade(), "risk_factor": 1.5}], initial_capital=10_000_000
+        )
+        self.assertEqual(result["accepted_trades"], 0)
+        self.assertEqual(result["skip_reasons"]["INVALID_RISK_FACTOR"], 1)
+
     def test_invalid_stop_is_rejected(self):
         result = simulate_cash_portfolio(
             [self.trade(stop=11000)], initial_capital=10_000_000
