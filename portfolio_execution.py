@@ -110,7 +110,7 @@ def simulate_cash_portfolio(
         equity_for_sizing = cash + sum(p["invested_cost"] for p in open_positions)
         # Conviction scales risk down in neutral regimes and higher-risk setups.
         try:
-            risk_multiplier = float(row.get("risk_factor", 1.0) or 1.0)
+            risk_multiplier = float(row["risk_factor"]) if "risk_factor" in row else 1.0
         except (TypeError, ValueError):
             skip("INVALID_RISK_FACTOR")
             continue
