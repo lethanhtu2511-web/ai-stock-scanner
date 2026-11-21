@@ -96,6 +96,10 @@ def _init_sqlite(db_path=DEFAULT_DB_PATH):
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
                 (key, value),
             )
+        # Remove the former hard-coded 10m default from existing local installs.
+        conn.execute(
+            "UPDATE settings SET value = 0 WHERE key = 'capital' AND value = 10000000"
+        )
 
 
 def _migrate_sqlite_to_supabase(client, db_path):
@@ -196,6 +200,12 @@ def get_settings(db_path=DEFAULT_DB_PATH):
             row["key"]: float(row["value"])
             for row in rows if row["key"] in DEFAULTS
         })
+        # Migrate the former implicit 10m default; preserve any other user-entered amount.
+        if result.get("capital") == 10_000_000:
+            client.table("settings").upsert(
+                {"key": "capital", "value": 0}, on_conflict="key"
+            ).execute()
+            result["capital"] = 0
         return result
     with _connect(db_path) as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
