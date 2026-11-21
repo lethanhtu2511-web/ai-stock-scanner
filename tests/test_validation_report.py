@@ -43,5 +43,20 @@ class ValidationReportTests(unittest.TestCase):
         self.assertIsNone(report["executable_trading"]["win_rate_pct"])
 
 
+    def test_portfolio_reports_why_board_lot_was_skipped(self):
+        trades = pd.DataFrame([{
+            "symbol": "HIGH", "strategy": "SWING",
+            "entry_date": "2026-01-02", "entry_price": 100_000,
+            "stop_loss": 90_000, "exit_date": "2026-01-06",
+            "net_return_pct": 5.0,
+        }])
+        result = simulate_portfolio(trades, initial_capital=10_000_000)
+        self.assertEqual(result["accepted_trades"], 0)
+        self.assertEqual(result["skipped_trades"], 1)
+        self.assertEqual(
+            result["skip_reasons"]["RISK_BUDGET_TOO_SMALL_FOR_BOARD_LOT"], 1
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
