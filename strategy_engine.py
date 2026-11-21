@@ -15,7 +15,8 @@ MIN_AVG_TURNOVER = 5_000_000_000
 MIN_MEDIAN_TURNOVER = 3_000_000_000
 
 # Điểm kỹ thuật, không phải xác suất thắng.
-BUY_SCORE = 78
+BUY_SCORE = 85
+MIN_BUY_CONFIRMATIONS = 4
 WAIT_SCORE = 60
 WATCH_SCORE = 40
 
@@ -525,8 +526,11 @@ def _make_result(
         blockers + liquidity_blockers
     ))
 
-    if not blockers and score >= BUY_SCORE:
+    if not blockers and score >= BUY_SCORE and len(reasons) >= MIN_BUY_CONFIRMATIONS:
         signal = "MUA"
+    elif not blockers and score >= BUY_SCORE:
+        signal = "CHỜ XÁC NHẬN"
+        penalties = list(penalties) + [f"Chỉ có {len(reasons)} xác nhận; cần tối thiểu {MIN_BUY_CONFIRMATIONS}"]
     elif score >= WAIT_SCORE:
         signal = "CHỜ XÁC NHẬN"
     elif score >= WATCH_SCORE:
