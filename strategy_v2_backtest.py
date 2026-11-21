@@ -198,6 +198,75 @@ def simulate(d, signal_i, candidate):
         "_exit_index": int(exit_i),
     }
 
+
+
+def point_in_time_features(d, signal_i, market_ind, market_i, trade):
+    r = d.iloc[signal_i]
+    close = float(r.close)
+    atr = float(r.atr) if pd.notna(r.atr) else 0.0
+    ema21 = float(r.ema21) if pd.notna(r.ema21) else None
+    out = {
+        "signal_rsi": float(r.rsi) if pd.notna(r.rsi) else None,
+        "signal_adx": float(r.adx) if pd.notna(r.adx) else None,
+        "signal_vol_ratio": float(r.vol_ratio) if pd.notna(r.vol_ratio) else None,
+        "signal_atr_pct": atr / close * 100 if close > 0 and atr > 0 else None,
+        "signal_close_to_ema21_atr": (close-ema21)/atr if ema21 is not None and atr > 0 else None,
+    }
+    for n in (20, 60):
+        if signal_i >= n and market_i >= n:
+            sr = close / float(d.iloc[signal_i-n].close) - 1
+            mr = float(market_ind.iloc[market_i].close) / float(market_ind.iloc[market_i-n].close) - 1
+            out[f"relative_strength_{n}s_pct"] = (sr-mr)*100
+        else:
+            out[f"relative_strength_{n}s_pct"] = None
+    entry, stop = float(trade.get("actual_entry") or 0), float(trade.get("initial_stop") or 0)
+    out["signal_entry_gap_pct"] = (entry/close-1)*100 if close > 0 and entry > 0 else None
+    out["signal_stop_distance_pct"] = (entry-stop)/entry*100 if entry > stop > 0 else None
+    return {k: round(v, 4) if v is not None else None for k, v in out.items()}
+
+
+def swing_filter_diagnostics(frame):
+    if frame.empty:
+        return {}
+    swing = frame[frame.setup == "SWING_BREAKOUT"].copy()
+    if swing.empty:
+        return {}
+    rs20 = pd.to_numeric(swing["relative_strength_20s_pct"], errors="coerce")
+    rs60 = pd.to_numeric(swing["relative_strength_60s_pct"], errors="coerce")
+    vol = pd.to_numeric(swing["signal_vol_ratio"], errors="coerce")
+    adx = pd.to_numeric(swing["signal_adx"], errors="coerce")
+    gap = pd.to_numeric(swing["signal_entry_gap_pct"], errors="coerce")
+    stop = pd.to_numeric(swing["signal_stop_distance_pct"], errors="coerce")
+    masks = {
+        "BASELINE": pd.Series(True, index=swing.index),
+        "RS20_POSITIVE": rs20 > 0,
+        "RS60_POSITIVE": rs60 > 0,
+        "RS20_AND_RS60_POSITIVE": (rs20 > 0) & (rs60 > 0),
+        "VOLUME_RATIO_GE_1_5": vol >= 1.5,
+        "ADX_GE_20": adx >= 20,
+        "RS20_AND_VOLUME_GE_1_5": (rs20 > 0) & (vol >= 1.5),
+        "RS20_AND_ADX_GE_20": (rs20 > 0) & (adx >= 20),
+        "RS20_AND_ENTRY_GAP_LE_0_5": (rs20 > 0) & (gap <= 0.5),
+        "RS20_AND_STOP_DISTANCE_LE_8": (rs20 > 0) & (stop <= 8),
+    }
+    def compact(sub):
+        v = pd.to_numeric(sub.net_return_pct, errors="coerce").dropna()
+        gains, losses = float(v[v > 0].sum()), abs(float(v[v < 0].sum()))
+        return {"trades": int(len(v)),
+                "win_rate_pct": round(float((v > 0).mean()*100), 2) if len(v) else None,
+                "average_net_return_pct": round(float(v.mean()), 3) if len(v) else None,
+                "median_net_return_pct": round(float(v.median()), 3) if len(v) else None,
+                "profit_factor": round(gains/losses, 3) if losses > 0 else None}
+    result = {}
+    for name, mask in masks.items():
+        subset = swing.loc[mask]
+        item = compact(subset)
+        item["by_oos_window"] = {str(int(w)): compact(g) for w, g in subset.groupby("oos_window")}
+        item["warning"] = "Descriptive subgroup only; not a validated trading rule."
+        result[name] = item
+    return result
+
+
 def main():
     listed=sorted(set(fetch_exchange_symbols()))
     symbols = listed if MAX_SYMBOLS == 0 else listed[:MAX_SYMBOLS]
@@ -276,7 +345,8 @@ def main():
             if trade:
                 next_free_index=trade.pop("_exit_index")+1
                 trade["oos_window"]=(i-TRAIN_SESSIONS)//TEST_SESSIONS+1
-                trades.append({"symbol":s,"setup":c["setup"],**trade})
+                features = point_in_time_features(d, i, market_ind, market_i, trade)
+                trades.append({"symbol":s,"setup":c["setup"],**trade,**features})
             if sessions_done % 100 == 0:
                 (progress/"progress.json").write_text(json.dumps({
                     "phase":"walk_forward","symbols_processed":symbol_number,
@@ -326,7 +396,9 @@ def main():
         "market_data_end":str(market.date.max().date()),"test_sessions_per_window":TEST_SESSIONS,"train_sessions":TRAIN_SESSIONS,
         "oos_windows": max([max(0,(len(histories[s])-TRAIN_SESSIONS)//TEST_SESSIONS) for s in chosen],default=0),
         "oos_window_performance":window_summary,
-        "diagnostics":diagnostics,"performance":summary,"data_errors":errors[:100],
+        "diagnostics":diagnostics,"performance":summary,
+        "swing_filter_diagnostics": swing_filter_diagnostics(frame),
+        "data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
                  "slippage": "0.10% high-liquidity; 0.25% low-liquidity"},
         "limitations":["Signals use current listing universe; delisted historical constituents are not reconstructed (survivorship bias remains).",
