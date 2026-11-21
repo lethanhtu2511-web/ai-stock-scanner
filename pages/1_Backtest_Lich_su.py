@@ -45,9 +45,14 @@ with st.sidebar:
             "PULLBACK": "Pullback 3–7 phiên",
         }[x],
     )
+    simulation_capital = st.number_input(
+        "Vốn dùng riêng cho mô phỏng danh mục (đồng; để 0 nếu chưa muốn mô phỏng)",
+        min_value=0, value=0, step=10_000_000,
+        help="Không có vốn mặc định. Nhập quy mô tài khoản muốn kiểm định; chỉ ảnh hưởng mô phỏng, không ảnh hưởng tín hiệu cổ phiếu."
+    )
     st.caption(
         "Chi phí mô phỏng: mua 0,15% · bán 0,15% · thuế bán 0,10% · "
-        "trượt giá 0,20% mỗi chiều."
+        "trượt giá 0,20% mỗi chiều. Rủi ro mặc định 2% mỗi lệnh, tối đa 5 vị thế."
     )
 
 run = st.button(
@@ -72,6 +77,7 @@ if run:
                 max_symbols=max_symbols,
                 strategy_filter=strategy,
                 progress_callback=update_progress,
+                initial_capital=simulation_capital if simulation_capital > 0 else None,
             )
         st.session_state["historical_backtest_result"] = result
         progress.progress(1.0, text="Hoàn tất")
@@ -132,8 +138,10 @@ if result:
         st.info("Không phát sinh giao dịch đạt điều kiện MUA trong giai đoạn kiểm định.")
 
     portfolio = result.get("portfolio", {})
-    st.subheader("Mô phỏng quản trị vốn 10 triệu đồng")
-    if portfolio:
+    st.subheader("Mô phỏng quản trị vốn theo quy mô tài khoản nhập vào")
+    if portfolio and portfolio.get("status") == "CAPITAL_NOT_CONFIGURED":
+        st.info("Chưa nhập vốn mô phỏng. Kết quả tín hiệu và hiệu suất từng giao dịch vẫn được đánh giá độc lập; không tự giả định vốn tài khoản.")
+    elif portfolio:
         p1, p2, p3, p4 = st.columns(4)
         p1.metric("Lệnh được nhận", portfolio.get("accepted_trades", 0))
         p2.metric("Lệnh bị bỏ qua", portfolio.get("skipped_trades", 0))
