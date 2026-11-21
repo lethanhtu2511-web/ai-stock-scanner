@@ -11,12 +11,28 @@ EXECUTABLE_STRATEGIES = {"SWING", "REVERSAL", "PULLBACK"}
 EARLY_STRATEGIES = {"EARLY_BREAKOUT", "PREPARE"}
 
 
+def _sample_assessment(count: int) -> dict:
+    """Prevent tiny historical samples from being mistaken for proven edge."""
+    if count == 0:
+        level, note = "NO_SAMPLE", "Không có giao dịch; chưa thể đánh giá."
+    elif count < 10:
+        level, note = "VERY_SMALL_SAMPLE", "Dưới 10 giao dịch: chỉ là quan sát ban đầu, không đủ kết luận."
+    elif count < 30:
+        level, note = "SMALL_SAMPLE", "Dưới 30 giao dịch: độ tin cậy thấp, không dùng để xác nhận lợi thế."
+    elif count < 100:
+        level, note = "LIMITED_SAMPLE", "30–99 giao dịch: cần thêm dữ liệu và kiểm định ngoài mẫu."
+    else:
+        level, note = "LARGER_BUT_NOT_PROVEN", "Từ 100 giao dịch: vẫn cần kiểm định nhiều giai đoạn và ngoài mẫu."
+    return {"sample_size_assessment": level, "sample_size_note": note}
+
+
 def _metrics(frame: pd.DataFrame) -> dict:
     if frame.empty:
         return {
             "trades": 0, "win_rate_pct": None, "avg_return_pct": None,
             "median_return_pct": None, "profit_factor": None,
             "best_return_pct": None, "worst_return_pct": None,
+            **_sample_assessment(0),
         }
     returns = pd.to_numeric(frame["net_return_pct"], errors="coerce").dropna()
     wins, losses = returns[returns > 0], returns[returns < 0]
@@ -29,6 +45,7 @@ def _metrics(frame: pd.DataFrame) -> dict:
         "profit_factor": round(float(wins.sum()) / gross_loss, 3) if gross_loss else None,
         "best_return_pct": round(float(returns.max()), 3),
         "worst_return_pct": round(float(returns.min()), 3),
+        **_sample_assessment(len(returns)),
     }
 
 
