@@ -14,6 +14,7 @@ import pandas as pd
 from data_provider import fetch_exchange_symbols, fetch_stock_history
 from strategy_v2 import _indicators, analyze_daily_setup, universe_check
 from strategy_v2_backtest import clean, simulate
+from portfolio_execution import simulate_cash_portfolio
 
 WINDOWS = 30
 LOOKBACK_SESSIONS = 250
@@ -132,6 +133,9 @@ def main():
                 "entry_date": trade["entry_date"] if trade else None,
                 "exit_date": trade["exit_date"] if trade else None,
                 "net_return_pct": net_return, "outcome": outcome,
+                "entry_price": trade["actual_entry"] if trade else None,
+                "stop_loss": trade["initial_stop"] if trade else None,
+                "slippage_rate": item["candidate"]["risk_plan"].get("slippage_rate", 0.001),
             })
 
         forward_market_return = (
@@ -159,6 +163,17 @@ def main():
     windows_df.to_csv(out / "30_window_summary.csv", index=False)
 
     valid = [x for x in all_selected_returns]
+    executable_rows = [r for r in selection_rows if r.get("net_return_pct") is not None]
+    portfolio = simulate_cash_portfolio(
+        executable_rows, initial_capital=10_000_000, risk_per_trade=0.02,
+        max_positions=5, max_position_pct=0.20, lot_size=100,
+    )
+    pd.DataFrame(portfolio.get("accepted_trade_details", [])).to_csv(
+        out / "portfolio_accepted_trades.csv", index=False
+    )
+    pd.DataFrame(portfolio.get("skipped_trade_details", [])).to_csv(
+        out / "portfolio_skipped_trades.csv", index=False
+    )
     overall = {
         "windows_requested": WINDOWS,
         "windows_completed": len(window_rows),
@@ -173,6 +188,7 @@ def main():
         "profit_factor": round(sum(x for x in valid if x > 0) /
                                abs(sum(x for x in valid if x < 0)), 3)
                          if any(x < 0 for x in valid) else None,
+        "cash_portfolio_simulation": portfolio,
         "method": {
             "lookback": "250 completed trading sessions for indicators/eligibility",
             "checkpoints": "30 dates spaced five trading sessions apart",
@@ -184,8 +200,10 @@ def main():
         "limitations": [
             "Current listed universe is used; historical delisted constituents are not reconstructed.",
             "Selection is point-in-time on each checkpoint, but the universe listing itself is current.",
-            "At most five stocks are selected; fewer are selected when fewer valid candidates exist.",
-            "This is a research simulation, not a live portfolio or guaranteed return.",
+            "At most five candidates are selected per checkpoint; portfolio simulation reserves cash and prevents duplicate open tickers.",
+            "Cash portfolio uses 10m VND, 2% risk per trade, 20% maximum allocation per position, five concurrent positions and 100-share board lots.",
+            "Portfolio drawdown is realized-only; daily mark-to-market drawdown requires a daily equity curve and is not claimed here.",
+            "This is a research simulation, not a live portfolio or guaranteed return; no production BUY rules are changed.",
         ],
     }
     (out / "report.json").write_text(
