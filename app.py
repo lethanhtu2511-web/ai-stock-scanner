@@ -23,6 +23,7 @@ from portfolio import (
     get_cash_summary,
     get_settings,
     save_settings,
+    get_storage_backend,
 )
 
 
@@ -807,6 +808,15 @@ def show_portfolio():
     )
 
     settings = get_settings(DB_PATH)
+    storage_backend = get_storage_backend()
+    if storage_backend == "SQLITE":
+        st.warning(
+            "Danh mục đang lưu bằng SQLite tại môi trường chạy hiện tại. "
+            "Nếu ứng dụng chạy trên nền tảng cloud có ổ đĩa tạm thời, dữ liệu có thể mất khi khởi động lại/deploy. "
+            "Chỉ dùng giao dịch thật sau khi đã xác nhận cơ chế lưu trữ bền vững hoặc sao lưu dữ liệu."
+        )
+    else:
+        st.success("Danh mục đang đồng bộ qua Supabase.")
     positions = get_positions(DB_PATH)
     latest_rows = current_strategy_rows(get_latest_scan(DB_PATH))
 
