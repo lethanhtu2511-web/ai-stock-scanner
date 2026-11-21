@@ -22,9 +22,9 @@ permissions:
 jobs:
   historical-backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
-      SCANNER_VALIDATION_MAX_SYMBOLS: "120"
+      SCANNER_VALIDATION_MAX_SYMBOLS: "250"
       SCANNER_VALIDATION_CAPITAL: "10000000"
     steps:
       - uses: actions/checkout@v4
