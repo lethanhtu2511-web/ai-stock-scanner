@@ -118,3 +118,12 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - Outputs include `portfolio_accepted_trades.csv`, `portfolio_skipped_trades.csv` and `cash_portfolio_simulation` in `report.json`.
 - The portfolio drawdown is realized-only because this trade-level report does not contain daily mark-to-market equity. It must not be interpreted as intraday or floating drawdown.
 - This is research-only. It does not alter production BUY rules, place orders, or establish that any strategy has positive expected returns.
+
+
+## Conservative top-3 adaptive research (2026-11-21)
+
+- Market-wide discovery remains enabled, but each checkpoint can select at most three highest-quality candidates; no candidate is forced.
+- Candidates below a normalized setup score of 0.65 are excluded before ranking.
+- Portfolio sizing applies each candidate's regime/setup risk_factor to the base per-trade risk budget, reducing exposure for lower-conviction setups.
+- This adaptive selection is research-only and does not change production scanner BUY/WAIT signals or permit automatic orders.
+- A successful code/test run is not evidence of a profitable strategy; require a new out-of-sample report before considering promotion.
