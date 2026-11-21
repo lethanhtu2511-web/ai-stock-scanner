@@ -25,6 +25,78 @@ MAX_DAILY_PICKS = 3
 MIN_NORMALIZED_SCORE = 0.65
 
 
+
+def candidate_diagnostics(past: pd.DataFrame, market_past: pd.DataFrame,
+                          candidate: dict, trade: dict | None) -> dict:
+    """Capture point-in-time signal features for post-trade research only.
+
+    These fields are deliberately excluded from rank_score so this diagnostic
+    pass cannot silently change the strategy or fit thresholds to this sample.
+    """
+    r = past.iloc[-1]
+    out = {}
+    for field in ("rsi", "adx", "vol_ratio", "avg_turnover20", "atr"):
+        value = r.get(field)
+        out[field] = float(value) if pd.notna(value) else None
+    close = float(r.close)
+    atr = float(r.atr) if pd.notna(r.atr) else 0.0
+    ema21 = float(r.ema21) if pd.notna(r.ema21) else None
+    out["close_to_ema21_atr"] = (
+        round((close - ema21) / atr, 4) if ema21 is not None and atr > 0 else None
+    )
+    out["atr_pct"] = round(atr / close * 100, 4) if close > 0 and atr > 0 else None
+
+    for n in (20, 60):
+        if len(past) > n and len(market_past) > n:
+            stock_ret = float(close / float(past.iloc[-n-1].close) - 1)
+            market_ret = float(
+                market_past.iloc[-1].close / market_past.iloc[-n-1].close - 1
+            )
+            out[f"relative_strength_{n}s_pct"] = round(
+                (stock_ret - market_ret) * 100, 4
+            )
+        else:
+            out[f"relative_strength_{n}s_pct"] = None
+
+    entry = trade.get("actual_entry") if trade else None
+    stop = trade.get("initial_stop") if trade else None
+    out["stop_distance_pct"] = (
+        round((float(entry) - float(stop)) / float(entry) * 100, 4)
+        if entry and stop and float(entry) > 0 else None
+    )
+    out["entry_gap_pct"] = (
+        round((float(entry) / close - 1) * 100, 4)
+        if entry and close > 0 else None
+    )
+    out["setup"] = candidate.get("setup")
+    return out
+
+
+def feature_outcome_diagnostics(frame: pd.DataFrame) -> dict:
+    """Descriptive winner/loser feature medians; not a fitted scoring model."""
+    fields = [
+        "rsi", "adx", "vol_ratio", "close_to_ema21_atr", "atr_pct",
+        "relative_strength_20s_pct", "relative_strength_60s_pct",
+        "stop_distance_pct", "entry_gap_pct",
+    ]
+    result = {}
+    if frame.empty or "net_return_pct" not in frame:
+        return result
+    for label, subset in (
+        ("winners", frame[frame.net_return_pct > 0]),
+        ("losers", frame[frame.net_return_pct <= 0]),
+    ):
+        result[label] = {
+            "trades": int(len(subset)),
+            "feature_medians": {
+                field: round(float(pd.to_numeric(subset[field], errors="coerce").median()), 4)
+                if field in subset and pd.to_numeric(subset[field], errors="coerce").notna().any()
+                else None
+                for field in fields
+            },
+        }
+    return result
+
 def main():
     out = Path("top3_walkforward_output")
     out.mkdir(exist_ok=True)
@@ -126,6 +198,11 @@ def main():
                 returns.append(net_return)
                 all_selected_returns.append(net_return)
             selected_names.append(item["symbol"])
+            features = candidate_diagnostics(
+                histories[item["symbol"]].iloc[:item["index"] + 1],
+                market_ind.iloc[:market_i + 1],
+                item["candidate"], trade,
+            )
             selection_rows.append({
                 "window": window_no, "asof_date": str(asof_date.date()),
                 "rank": rank, "symbol": item["symbol"],
@@ -142,6 +219,7 @@ def main():
                 "slippage_rate": item["candidate"]["risk_plan"].get("slippage_rate", 0.001),
                 "risk_factor": float(item["candidate"].get("risk_factor", 1.0)),
                 "normalized_score": round(item["normalized_score"], 4),
+                **features,
             })
 
         forward_market_return = (
@@ -219,6 +297,7 @@ def main():
                          if any(x < 0 for x in valid) else None,
         "diagnostics": {
             "by_setup": performance_by(executed_df, "setup"),
+            "winner_loser_feature_medians": feature_outcome_diagnostics(executed_df),
             "by_exit_reason": performance_by(executed_df, "outcome"),
             "by_market_regime": performance_by(executed_df, "market_regime"),
             "by_normalized_score": performance_by(
