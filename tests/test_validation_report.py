@@ -19,6 +19,7 @@ class ValidationReportTests(unittest.TestCase):
         self.assertEqual(report["executable_trading"]["trades"], 0)
         self.assertEqual(report["executable_trading"]["status"], "NO_CONFIRMED_BUY_SIGNALS")
         self.assertEqual(report["early_warning_research"]["trades"], 2)
+        self.assertEqual(report["executable_trading"]["portfolio_simulation"]["status"], "CAPITAL_NOT_CONFIGURED")
 
     def test_portfolio_simulation_requires_stop_and_respects_lot_size(self):
         trades = pd.DataFrame([
