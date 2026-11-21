@@ -1017,12 +1017,10 @@ def _cap_buy_recommendations(results, max_buy=3):
         reverse=True,
     )
     selected_symbols = set()
-    selected_ids = set()
     for row in buys:
         symbol = str(row.get("symbol") or "").strip().upper()
         if symbol and symbol not in selected_symbols and len(selected_symbols) < max(0, int(max_buy)):
             selected_symbols.add(symbol)
-            selected_ids.add(id(row))
             row["recommendation_rank"] = len(selected_symbols)
         else:
             row["recommendation_rank"] = None
