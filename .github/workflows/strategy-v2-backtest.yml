@@ -5,6 +5,7 @@ on:
     paths:
       - "strategy_v2.py"
       - "strategy_v2_backtest.py"
+      - "top5_walkforward_backtest.py"
       - ".github/workflows/strategy-v2-backtest.yml"
   workflow_dispatch:
 permissions:
@@ -25,10 +26,13 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m compileall -q strategy_v2.py strategy_v2_backtest.py
       - run: python strategy_v2_backtest.py
+      - run: python top5_walkforward_backtest.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: strategy-v2-research-report
-          path: strategy_v2_output/
+          path: |
+            strategy_v2_output/
+            top5_walkforward_output/
           if-no-files-found: warn
           retention-days: 30
