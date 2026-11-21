@@ -32,11 +32,17 @@ def _metrics(frame: pd.DataFrame) -> dict:
     }
 
 
-def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000,
+def simulate_portfolio(trades: pd.DataFrame, initial_capital: float | None = None,
                        risk_per_trade: float = 0.02, max_positions: int = 5,
                        lot_size: int = 100) -> dict:
     """Long-only cash portfolio; 2% equity risk and 20% max allocation per slot."""
-    if initial_capital <= 0 or not 0 < risk_per_trade <= 0.05 or max_positions < 1:
+    if initial_capital is None or float(initial_capital) <= 0:
+        return {"status": "CAPITAL_NOT_CONFIGURED", "initial_capital": None,
+                "ending_equity": None, "return_pct": None,
+                "accepted_trades": 0, "skipped_trades": 0,
+                "max_positions": max_positions,
+                "note": "Chưa nhập vốn kiểm định; không giả định quy mô tài khoản."}
+    if not 0 < risk_per_trade <= 0.05 or max_positions < 1:
         raise ValueError("Tham số mô phỏng danh mục không hợp lệ.")
     if trades.empty:
         return {"status": "NO_EXECUTABLE_SIGNALS", "initial_capital": initial_capital,
@@ -156,13 +162,13 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
     }
 
 
-def build_validation_report(trades: pd.DataFrame) -> dict:
+def build_validation_report(trades: pd.DataFrame, initial_capital: float | None = None) -> dict:
     if trades.empty:
         empty = trades.copy()
         return {
             "executable_trading": {
                 **_metrics(empty), "status": "NO_CONFIRMED_BUY_SIGNALS",
-                "portfolio_simulation": simulate_portfolio(empty),
+                "portfolio_simulation": simulate_portfolio(empty, initial_capital=initial_capital),
             },
             "early_warning_research": {**_metrics(empty), "status": "NO_EARLY_SETUPS"},
             "interpretation": "Không có dữ liệu giao dịch để kết luận hiệu quả.",
@@ -175,7 +181,7 @@ def build_validation_report(trades: pd.DataFrame) -> dict:
     actual_metrics = _metrics(executable)
     early_metrics = _metrics(early)
     actual_metrics["status"] = "MEASURED" if not executable.empty else "NO_CONFIRMED_BUY_SIGNALS"
-    actual_metrics["portfolio_simulation"] = simulate_portfolio(executable)
+    actual_metrics["portfolio_simulation"] = simulate_portfolio(executable, initial_capital=initial_capital)
     early_metrics["status"] = "RESEARCH_ONLY_NOT_BUY_SIGNALS" if not early.empty else "NO_EARLY_SETUPS"
     return {
         "executable_trading": actual_metrics,
