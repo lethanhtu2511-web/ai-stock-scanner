@@ -480,6 +480,22 @@ def auto_refresh_panel(show_details=True):
         return
 
     df = pd.DataFrame(latest)
+    breadth = next((row.get("market_breadth") for row in latest if isinstance(row.get("market_breadth"), dict)), None)
+    if breadth and breadth.get("status") == "AVAILABLE":
+        st.subheader("Độ rộng thị trường trong lượt quét")
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Mã trong mẫu", breadth.get("sample_size", 0))
+        b2.metric("Trên EMA20", f"{number(breadth.get('above_ema20_pct'))}%")
+        b3.metric("Trên EMA50", f"{number(breadth.get('above_ema50_pct'))}%")
+        b4.metric("Tăng / giảm", f"{breadth.get('advancing', 0)} / {breadth.get('declining', 0)}")
+        st.caption(
+            f"Bối cảnh độ rộng: {breadth.get('regime', 'UNKNOWN')} · "
+            f"Lợi suất bình quân 5 phiên: {number(breadth.get('average_5d_return_pct'))}% · "
+            f"{breadth.get('note', '')}"
+        )
+    elif breadth:
+        st.info("Chưa đủ dữ liệu D1 để tính độ rộng thị trường trong lượt quét này.")
+
     st.subheader("Trạng thái dữ liệu")
 
     status_source = (
