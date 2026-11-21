@@ -195,7 +195,8 @@ def analyze_patterns(events, min_bucket_samples=30):
                     continue
                 relationships.append({
                     "strategy": strategy, "feature": feature,
-                    "bucket": str(bucket), **_metrics(group),
+                    "bucket": str(bucket), "bucket_low": float(bucket.left),
+                    "bucket_high": float(bucket.right), **_metrics(group),
                 })
         # Test a limited set of intuitive, predeclared combinations to avoid
         # unconstrained data-mining across hundreds of arbitrary combinations.
@@ -222,4 +223,70 @@ def analyze_patterns(events, min_bucket_samples=30):
             "Các ngày tín hiệu liền kề có thể chồng lấn cửa sổ lợi nhuận; số mẫu không đồng nghĩa số giao dịch độc lập.",
             "Chỉ đưa điều kiện vào chiến lược sau khi xác nhận trên giai đoạn ngoài mẫu và nhiều trạng thái thị trường.",
         ],
+    }
+
+
+
+def walk_forward_validation(events, min_train_samples=30, min_test_samples=15):
+    """Discover feature ranges on earlier dates and validate unchanged ranges later."""
+    if events is None or events.empty:
+        return {"status": "NO_DATA", "discovery_cutoff": None, "discovery": {},
+                "holdout_by_strategy": {}, "pattern_holdout": []}
+    d = events.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    d["exit_date"] = pd.to_datetime(d["exit_date"], errors="coerce")
+    dates = sorted(d["date"].dropna().unique())
+    if len(dates) < 40:
+        return {"status": "INSUFFICIENT_DATE_RANGE", "unique_dates": len(dates)}
+    split_idx = max(1, min(len(dates) - 1, int(len(dates) * 0.70)))
+    cutoff = pd.Timestamp(dates[split_idx])
+    train = d[(d["date"] < cutoff) & (d["exit_date"] < cutoff)].copy()
+    test = d[d["date"] >= cutoff].copy()
+    if len(train) < min_train_samples or len(test) < min_test_samples:
+        return {"status": "INSUFFICIENT_SPLIT_SAMPLES", "discovery_cutoff": cutoff.strftime("%Y-%m-%d"),
+                "training_observations": len(train), "holdout_observations": len(test)}
+    discovery = analyze_patterns(train, min_bucket_samples=min_train_samples)
+    holdout_summary = {strategy: _metrics(group) for strategy, group in test.groupby("strategy")}
+    validated = []
+    for rule in discovery.get("feature_relationships", []):
+        feature = rule["feature"]
+        values = pd.to_numeric(test[feature], errors="coerce")
+        mask = (test["strategy"] == rule["strategy"]) & values.between(
+            rule["bucket_low"], rule["bucket_high"], inclusive="both"
+        )
+        group = test.loc[mask]
+        if len(group) >= min_test_samples:
+            validated.append({
+                "strategy": rule["strategy"], "type": "feature_bucket",
+                "feature": feature, "discovery_bucket": rule["bucket"],
+                "training_samples": rule["samples"], "holdout": _metrics(group),
+            })
+    masks = {
+        "xu_huong_tang": lambda f: f["above_ema20"] & f["ema20_above_ema50"],
+        "xu_huong_tang_va_volume": lambda f: f["above_ema20"] & f["ema20_above_ema50"] & f["volume_expansion"],
+        "xu_huong_tang_va_khoi_ngoai_mua": lambda f: f["above_ema20"] & f["ema20_above_ema50"] & f["foreign_net_buy_5d"],
+        "volume_expansion_va_close_manh": lambda f: f["volume_expansion"] & (f["close_location"] >= 0.7),
+        "market_bullish_va_trend_bullish": lambda f: (f["market_regime"] == "BULLISH") & f["above_ema20"] & f["ema20_above_ema50"],
+    }
+    for rule in discovery.get("confluence_patterns", []):
+        mask_fn = masks.get(rule["pattern"])
+        if mask_fn is None:
+            continue
+        group = test.loc[(test["strategy"] == rule["strategy"]) & mask_fn(test)]
+        if len(group) >= min_test_samples:
+            validated.append({
+                "strategy": rule["strategy"], "type": "confluence",
+                "pattern": rule["pattern"], "training_samples": rule["samples"],
+                "holdout": _metrics(group),
+            })
+    validated.sort(key=lambda x: (x["strategy"], -(x["holdout"]["avg_net_return_pct"] or -999)))
+    return {
+        "status": "HOLDOUT_EVALUATED",
+        "discovery_cutoff": cutoff.strftime("%Y-%m-%d"),
+        "training_observations": len(train), "holdout_observations": len(test),
+        "training_date_range": [train["date"].min().strftime("%Y-%m-%d"), train["date"].max().strftime("%Y-%m-%d")],
+        "holdout_date_range": [test["date"].min().strftime("%Y-%m-%d"), test["date"].max().strftime("%Y-%m-%d")],
+        "discovery": discovery, "holdout_by_strategy": holdout_summary,
+        "pattern_holdout": validated,
+        "note": "Ngưỡng được phát hiện ở giai đoạn đầu và giữ nguyên khi đo giai đoạn sau; sự kiện huấn luyện có ngày thoát chạm/cắt qua mốc chia bị loại. Đây vẫn là nghiên cứu lịch sử, chưa chứng minh lợi thế bền vững.",
     }
