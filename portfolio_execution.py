@@ -108,7 +108,16 @@ def simulate_cash_portfolio(
             continue
 
         equity_for_sizing = cash + sum(p["invested_cost"] for p in open_positions)
-        risk_budget = equity_for_sizing * risk_per_trade
+        # Conviction scales risk down in neutral regimes and higher-risk setups.
+        try:
+            risk_multiplier = float(row.get("risk_factor", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            skip("INVALID_RISK_FACTOR")
+            continue
+        if not (0 < risk_multiplier <= 1.0):
+            skip("INVALID_RISK_FACTOR")
+            continue
+        risk_budget = equity_for_sizing * risk_per_trade * risk_multiplier
         allocation_cap = min(equity_for_sizing * max_position_pct, cash)
         shares_by_risk = floor(risk_budget / risk_per_share)
         shares_by_cash = floor(allocation_cap / buy_cost_per_share)
@@ -132,6 +141,7 @@ def simulate_cash_portfolio(
             "invested_cost": invested_cost, "net_pnl": net_pnl,
             "net_return_pct": round(net_return * 100, 3),
             "risk_budget": round(risk_budget, 2),
+            "risk_multiplier": round(risk_multiplier, 3),
             "estimated_initial_risk": round(open_risk, 2),
             "slippage_rate": slip,
         }
