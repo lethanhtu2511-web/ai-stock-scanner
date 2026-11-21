@@ -151,6 +151,7 @@ def run_historical_backtest(
     strategy_filter: str = "ALL",
     costs: dict | None = None,
     progress_callback=None,
+    initial_capital: float | None = None,
 ) -> dict:
     """Run a chronological walk-forward test on the latest available D1 history."""
     costs_used = {**DEFAULT_COSTS, **(costs or {})}
@@ -375,7 +376,7 @@ def run_historical_backtest(
         for strategy, group in trades_df.groupby("strategy"):
             by_strategy.append({"strategy": strategy, **_summarize(group)})
     executable_trades = trades_df[trades_df["strategy"].isin(STRATEGY_HORIZONS)] if not trades_df.empty else trades_df
-    validation = build_validation_report(executable_trades)
+    validation = build_validation_report(executable_trades, initial_capital=initial_capital)
     portfolio = validation["executable_trading"]["portfolio_simulation"]
     return {
         "summary": _summarize(trades_df),
