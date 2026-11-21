@@ -30,6 +30,8 @@ def _safe_float(value):
 
 
 def _prepare_ohlcv(frame):
+    if frame.attrs.get("_pattern_research_clean"):
+        return frame
     d = frame.copy()
     d.columns = [str(c).strip().lower() for c in d.columns]
     if "date" not in d.columns and "datetime" in d.columns:
