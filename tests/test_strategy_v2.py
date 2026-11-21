@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from strategy_v2_backtest import simulate
-from top5_walkforward_backtest import candidate_diagnostics
+from top5_walkforward_backtest import candidate_diagnostics, select_candidates
 
 from strategy_v2 import (
     analyze_daily_setup,
@@ -30,6 +30,22 @@ def make_bars(n=320, start=12000.0, drift=0.0008, volume=900000):
 
 
 class StrategyV2Tests(unittest.TestCase):
+    def test_select_candidates_can_run_swing_only_without_changing_baseline(self):
+        ranked = [
+            {"symbol": "AAA", "rank_score": 99, "candidate": {"setup": "PULLBACK"}},
+            {"symbol": "BBB", "rank_score": 98, "candidate": {"setup": "SWING_BREAKOUT"}},
+            {"symbol": "CCC", "rank_score": 97, "candidate": {"setup": "SWING_BREAKOUT"}},
+            {"symbol": "DDD", "rank_score": 96, "candidate": {"setup": "REVERSAL"}},
+            {"symbol": "EEE", "rank_score": 95, "candidate": {"setup": "SWING_BREAKOUT"}},
+            {"symbol": "FFF", "rank_score": 94, "candidate": {"setup": "SWING_BREAKOUT"}},
+        ]
+        baseline = select_candidates(ranked)
+        swing_only = select_candidates(ranked, setup="SWING_BREAKOUT")
+        self.assertEqual([x["symbol"] for x in baseline], ["AAA", "BBB", "CCC"])
+        self.assertEqual([x["symbol"] for x in swing_only], ["BBB", "CCC", "EEE"])
+        self.assertTrue(all(x["candidate"]["setup"] == "SWING_BREAKOUT" for x in swing_only))
+        self.assertLessEqual(len(swing_only), 3)
+
     def test_market_regime_bullish(self):
         market = make_bars(drift=0.001)
         self.assertIn(market_regime(market), {"BULLISH", "NEUTRAL"})
