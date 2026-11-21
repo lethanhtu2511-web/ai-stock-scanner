@@ -303,6 +303,35 @@ def show_signal_detail(row):
         f"{STRATEGY_NAMES.get(row.get('strategy'), row.get('strategy'))}"
     )
 
+    candle = row.get("candlestick_analysis")
+    if isinstance(candle, dict):
+        st.markdown("**Phân tích mô hình nến D1**")
+        patterns = candle.get("patterns") or []
+        if patterns:
+            st.write("Mô hình nhận diện: " + ", ".join(str(x) for x in patterns))
+        else:
+            st.write("Chưa phát hiện mô hình nến nổi bật.")
+        bullish = candle.get("confirmed_bullish") or []
+        bearish = candle.get("confirmed_bearish") or []
+        neutral = candle.get("neutral") or []
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Nến tăng xác nhận", len(bullish))
+        c2.metric("Nến giảm xác nhận", len(bearish))
+        c3.metric("Nến trung tính", len(neutral))
+        context = candle.get("context") or {}
+        st.caption(
+            f"Hỗ trợ gần: {'Có' if context.get('near_support') else 'Không'} · "
+            f"Kháng cự gần: {'Có' if context.get('near_resistance') else 'Không'} · "
+            f"KL/TB20: {number(context.get('volume_ratio'))} · "
+            f"Biến động trước đó 10 phiên: {number(context.get('prior_10d_return_pct'))}%"
+        )
+        if bullish:
+            st.success("Tín hiệu nến tăng: " + ", ".join(bullish))
+        if bearish:
+            st.warning("Cảnh báo nến giảm: " + ", ".join(bearish))
+        for note in candle.get("notes") or []:
+            st.write("- " + str(note))
+
     if row.get("foreign_flow_status") == "AVAILABLE":
         st.write("**Khối ngoại:**")
         st.write(
