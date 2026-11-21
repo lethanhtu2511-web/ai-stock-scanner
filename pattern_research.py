@@ -182,6 +182,8 @@ def analyze_patterns(events, min_bucket_samples=30):
     for strategy, frame in events.groupby("strategy"):
         output[strategy] = _metrics(frame)
         for feature in NUMERIC_FEATURES:
+            if feature not in frame.columns:
+                continue
             valid = frame[[feature, "net_return_pct", "quality_win", "mfe_pct", "mae_pct"]].dropna()
             if len(valid) < min_bucket_samples * 3 or valid[feature].nunique() < 4:
                 continue
