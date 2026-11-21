@@ -72,12 +72,11 @@ def simulate(d, signal_i, candidate):
         trigger = float(candidate["entry_trigger"])
         if float(row.high) < trigger:
             return None
-        # A stop-entry order that is triggered intraday cannot be retroactively
-        # cancelled using that session's closing price. Only invalidate it
-        # before entry when the session opens below the structural confirmation
-        # low; once triggered, the normal protective-stop logic handles risk.
-        if float(row.open) < float(candidate["cancel_if_close_below_confirmation_low"]):
-            return None
+        # Daily OHLC data cannot establish whether the low occurred before
+        # or after an intraday stop-entry trigger. If the high reaches the
+        # trigger, count the fill; the stop-first check in the exit loop is the
+        # conservative treatment when the same candle also touches the stop.
+        # Never use the same session's closing price to erase an intraday fill.
         raw_entry = max(float(row.open), trigger)
 
     # Rebuild protective stop from actual fill, not signal-close reference.
