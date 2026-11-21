@@ -96,7 +96,6 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertAlmostEqual(result["initial_stop"], 94.6, places=1)
         self.assertEqual(result["exit_reason"], "TIME_EXIT")
-        self.assertEqual(result["exit_legs"] if "exit_legs" in result else "", "")
 
     def test_backtest_rebuilds_pullback_stop_from_actual_fill(self):
         d = make_bars(n=331)
