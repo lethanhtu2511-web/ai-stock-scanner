@@ -47,6 +47,7 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
     open_positions = []
     equity = float(initial_capital)
     accepted = skipped = 0
+    skip_reasons = defaultdict(int)
     peak = equity
     max_drawdown = 0.0
     slot_cap = 1.0 / max_positions
@@ -64,8 +65,13 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
         open_positions = still_open
 
         symbol = str(row["symbol"]).upper()
-        if len(open_positions) >= max_positions or any(p["symbol"] == symbol for p in open_positions):
+        if len(open_positions) >= max_positions:
             skipped += 1
+            skip_reasons["MAX_POSITIONS"] += 1
+            continue
+        if any(p["symbol"] == symbol for p in open_positions):
+            skipped += 1
+            skip_reasons["DUPLICATE_SYMBOL_POSITION"] += 1
             continue
 
         try:
@@ -74,9 +80,11 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
             ret = float(row.get("net_return_pct")) / 100
         except (TypeError, ValueError):
             skipped += 1
+            skip_reasons["MISSING_OR_INVALID_FIELDS"] += 1
             continue
         if not all(math.isfinite(value) for value in (entry, stop, ret)) or entry <= 0 or stop <= 0 or stop >= entry:
             skipped += 1
+            skip_reasons["INVALID_STOP_OR_PRICE"] += 1
             continue
 
         risk_per_share = entry - stop
@@ -88,6 +96,12 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
         shares = (shares // lot_size) * lot_size
         if shares < lot_size:
             skipped += 1
+            if shares_by_value < lot_size:
+                skip_reasons["INSUFFICIENT_ALLOCATION_FOR_BOARD_LOT"] += 1
+            elif shares_by_risk < lot_size:
+                skip_reasons["RISK_BUDGET_TOO_SMALL_FOR_BOARD_LOT"] += 1
+            else:
+                skip_reasons["INSUFFICIENT_SHARES_AFTER_ROUNDING"] += 1
             continue
 
         invested = shares * entry
@@ -109,6 +123,7 @@ def simulate_portfolio(trades: pd.DataFrame, initial_capital: float = 10_000_000
         "return_pct": round((equity / initial_capital - 1) * 100, 3),
         "accepted_trades": accepted,
         "skipped_trades": skipped,
+        "skip_reasons": dict(skip_reasons),
         "max_positions": max_positions,
         "risk_per_trade_pct": round(risk_per_trade * 100, 2),
         "max_allocation_per_position_pct": round(slot_cap * 100, 2),
