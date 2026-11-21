@@ -1005,7 +1005,7 @@ def analyze_stock(
 
 
 def _cap_buy_recommendations(results, max_buy=3):
-    """Keep only the strongest BUY rows; downgrade all other BUY rows."""
+    """Keep one BUY per ticker and at most max_buy distinct tickers."""
     buys = [row for row in results if row.get("signal") == "BUY"]
     buys.sort(
         key=lambda row: (
@@ -1016,20 +1016,25 @@ def _cap_buy_recommendations(results, max_buy=3):
         ),
         reverse=True,
     )
-    keep = {id(row) for row in buys[:max(0, int(max_buy))]}
-    for rank, row in enumerate(buys, 1):
-        if id(row) in keep:
-            row["recommendation_rank"] = rank
-            continue
-        row["signal"] = "WAIT"
-        row["recommendation_rank"] = None
-        blockers = list(row.get("blockers") or [])
-        blockers.append(f"Ngoài top {max_buy} tín hiệu tốt nhất toàn thị trường; không khuyến nghị mua")
-        row["blockers"] = list(dict.fromkeys(blockers))
-        row["reason"] = "Không nằm trong nhóm khuyến nghị mua ưu tiên; tiếp tục theo dõi."
+    selected_symbols = set()
+    selected_ids = set()
+    for row in buys:
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol and symbol not in selected_symbols and len(selected_symbols) < max(0, int(max_buy)):
+            selected_symbols.add(symbol)
+            selected_ids.add(id(row))
+            row["recommendation_rank"] = len(selected_symbols)
+        else:
+            row["recommendation_rank"] = None
+            row["signal"] = "WAIT"
+            blockers = list(row.get("blockers") or [])
+            if symbol in selected_symbols:
+                blockers.append("Đã có chiến lược tốt hơn cho cùng mã; chỉ giữ một khuyến nghị")
+            else:
+                blockers.append(f"Ngoài top {max_buy} mã tốt nhất toàn thị trường; không khuyến nghị mua")
+            row["blockers"] = list(dict.fromkeys(blockers))
+            row["reason"] = "Không nằm trong nhóm khuyến nghị mua ưu tiên; tiếp tục theo dõi."
     return results
-
-
 
 # =====================================================
 # SCAN MARKET
