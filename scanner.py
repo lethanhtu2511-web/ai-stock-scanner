@@ -11,6 +11,7 @@ from strategy_engine import (
 from early_signal_engine import evaluate_early_signal
 from foreign_flow_provider import summarize_foreign_flow
 from adaptive_strategy import adaptive_assessment, classify_market_regime
+from market_intelligence import calculate_market_breadth
 
 # =====================================================
 # AI STOCK SCANNER 3.0 - D1 + VERIFIED REALTIME
@@ -1051,6 +1052,7 @@ def scan_market(
 
     results = []
     errors = []
+    histories_for_breadth = {}
 
     insufficient = 0
     d1_errors = 0
@@ -1063,6 +1065,7 @@ def scan_market(
                 length=260,
             )
 
+            histories_for_breadth[symbol] = history.copy()
             foreign_flow = None
             try:
                 from foreign_flow_provider import fetch_foreign_flow
@@ -1110,6 +1113,12 @@ def scan_market(
                     index,
                     len(symbols),
                 )
+
+    # Equal-weight breadth from successfully fetched D1 histories.
+    # Context only; it never overrides a symbol-level BUY/WAIT decision.
+    market_breadth = calculate_market_breadth(histories_for_breadth)
+    for item in results:
+        item["market_breadth"] = market_breadth
 
     priority = {
         "BUY": 5,
@@ -1212,6 +1221,7 @@ def scan_market(
         "strategy_counts": strategy_counts,
 
         "market_data_available": market_df is not None,
+        "market_breadth": market_breadth,
         "market_data_error": market_data_error,
 
         "errors": errors,
