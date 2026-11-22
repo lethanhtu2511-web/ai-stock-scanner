@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from strategy_v2_backtest import simulate, point_in_time_features, swing_filter_diagnostics
-from top5_walkforward_backtest import candidate_diagnostics, select_candidates
+from top5_walkforward_backtest import (candidate_diagnostics, select_candidates,\n                                       signal_research_features, select_research_arm)
 
 from strategy_v2 import (
     analyze_daily_setup,
@@ -80,6 +80,35 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertEqual(result["RS20_POSITIVE"]["trades"], 1)
         self.assertEqual(result["RS20_POSITIVE"]["average_net_return_pct"], 3.0)
         self.assertEqual(result["RS20_POSITIVE"]["by_oos_window"]["1"]["trades"], 1)
+
+    def test_swing_research_arms_apply_only_their_named_point_in_time_filters(self):
+        ranked = [
+            {"symbol": "AAA", "candidate": {"setup": "SWING_BREAKOUT"},
+             "research_features": {"signal_adx": 25, "rs20_positive": True, "rs60_positive": True}},
+            {"symbol": "BBB", "candidate": {"setup": "SWING_BREAKOUT"},
+             "research_features": {"signal_adx": 18, "rs20_positive": True, "rs60_positive": True}},
+            {"symbol": "CCC", "candidate": {"setup": "SWING_BREAKOUT"},
+             "research_features": {"signal_adx": 24, "rs20_positive": False, "rs60_positive": False}},
+            {"symbol": "DDD", "candidate": {"setup": "PULLBACK"},
+             "research_features": {"signal_adx": 30, "rs20_positive": True, "rs60_positive": True}},
+        ]
+        self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_ADX20")], ["AAA", "CCC"])
+        self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_RS60_POSITIVE")], ["AAA", "BBB"])
+        self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_ADX20_RS60")], ["AAA"])
+        self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_RS20_RS60")], ["AAA"])
+        self.assertEqual([x["symbol"] for x in select_candidates(ranked)], ["AAA", "BBB", "CCC"])
+
+    def test_signal_research_features_are_point_in_time(self):
+        from strategy_v2 import _indicators
+        stock = _indicators(make_bars(n=330))
+        market = _indicators(make_bars(n=330, start=20000, drift=0.0002))
+        first = signal_research_features(stock.iloc[:311], market.iloc[:311])
+        changed = stock.copy()
+        changed.loc[311:, ["open", "high", "low", "close", "volume"]] *= 4
+        second = signal_research_features(changed.iloc[:311], market.iloc[:311])
+        self.assertEqual(first, second)
+        self.assertIn("rs20_positive", first)
+        self.assertIn("signal_adx", first)
 
     def test_market_regime_bullish(self):
         market = make_bars(drift=0.001)
