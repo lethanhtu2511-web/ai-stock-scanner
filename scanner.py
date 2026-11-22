@@ -11,6 +11,7 @@ from strategy_engine import (
 from early_signal_engine import evaluate_early_signal
 from foreign_flow_provider import summarize_foreign_flow
 from adaptive_strategy import adaptive_assessment, classify_market_regime
+from strategy_v2 import analyze_daily_setup
 from market_intelligence import calculate_market_breadth
 
 # =====================================================
@@ -556,6 +557,7 @@ def analyze_historical_signal(df, symbol, market_df=None, foreign_flow=None):
             "signal": signal,
             "confirmed": signal == "BUY",
             "adaptive_research": adaptive,
+            "strategy_v2_research": v2_shadow,
             "score": max(0, min(100, int(detail.get("score", 0)) + foreign["foreign_score_adjustment"])),
             "stop_loss": risk_plan["stop_loss"] if risk_plan else None,
             "target_price": risk_plan["target_price"] if risk_plan else None,
@@ -743,6 +745,52 @@ def analyze_stock(
         d,
         market_df=market_df,
     )
+
+    # Strategy V2 shadow evaluation: research only; never changes production BUY/WAIT.
+    try:
+        v2_analysis = analyze_daily_setup(
+            symbol,
+            d.rename(columns={
+                "Date": "date", "Open": "open", "High": "high",
+                "Low": "low", "Close": "close", "Volume": "volume",
+            }),
+            market_df,
+        )
+        v2_candidates = []
+        for candidate in v2_analysis.get("candidates", []):
+            plan = candidate.get("risk_plan") or {}
+            v2_candidates.append({
+                "setup": candidate.get("setup"),
+                "score": candidate.get("score"),
+                "max_score": candidate.get("max_score"),
+                "normalized_score": round(float(candidate.get("score", 0)) / max(float(candidate.get("max_score", 1)), 1), 4),
+                "entry_type": candidate.get("entry_type"),
+                "entry_reference": plan.get("entry_reference"),
+                "entry_trigger": candidate.get("entry_trigger"),
+                "stop_loss": plan.get("stop_loss"),
+                "target_1": plan.get("target_1"),
+                "target_1_R": plan.get("target_1_R"),
+                "holding_sessions": candidate.get("holding_sessions"),
+                "risk_factor": candidate.get("risk_factor"),
+                "reasons": candidate.get("reasons", []),
+                "exit_rule": candidate.get("exit_rule"),
+            })
+        v2_shadow = {
+            "profile": "STRATEGY_V2_SHADOW",
+            "status": "CANDIDATE" if v2_candidates else "NO_SETUP",
+            "market_regime": v2_analysis.get("market_regime", "UNKNOWN"),
+            "universe_eligible": v2_analysis.get("universe_eligible", False),
+            "universe_blockers": v2_analysis.get("universe_blockers", []),
+            "candidates": v2_candidates,
+            "note": "Chỉ chạy song song để đối chiếu; không phải tín hiệu MUA và không thay đổi tín hiệu production.",
+        }
+    except Exception as exc:
+        v2_shadow = {
+            "profile": "STRATEGY_V2_SHADOW",
+            "status": "ERROR",
+            "candidates": [],
+            "note": f"Không tính được đánh giá V2: {str(exc)[:180]}",
+        }
     turnover_5d = float((d["Close"] * d["Volume"]).tail(5).sum())
     foreign = summarize_foreign_flow(
         foreign_flow,

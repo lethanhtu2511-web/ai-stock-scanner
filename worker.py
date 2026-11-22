@@ -243,6 +243,7 @@ def convert_results(scan_results):
         "foreign_signal",
         "foreign_score_adjustment",
         "foreign_data_date",
+        "strategy_v2_research",
     ]
 
     for item in scan_results:
