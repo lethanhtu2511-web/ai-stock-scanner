@@ -228,7 +228,7 @@ class StrategyV2Tests(unittest.TestCase):
             "atr": 1.0, "holding_sessions": [3, 20], "score": 5,
             "risk_plan": {"slippage_rate": 0.001, "stop_loss": 90.0},
         }
-        result = simulate(d, 329, candidate, holding_horizon=(2, 5))
+        result = simulate(d, 329, candidate, max_hold_cap=5)
         self.assertIsNotNone(result)
         self.assertEqual(result["holding"], 5)
 
