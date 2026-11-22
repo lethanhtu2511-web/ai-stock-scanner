@@ -6,6 +6,7 @@ on:
       - "strategy_v2.py"
       - "strategy_v2_backtest.py"
       - "top5_walkforward_backtest.py"
+      - "adaptive_selection_backtest.py"
       - "portfolio_execution.py"
       - ".github/workflows/strategy-v2-backtest.yml"
   workflow_dispatch:
@@ -25,15 +26,17 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
-      - run: python -m compileall -q strategy_v2.py strategy_v2_backtest.py top5_walkforward_backtest.py portfolio_execution.py
+      - run: python -m compileall -q strategy_v2.py strategy_v2_backtest.py top5_walkforward_backtest.py adaptive_selection_backtest.py portfolio_execution.py
       - run: python strategy_v2_backtest.py
       - run: python top5_walkforward_backtest.py
+      - run: python adaptive_selection_backtest.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: strategy-v2-research-report
+          name: adaptive-top3-selection-report
           path: |
             strategy_v2_output/
             top3_walkforward_output/
+            adaptive_selection_output/
           if-no-files-found: warn
           retention-days: 30
