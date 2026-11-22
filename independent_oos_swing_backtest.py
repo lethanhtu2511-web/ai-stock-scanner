@@ -125,7 +125,7 @@ def trade_metrics(rows: list[dict]) -> dict:
 
 
 def main():
-    out = Path("adaptive_selection_output")
+    out = Path("independent_oos_swing_output")
     out.mkdir(exist_ok=True)
     symbols = sorted(set(fetch_exchange_symbols()))
     market = clean(fetch_stock_history("VNINDEX", length=HISTORY_SESSIONS, is_index=True))
@@ -181,8 +181,11 @@ def main():
             candidates = analysis.get("candidates", [])
             if not candidates:
                 continue
-            candidate = dict(candidates[0])
-            if candidate.get("setup") != "SWING_BREAKOUT":
+            candidate = next(
+                (dict(item) for item in candidates if item.get("setup") == "SWING_BREAKOUT"),
+                None,
+            )
+            if candidate is None:
                 continue
             candidate["holding_sessions"] = [2, FORWARD_SESSIONS]
             normalized = float(candidate["score"]) / max(1, float(candidate["max_score"]))
