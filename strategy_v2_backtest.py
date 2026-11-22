@@ -394,7 +394,7 @@ def main():
     if not frame.empty:
         for window, wg in frame.groupby("oos_window"):
             window_summary[str(int(window))]={}
-            for horizon_name in HOLDING_HORIZONS:
+            for horizon_name in MAX_HOLD_CAPS:
                 hg=wg[wg.holding_horizon==horizon_name]
                 window_summary[str(int(window))][horizon_name]={
                     setup:summarize(hg[hg.setup==setup]) for setup in diagnostics
@@ -409,7 +409,7 @@ def main():
         "oos_windows": max([max(0,(len(histories[s])-TRAIN_SESSIONS)//TEST_SESSIONS) for s in chosen],default=0),
         "oos_window_performance":window_summary,
         "diagnostics":diagnostics,"performance":summary,
-        "performance_by_holding_horizon":horizon_performance,
+        "performance_by_max_hold_cap":horizon_performance,
         "swing_filter_diagnostics": swing_filter_diagnostics(frame[frame.holding_horizon=="MAX_5"]),
         "maximum_holding_caps": {name:{"maximum_sessions":cap,
             "note":"Independent research arm; protective stops and targets may exit earlier. ORIGINAL_SETUP_CAP preserves each setup default maximum."}
