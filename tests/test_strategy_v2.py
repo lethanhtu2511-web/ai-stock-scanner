@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 
 from strategy_v2_backtest import simulate, point_in_time_features, swing_filter_diagnostics
-from top5_walkforward_backtest import (candidate_diagnostics, select_candidates,\n                                       signal_research_features, select_research_arm)
+from top5_walkforward_backtest import (candidate_diagnostics, select_candidates,
+                                       signal_research_features, select_research_arm)
 
 from strategy_v2 import (
     analyze_daily_setup,
