@@ -26,6 +26,9 @@ MAX_SYMBOLS = int(os.getenv("V2_MAX_SYMBOLS", "0"))  # 0 = all eligible symbols
 TEST_SESSIONS = 250
 TRAIN_SESSIONS = 750
 HISTORY_SESSIONS = TRAIN_SESSIONS + 3 * TEST_SESSIONS
+# Independent maximum-holding-period experiments. Each arm has its own
+# same-symbol cooldown so outcomes are not suppressed by another horizon.
+HOLDING_HORIZONS = {"2-5": (2, 5), "5-10": (5, 10), "10-20": (10, 20)}
 
 
 def clean(raw):
@@ -46,7 +49,7 @@ def net_return(entry, exit_price, slip):
     return sell/buy-1
 
 
-def simulate(d, signal_i, candidate):
+def simulate(d, signal_i, candidate, holding_horizon=None):
     """Conservative next-session execution with staged exits and trailing stops.
 
     Stop/targets are recalculated from the actual fill price. When stop and
@@ -108,6 +111,8 @@ def simulate(d, signal_i, candidate):
     target1 = raw_entry + target_r * risk
     target2 = raw_entry + target_2r * risk if target_2r else None
     max_hold = int(candidate["holding_sessions"][1])
+    if holding_horizon is not None:
+        max_hold = min(max_hold, int(holding_horizon[1]))
     last = min(len(d) - 1, nxt + max_hold - 1)
 
     # Indicator values are calculated using historical bars only. Trailing
@@ -312,7 +317,7 @@ def main():
     sessions_done = 0
     for symbol_number, s in enumerate(chosen, 1):
         d=histories[s]
-        next_free_index=TRAIN_SESSIONS
+        next_free_by_horizon={name: TRAIN_SESSIONS for name in HOLDING_HORIZONS}
         for i in range(TRAIN_SESSIONS,len(d)-1):
             asof=d.iloc[:i+1]
             asof_date=pd.Timestamp(asof.iloc[-1].date).to_datetime64()
@@ -338,15 +343,19 @@ def main():
             candidates=res.get("candidates",[])
             for c in candidates:
                 diagnostics[c["setup"]]["candidates"]+=1
-            if i < next_free_index or not candidates:
+            if not candidates:
                 continue
             c=candidates[0]
-            trade=simulate(d,i,c)
-            if trade:
-                next_free_index=trade.pop("_exit_index")+1
-                trade["oos_window"]=(i-TRAIN_SESSIONS)//TEST_SESSIONS+1
-                features = point_in_time_features(d, i, market_ind, market_i, trade)
-                trades.append({"symbol":s,"setup":c["setup"],**trade,**features})
+            for horizon_name, horizon_range in HOLDING_HORIZONS.items():
+                if i < next_free_by_horizon[horizon_name]:
+                    continue
+                trade=simulate(d,i,c,holding_horizon=horizon_range)
+                if trade:
+                    next_free_by_horizon[horizon_name]=trade.pop("_exit_index")+1
+                    trade["oos_window"]=(i-TRAIN_SESSIONS)//TEST_SESSIONS+1
+                    trade["holding_horizon"]=horizon_name
+                    features = point_in_time_features(d, i, market_ind, market_i, trade)
+                    trades.append({"symbol":s,"setup":c["setup"],**trade,**features})
             if sessions_done % 100 == 0:
                 (progress/"progress.json").write_text(json.dumps({
                     "phase":"walk_forward","symbols_processed":symbol_number,
@@ -361,31 +370,30 @@ def main():
             "diagnostics":diagnostics
         },ensure_ascii=False,indent=2),encoding="utf-8")
     frame=pd.DataFrame(trades)
-    summary={}
-    for setup in diagnostics:
-        g=frame[frame.setup==setup] if not frame.empty else frame
-        if len(g):
-            wins=g[g.net_return_pct>0].net_return_pct.sum()
-            losses=abs(g[g.net_return_pct<0].net_return_pct.sum())
-            summary[setup]={"trades":len(g),"win_rate_pct":round(g.win.mean()*100,2),
-                "avg_net_return_pct":round(g.net_return_pct.mean(),3),
-                "profit_factor":round(wins/losses,3) if losses else None,
-                "total_compounded_pct":round(((1+g.net_return_pct/100).prod()-1)*100,3)}
-        else:
-            summary[setup]={"trades":0,"win_rate_pct":0,"avg_net_return_pct":0,"profit_factor":None}
+    def summarize(group):
+        values=pd.to_numeric(group.net_return_pct,errors="coerce").dropna()
+        wins=float(values[values>0].sum())
+        losses=abs(float(values[values<0].sum()))
+        return {"trades":int(len(values)),
+            "win_rate_pct":round(float((values>0).mean()*100),2) if len(values) else 0,
+            "avg_net_return_pct":round(float(values.mean()),3) if len(values) else 0,
+            "median_net_return_pct":round(float(values.median()),3) if len(values) else 0,
+            "profit_factor":round(wins/losses,3) if losses>0 else None,
+            "total_compounded_pct":round(float(((1+values/100).prod()-1)*100),3) if len(values) else 0}
+    horizon_performance={}
+    for horizon_name in HOLDING_HORIZONS:
+        hg=frame[frame.holding_horizon==horizon_name] if not frame.empty else frame
+        horizon_performance[horizon_name]={setup:summarize(hg[hg.setup==setup]) for setup in diagnostics}
+    # Preserve the legacy performance key as the shortest 2-5 session arm.
+    summary=horizon_performance["2-5"]
     window_summary={}
     if not frame.empty:
         for window, wg in frame.groupby("oos_window"):
             window_summary[str(int(window))]={}
-            for setup in diagnostics:
-                sg=wg[wg.setup==setup]
-                wins=sg.loc[sg.net_return_pct>0,"net_return_pct"].sum()
-                losses=abs(sg.loc[sg.net_return_pct<0,"net_return_pct"].sum())
-                window_summary[str(int(window))][setup]={
-                    "trades":int(len(sg)),
-                    "win_rate_pct":round(float(sg.win.mean()*100),2) if len(sg) else 0,
-                    "profit_factor":round(float(wins/losses),3) if losses else None,
-                    "avg_net_return_pct":round(float(sg.net_return_pct.mean()),3) if len(sg) else 0
+            for horizon_name in HOLDING_HORIZONS:
+                hg=wg[wg.holding_horizon==horizon_name]
+                window_summary[str(int(window))][horizon_name]={
+                    setup:summarize(hg[hg.setup==setup]) for setup in diagnostics
                 }
     out=Path("strategy_v2_output"); out.mkdir(exist_ok=True)
     frame.to_csv(out/"trades.csv",index=False)
@@ -397,12 +405,17 @@ def main():
         "oos_windows": max([max(0,(len(histories[s])-TRAIN_SESSIONS)//TEST_SESSIONS) for s in chosen],default=0),
         "oos_window_performance":window_summary,
         "diagnostics":diagnostics,"performance":summary,
-        "swing_filter_diagnostics": swing_filter_diagnostics(frame),
+        "performance_by_holding_horizon":horizon_performance,
+        "swing_filter_diagnostics": swing_filter_diagnostics(frame[frame.holding_horizon=="2-5"]),
+        "holding_horizons": {name:{"minimum_sessions":bounds[0],"maximum_sessions":bounds[1],
+            "note":"Independent research arm; maximum hold capped at the horizon upper bound; stop/targets and costs unchanged."}
+            for name,bounds in HOLDING_HORIZONS.items()},
         "data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
                  "slippage": "0.10% high-liquidity; 0.25% low-liquidity"},
         "limitations":["Signals use current listing universe; delisted historical constituents are not reconstructed (survivorship bias remains).",
-           "Each symbol is limited to one active trade and overlapping same-symbol signals are suppressed; not yet a capital-weighted portfolio simulation.",
+           "Each horizon arm independently limits each symbol to one active trade; signals are evaluated point-in-time and overlapping same-symbol trades are suppressed within each arm. The same signal stream is replayed independently across horizons.",
+           "Holding-horizon arms change only the maximum time stop (2-5, 5-10, 10-20 sessions); entry, protective stop, targets, next-session execution, fees, taxes and slippage are held constant.",
            "Daily-bar simulation uses stop-first assumption when stop and target occur in the same candle.",
            "Fixed rules are not fitted; the 3-year segment is indicator warm-up/history followed by out-of-sample evaluation.",
            "Industry concentration, portfolio-wide cash allocation, daily circuit breaker, drawdown throttle and loss-streak throttle are not yet simulated."]}
