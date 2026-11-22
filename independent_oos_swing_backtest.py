@@ -247,6 +247,8 @@ def main():
             print(f"Checkpoint {window_no}/{len(checkpoints)} {asof.date()} candidates={len(pool)}")
 
     selections = pd.DataFrame(selected_rows)
+    if selections.empty:
+        selections = pd.DataFrame(columns=["arm", "outcome", "net_return_pct"])
     windows = pd.DataFrame(window_rows)
     selections.to_csv(out / "selection_trades.csv", index=False)
     windows.to_csv(out / "window_summary.csv", index=False)
