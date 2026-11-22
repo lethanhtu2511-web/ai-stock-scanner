@@ -19,6 +19,7 @@ JSON_FIELDS = {
     "early_reasons",
     "early_risks",
     "adaptive_research",
+    "strategy_v2_research",
 }
 
 
@@ -87,7 +88,8 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
                 early_volume_ratio REAL,
                 early_resistance REAL,
                 early_quote_verified INTEGER,
-                adaptive_research TEXT
+                adaptive_research TEXT,
+                strategy_v2_research TEXT
             )
         """)
 
@@ -124,6 +126,9 @@ def init_scan_db(db_path=DEFAULT_DB_PATH):
 
         if "adaptive_research" not in existing_columns:
             conn.execute("ALTER TABLE scan_results ADD COLUMN adaptive_research TEXT")
+
+        if "strategy_v2_research" not in existing_columns:
+            conn.execute("ALTER TABLE scan_results ADD COLUMN strategy_v2_research TEXT")
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS
@@ -259,6 +264,7 @@ def save_scan_results(rows, db_path=DEFAULT_DB_PATH):
         "early_resistance",
         "early_quote_verified",
         "adaptive_research",
+        "strategy_v2_research",
     ]
 
     placeholders = ", ".join(["?"] * len(columns))
