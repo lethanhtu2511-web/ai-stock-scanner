@@ -16,7 +16,7 @@ from strategy_v2 import _indicators, analyze_daily_setup, universe_check
 from strategy_v2_backtest import clean, simulate
 from portfolio_execution_audit import simulate_cash_portfolio_audited
 
-WINDOWS = 40
+WINDOWS = 60
 CHECKPOINT_STEP = 6
 FORWARD_SESSIONS = 5
 HISTORY_SESSIONS = 1500
@@ -95,7 +95,7 @@ def rank_candidates(candidates: list[dict], arm: str) -> list[dict]:
                 if x.get("market_regime") == "BULLISH"
                 and safe_float(x["features"].get("rs20_pct"), -999) > 0
                 and safe_float(x["features"].get("rs60_pct"), -999) > 0
-                and x["avg_turnover20"] >= 10_000_000_000]
+                and x["avg_turnover20"] >= 20_000_000_000]
         rows.sort(key=lambda x: (
             0.50 * x["normalized_score"]
             + 0.20 * min(1.0, max(0.0, safe_float(x["features"].get("rs20_pct"), 0) / 10))
@@ -268,7 +268,7 @@ def main():
             "checkpoints": f"{len(checkpoints)} recent checkpoints, spaced {CHECKPOINT_STEP} trading sessions apart; 6-session spacing exceeds the 5-session forward holding cap, so forward windows do not overlap.",
             "execution": "Next-session execution with the existing conservative stop/target simulator, 5-session maximum holding cap and existing fees/tax/slippage.",
             "benchmark": "Matched VNINDEX close-to-close return from each simulated entry date to exit date; excess is trade net return minus index return.",
-            "selection": "Swing Breakout candidates only; at most three per checkpoint; no forced picks. Compare baseline score, positive RS20+RS60, and positive RS20+RS60 plus bullish VNINDEX regime and >=10bn VND average 20-session turnover.",
+            "selection": "Swing Breakout candidates only; at most three per checkpoint; no forced picks. Compare baseline score, positive RS20+RS60, and positive RS20+RS60 plus bullish VNINDEX regime and >=20bn VND average 20-session turnover.",
             "portfolio": "Each arm separately simulated with 10m VND, 2% risk, 20% max position, five concurrent positions and 100-share lots.",
             "no_production_change": True,
         },
