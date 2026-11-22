@@ -390,7 +390,7 @@ def get_latest_scan(db_path=DEFAULT_DB_PATH):
                         if isinstance(value, str):
                             try:
                                 parsed = json.loads(value)
-                                payload[field] = parsed if isinstance(parsed, list) else []
+                                payload[field] = parsed if isinstance(parsed, (list, dict)) else []
                             except (TypeError, ValueError):
                                 payload[field] = []
                         elif value is None:
@@ -456,7 +456,7 @@ def get_scan_history(
                         if isinstance(value, str):
                             try:
                                 parsed = json.loads(value)
-                                payload[field] = parsed if isinstance(parsed, list) else []
+                                payload[field] = parsed if isinstance(parsed, (list, dict)) else []
                             except (TypeError, ValueError):
                                 payload[field] = []
                         elif value is None:
