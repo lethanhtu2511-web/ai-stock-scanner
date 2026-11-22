@@ -112,7 +112,9 @@ def simulate(d, signal_i, candidate, holding_horizon=None):
     target2 = raw_entry + target_2r * risk if target_2r else None
     max_hold = int(candidate["holding_sessions"][1])
     if holding_horizon is not None:
-        max_hold = min(max_hold, int(holding_horizon[1]))
+        # In research mode, replace the setup default maximum so every setup
+        # is compared under the same requested holding-period cap.
+        max_hold = int(holding_horizon[1])
     last = min(len(d) - 1, nxt + max_hold - 1)
 
     # Indicator values are calculated using historical bars only. Trailing
@@ -410,7 +412,7 @@ def main():
         "performance_by_holding_horizon":horizon_performance,
         "swing_filter_diagnostics": swing_filter_diagnostics(frame[frame.holding_horizon=="2-5"]),
         "holding_horizons": {name:{"minimum_sessions":bounds[0],"maximum_sessions":bounds[1],
-            "note":"Independent research arm; maximum hold capped at the horizon upper bound; stop/targets and costs unchanged."}
+            "note":"Independent research arm; maximum hold is set to the horizon upper bound for every setup; stop/targets and costs unchanged."}
             for name,bounds in HOLDING_HORIZONS.items()},
         "data_errors":errors[:100],
         "costs":{"buy_fee":COST_BUY,"sell_fee":COST_SELL,"sell_tax":TAX_SELL,
