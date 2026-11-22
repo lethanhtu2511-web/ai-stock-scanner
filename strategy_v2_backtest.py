@@ -370,6 +370,8 @@ def main():
             "diagnostics":diagnostics
         },ensure_ascii=False,indent=2),encoding="utf-8")
     frame=pd.DataFrame(trades)
+    if frame.empty:
+        frame=pd.DataFrame(columns=["symbol","setup","net_return_pct","win","oos_window","holding_horizon"])
     def summarize(group):
         values=pd.to_numeric(group.net_return_pct,errors="coerce").dropna()
         wins=float(values[values>0].sum())
