@@ -96,7 +96,7 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_ADX20")], ["AAA", "CCC"])
         self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_RS60_POSITIVE")], ["AAA", "BBB"])
         self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_ADX20_RS60")], ["AAA"])
-        self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_RS20_RS60")], ["AAA"])
+        self.assertEqual([x["symbol"] for x in select_research_arm(ranked, "SWING_RS20_RS60")], ["AAA", "BBB"])
         self.assertEqual([x["symbol"] for x in select_candidates(ranked)], ["AAA", "BBB", "CCC"])
 
     def test_signal_research_features_are_point_in_time(self):
@@ -218,6 +218,19 @@ class StrategyV2Tests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["actual_entry"], 101.0)
         self.assertEqual(result["exit_reason"], "STOP")
+
+
+    def test_holding_horizon_caps_maximum_holding_sessions(self):
+        d = make_bars(n=340)
+        d.loc[325:, ["open", "high", "low", "close"]] = [100.0, 101.0, 99.0, 100.0]
+        candidate = {
+            "setup": "PULLBACK", "entry_type": "NEXT_OPEN", "gap_limit_atr": 1.0,
+            "atr": 1.0, "holding_sessions": [3, 20], "score": 5,
+            "risk_plan": {"slippage_rate": 0.001, "stop_loss": 90.0},
+        }
+        result = simulate(d, 329, candidate, holding_horizon=(2, 5))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["holding"], 5)
 
     def test_backtest_rebuilds_pullback_stop_from_actual_fill(self):
         d = make_bars(n=331)
