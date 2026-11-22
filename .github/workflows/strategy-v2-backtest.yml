@@ -9,6 +9,8 @@ on:
       - "independent_oos_swing_backtest.py"
       - "portfolio_execution.py"
       - "portfolio_execution_audit.py"
+      - "tests/test_independent_swing_selection.py"
+      - "tests/test_portfolio_execution_audit.py"
       - ".github/workflows/strategy-v2-backtest.yml"
   workflow_dispatch:
 permissions:
