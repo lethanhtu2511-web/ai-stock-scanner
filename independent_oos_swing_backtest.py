@@ -1,9 +1,7 @@
-"""Adaptive, research-only top-three selection experiment.
+"""Independent, non-overlapping Swing Breakout selection experiment.
 
-Compares fixed score ranking with point-in-time relative-strength ranking and
-a conservative quality gate. Uses the full available history through each
-checkpoint for indicators; 250 bars are only the minimum warm-up required by
-the existing SMA200-based strategy. No production signals or orders are changed.
+Compares baseline score ranking with positive RS20/RS60 and a stricter
+bullish-regime/liquidity gate. Research only; production signals are unchanged.
 """
 from __future__ import annotations
 
@@ -283,7 +281,7 @@ def main():
         executed = frame[frame.net_return_pct.notna()]
         metrics = trade_metrics(executed.to_dict("records"))
         portfolio_rows = executed.to_dict("records")
-        portfolio = simulate_cash_portfolio(
+        portfolio = simulate_cash_portfolio_audited(
             portfolio_rows, initial_capital=INITIAL_CAPITAL, risk_per_trade=0.02,
             max_positions=5, max_position_pct=0.20, lot_size=100,
         )
