@@ -80,6 +80,39 @@ def candidate_diagnostics(past: pd.DataFrame, market_past: pd.DataFrame,
     return out
 
 
+def signal_research_features(past: pd.DataFrame, market_past: pd.DataFrame) -> dict:
+    """Point-in-time features for research arms; never reads future bars."""
+    r = past.iloc[-1]
+    close = float(r.close)
+    result = {
+        "signal_adx": float(r.adx) if pd.notna(r.get("adx")) else None,
+        "signal_vol_ratio": float(r.vol_ratio) if pd.notna(r.get("vol_ratio")) else None,
+    }
+    for n in (20, 60):
+        if len(past) > n and len(market_past) > n:
+            stock_ret = close / float(past.iloc[-n-1].close) - 1
+            market_ret = float(market_past.iloc[-1].close) / float(market_past.iloc[-n-1].close) - 1
+            result[f"rs{n}_positive"] = bool((stock_ret - market_ret) > 0)
+            result[f"rs{n}_pct"] = round((stock_ret - market_ret) * 100, 4)
+        else:
+            result[f"rs{n}_positive"] = False
+            result[f"rs{n}_pct"] = None
+    return result
+
+
+def select_research_arm(ranked: list[dict], arm: str, *, max_picks: int = MAX_DAILY_PICKS) -> list[dict]:
+    """Research-only Swing subsets; baseline selection remains untouched."""
+    pool = [x for x in ranked if x["candidate"].get("setup") == "SWING_BREAKOUT"]
+    if arm in ("SWING_ADX20", "SWING_ADX20_RS60"):
+        pool = [x for x in pool if (x.get("research_features", {}).get("signal_adx") or 0) >= 20]
+    if arm in ("SWING_RS60", "SWING_RS60_POSITIVE", "SWING_ADX20_RS60"):
+        pool = [x for x in pool if x.get("research_features", {}).get("rs60_positive", False)]
+    if arm == "SWING_RS20_RS60":
+        pool = [x for x in pool if x.get("research_features", {}).get("rs20_positive", False)
+                and x.get("research_features", {}).get("rs60_positive", False)]
+    return pool[:max_picks]
+
+
 def feature_outcome_diagnostics(frame: pd.DataFrame) -> dict:
     """Descriptive winner/loser feature medians; not a fitted scoring model."""
     fields = [
@@ -141,6 +174,9 @@ def main():
     market_dates = pd.to_datetime(market_ind.date).to_numpy()
     window_rows, selection_rows = [], []
     swing_only_rows = []
+    research_arm_rows = []
+    research_arms = ("SWING_ONLY", "SWING_ADX20", "SWING_RS60_POSITIVE",
+                     "SWING_ADX20_RS60", "SWING_RS20_RS60")
     all_selected_returns = []
 
     for window_no, market_i in enumerate(checkpoints, 1):
@@ -185,6 +221,9 @@ def main():
             ranked.append({
                 "symbol": symbol, "index": i, "candidate": candidate,
                 "normalized_score": normalized_score, "rank_score": rank_score,
+                "research_features": signal_research_features(
+                    past, market_ind.iloc[:market_i + 1]
+                ),
                 "avg_turnover20": float(past.iloc[-1].avg_turnover20)
                     if pd.notna(past.iloc[-1].avg_turnover20) else 0.0,
             })
@@ -249,6 +288,20 @@ def main():
                 "exit_date": trade["exit_date"] if trade else None,
             })
 
+        # Parallel research arms use the same point-in-time pool, execution
+        # simulator and costs. They do not alter baseline or production signals.
+        for arm in research_arms[1:]:
+            for arm_rank, item in enumerate(select_research_arm(ranked, arm), 1):
+                trade = simulate(histories[item["symbol"]], item["index"], item["candidate"])
+                research_arm_rows.append({
+                    "arm": arm, "window": window_no, "asof_date": str(asof_date.date()),
+                    "market_regime": regime, "rank": arm_rank, "symbol": item["symbol"],
+                    "normalized_score": round(item["normalized_score"], 4),
+                    **item.get("research_features", {}),
+                    "net_return_pct": float(trade["net_return_pct"]) if trade else None,
+                    "outcome": trade["exit_reason"] if trade else "NO_EXECUTION",
+                })
+
         forward_market_return = (
             float(market_ind.iloc[market_i + FORWARD_SESSIONS].close /
                   market_ind.iloc[market_i].close - 1) * 100.0
@@ -292,6 +345,8 @@ def main():
         if not swing_df.empty else pd.DataFrame()
     )
     swing_df.to_csv(out / "swing_only_research.csv", index=False)
+    research_arms_df = pd.DataFrame(research_arm_rows)
+    research_arms_df.to_csv(out / "swing_filter_arms.csv", index=False)
 
     def performance_by(frame, field):
         result = {}
@@ -337,6 +392,20 @@ def main():
                 "performance": performance_by(swing_executed_df.assign(setup="SWING_BREAKOUT"), "setup"),
                 "note": "Parallel research arm using the same point-in-time candidate pool, dates, execution simulator and costs; baseline ranking is unchanged. Small samples are descriptive, not proof of edge."
             },
+            "swing_filter_arms": {
+                arm: {
+                    "selected_slots": int(len(group)),
+                    "executed_trades": int(group["net_return_pct"].notna().sum()),
+                    "performance": performance_by(
+                        group[group["net_return_pct"].notna()].assign(arm_name=arm), "arm_name"
+                    ).get(arm, {}),
+                    "by_window": performance_by(
+                        group[group["net_return_pct"].notna()], "window"
+                    ),
+                    "note": "Research-only subgroup; no production BUY/ranking change. Small samples and repeated filter comparisons are exploratory, not validation."
+                }
+                for arm, group in research_arms_df.groupby("arm")
+            } if not research_arms_df.empty else {},
             "winner_loser_feature_medians": feature_outcome_diagnostics(executed_df),
             "by_exit_reason": performance_by(executed_df, "outcome"),
             "by_market_regime": performance_by(executed_df, "market_regime"),
@@ -373,7 +442,8 @@ def main():
             "Cash portfolio uses 10m VND, 2% risk per trade, 20% maximum allocation per position, five concurrent positions and 100-share board lots.",
             "Portfolio drawdown is realized-only; daily mark-to-market drawdown requires a daily equity curve and is not claimed here.",
             "A small number of selected/executed trades is not sufficient evidence of a persistent statistical edge.",
-            "The parallel swing-only arm is a research comparison and does not change production signals or the baseline top-three selection.",
+            "Parallel Swing filter arms (ADX/relative strength) are exploratory comparisons only; they do not change production signals or baseline top-three selection.",
+            "Filter arms are tested on the same historical windows and are not independent holdout validation; multiple comparisons can overfit.",
             "This is a research simulation, not a live portfolio or guaranteed return; no production BUY rules are changed.",
         ],
     }
