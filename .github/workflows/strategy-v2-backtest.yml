@@ -1,7 +1,7 @@
 name: Strategy V2 research backtest
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "research/**"]
     paths:
       - "strategy_v2.py"
       - "strategy_v2_backtest.py"
