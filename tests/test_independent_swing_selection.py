@@ -14,7 +14,7 @@ class IndependentSwingSelectionTests(unittest.TestCase):
 
     def test_strict_arm_requires_bullish_regime_and_liquidity(self):
         pool = [self.candidate("A", .9, 2, 3, regime="NEUTRAL"),
-                self.candidate("B", .8, 2, 3, turnover=5_000_000_000),
+                self.candidate("B", .8, 2, 3, turnover=15_000_000_000),
                 self.candidate("C", .7, 2, 3)]
         self.assertEqual([x["symbol"] for x in rank_candidates(pool, "RS20_RS60_BULL_LIQUID")], ["C"])
 
