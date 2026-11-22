@@ -299,6 +299,37 @@ def show_signal_detail(row):
             st.info("Yếu tố cần xác nhận thêm: " + "; ".join(adaptive["soft_confirmations_missing"]))
         st.caption(adaptive.get("note", "Chỉ dùng để tham khảo nghiên cứu."))
 
+    v2 = row.get("strategy_v2_research")
+    if isinstance(v2, dict):
+        st.markdown("**Strategy V2 – chạy song song (chưa phải tín hiệu mua)**")
+        st.caption(
+            "Trạng thái: " + str(v2.get("status", "—")) + " · "
+            + "Thị trường: " + str(v2.get("market_regime", "—")) + " · "
+            + "Đủ điều kiện universe: " + ("Có" if v2.get("universe_eligible") else "Không")
+        )
+        if v2.get("universe_blockers"):
+            st.info("Điều kiện V2 chưa đạt: " + "; ".join(v2["universe_blockers"]))
+        candidates_v2 = v2.get("candidates") or []
+        if candidates_v2:
+            for candidate in candidates_v2:
+                st.write(
+                    "**" + str(candidate.get("setup", "—")) + "** · "
+                    + "Điểm " + str(candidate.get("score", "—")) + "/" + str(candidate.get("max_score", "—"))
+                    + " (" + str(number(candidate.get("normalized_score", 0) * 100, 1)) + "%)"
+                )
+                entry = candidate.get("entry_reference") or candidate.get("entry_trigger")
+                st.caption(
+                    "Kiểu vào lệnh: " + str(candidate.get("entry_type", "—")) + " · "
+                    + "Giá tham chiếu/kích hoạt: " + money(entry) + " · "
+                    + "Stop: " + money(candidate.get("stop_loss")) + " · "
+                    + "Mục tiêu 1: " + money(candidate.get("target_1")) + " · "
+                    + "Khung tối đa: " + str(candidate.get("holding_sessions", "—")) + " phiên"
+                )
+                if candidate.get("reasons"):
+                    st.write("Cơ sở: " + "; ".join(candidate["reasons"]))
+        else:
+            st.info(v2.get("note", "Strategy V2 chưa phát hiện ứng viên đạt điều kiện."))
+
     st.write(
         f"**Chiến lược:** "
         f"{STRATEGY_NAMES.get(row.get('strategy'), row.get('strategy'))}"
