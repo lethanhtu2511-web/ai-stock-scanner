@@ -33,7 +33,7 @@ from portfolio import (
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 DB_PATH = os.getenv("DATABASE_PATH", "data/stock_scanner.sqlite3")
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
 AUTO_REFRESH_SECONDS = 300
 
 
@@ -471,23 +471,10 @@ def show_signal_detail(row):
 # PERIODIC SCAN AND DISPLAY
 # =========================================================
 
-@st.fragment(run_every=AUTO_REFRESH_SECONDS)
 def auto_refresh_panel(show_details=True):
+    # Chỉ đọc kết quả đã lưu; không tự chạy quét khi mở trang hoặc refresh.
     summary = get_scan_summary(DB_PATH)
     latest_time = summary.get("latest_scan_at")
-    now = datetime.now(VN_TZ)
-
-    if auto_scan_due(now, latest_time):
-        try:
-            with st.spinner("Đang cập nhật dữ liệu và quét HOSE/HNX..."):
-                saved = run_scan()
-            st.success(f"Đã hoàn tất lượt quét tự động, lưu {saved:,} dòng.")
-            summary = get_scan_summary(DB_PATH)
-            latest_time = summary.get("latest_scan_at")
-        except ScanAlreadyRunningError:
-            st.info("Đang có lượt quét khác xử lý. Trang sẽ tự kiểm tra lại sau, không tạo lượt quét trùng.")
-        except Exception as exc:
-            st.error(f"Lượt quét tự động chưa thành công: {exc}")
 
     latest_dt = parse_scan_time(latest_time)
     if latest_dt:
@@ -500,9 +487,9 @@ def auto_refresh_panel(show_details=True):
         st.caption("Chưa có lượt quét nào được lưu.")
 
     if is_market_session():
-        st.info("Tự động cập nhật mỗi 300 giây khi trang đang mở. Nếu đóng trang, lượt quét tự động sẽ tạm dừng.")
+        st.info("Chế độ quét thủ công: bot chỉ quét khi bạn nhấn nút QUÉT NGAY.")
     elif datetime.now(VN_TZ).time() >= dt_time(15, 35):
-        st.info("Ngoài giờ giao dịch: bot thực hiện lượt quét D1 cuối ngày một lần.")
+        st.info("Ngoài giờ giao dịch: chỉ quét D1 khi bạn chủ động nhấn nút.")
     else:
         st.caption("Ngoài giờ giao dịch: không xác nhận giá realtime.")
 
@@ -697,6 +684,17 @@ def show_dashboard():
         "HOSE/HNX · Swing 2–5 phiên · "
         "Reversal 5–10 phiên · Pullback 3–7 phiên"
     )
+
+    if st.button("🔄 QUÉT NGAY", key="dashboard_manual_scan", type="primary", use_container_width=True):
+        try:
+            with st.spinner("Đang cập nhật dữ liệu và phân tích HOSE/HNX..."):
+                saved = run_scan()
+            st.success(f"Đã hoàn tất lượt quét, lưu {saved:,} dòng kết quả.")
+            st.rerun()
+        except ScanAlreadyRunningError:
+            st.info("Một lượt quét khác đang chạy. Vui lòng chờ lượt đó hoàn tất.")
+        except Exception as exc:
+            st.error(f"Quét thất bại: {exc}")
 
     auto_refresh_panel(show_details=False)
 
@@ -1056,13 +1054,13 @@ def show_system_info():
 
     st.write(f"Phiên bản: AI Stock Scanner {APP_VERSION}")
     st.write("Thị trường: HOSE / HNX")
-    st.write("Cập nhật dữ liệu: mỗi 300 giây khi trang đang mở hoặc bấm Quét lại")
+    st.write("Cập nhật dữ liệu: chỉ khi người dùng bấm Quét ngay")
     st.write("Phân tích kỹ thuật: D1")
     st.write("Chiến lược: Swing / Reversal / Pullback")
     st.write("Tự động đặt lệnh: Không")
     st.write("Quản lý danh mục: Đã bật")
 
-    st.info("Bot tự quét mỗi 300 giây trong giờ giao dịch khi phiên Streamlit còn mở; nếu đóng trang, việc quét tự động tạm dừng. Giá chỉ được xác nhận realtime khi timestamp nguồn hợp lệ.")
+    st.info("Bot chỉ quét khi người dùng nhấn nút. Mở ứng dụng chỉ tải kết quả đã lưu; không tự gọi nguồn dữ liệu. Giá chỉ được xác nhận realtime khi timestamp nguồn hợp lệ.")
 
 
 # =========================================================
@@ -1094,7 +1092,7 @@ def main():
             f"AI Stock Scanner {APP_VERSION}"
         )
 
-        st.caption("Tự quét 300 giây khi phiên còn mở")
+        st.caption("Quét theo yêu cầu bằng nút bấm")
 
     if page == "Tổng quan":
         show_dashboard()
