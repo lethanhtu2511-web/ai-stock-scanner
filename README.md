@@ -146,3 +146,15 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - Các dòng khối ngoại thiếu dữ liệu được để trống/UNKNOWN, không tự quy thành mua ròng. Dữ liệu khối ngoại lịch sử của nguồn hiện tại có giới hạn độ dài, nên một số mẫu cũ có thể thiếu yếu tố này.
 - Báo cáo và CSV lưu trong `pattern_research_output/`; có thể tải trực tiếp trong trang.
 - Đây là công cụ nghiên cứu, không phát lệnh giao dịch và không thay đổi điểm tín hiệu của Scanner. Mẫu hình phải có đủ mẫu và được xác nhận holdout trước khi cân nhắc sử dụng.
+
+
+## BOT 2 — Nghiên cứu quy luật cổ phiếu (chạy riêng)
+
+BOT 2 là ứng dụng Streamlit độc lập với BOT 1 (AI Stock Scanner).
+
+Chạy BOT 2 riêng trên máy:
+```bash
+streamlit run BOT_2.py
+```
+
+BOT 2 mở giao diện nghiên cứu hành vi giá, backtest quy luật và xem dòng tiền khối ngoại. Nó không tự chạy Scanner BOT 1, không quét tự động lúc khởi động và không đặt lệnh. Mục nghiên cứu vẫn có thể mở từ menu của ứng dụng chính.
