@@ -123,11 +123,11 @@ def _show_report(report):
 
 def main():
     st.set_page_config(
-        page_title="Nghiên cứu quy luật cổ phiếu",
+        page_title="BOT 2 - Nghiên cứu quy luật",
         page_icon="🔬",
         layout="wide",
     )
-    st.title("🔬 NGHIÊN CỨU QUY LUẬT CỔ PHIẾU")
+    st.title("🤖 BOT 2 — NGHIÊN CỨU QUY LUẬT CỔ PHIẾU")
     st.caption(
         "Tìm các hành vi giá lặp lại trên HOSE/HNX, kiểm tra tỷ lệ tăng sau 2–5 phiên "
         "và xác minh trên giai đoạn holdout. Có dữ liệu khối ngoại khi nguồn lịch sử cung cấp."
