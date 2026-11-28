@@ -141,7 +141,7 @@ def main():
         },
         "method": (
             "Point-in-time event study: D1 features through signal-date close; entry next "
-            "session open; exit after strategy horizon (Swing 5, Pullback 7, Reversal 10 "
+            "session open; exit after strategy horizon (Swing 2/3/4/5, Pullback 7, Reversal 10 "
             "sessions); buy/sell fees, sell tax and 0.20% slippage each side. "
             "MFE/MAE from post-entry bars. No production BUY signals generated."
         ),
