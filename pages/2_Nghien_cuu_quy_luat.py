@@ -150,7 +150,8 @@ def main():
             value=420,
             help="Mã phải có tối thiểu 200 phiên. Khoảng thời gian được yêu cầu tăng theo số phiên.",
         )
-        st.caption("Phí/thuế/trượt giá được dùng theo cấu hình trong module nghiên cứu hiện tại.")
+        st.caption("Bộ lọc: tối thiểu 200 phiên; GTGD bình quân 20 phiên ≥ 5 tỷ đồng; GTGD trung vị 20 phiên ≥ 3 tỷ đồng. Lookback là số phiên tín hiệu; bot tự lấy thêm dữ liệu làm nóng chỉ báo và các phiên để xác định kết quả.")
+        st.caption("Chi phí mô phỏng: phí mua 0,15%, phí bán 0,15%, thuế bán 0,10%, trượt giá 0,20% mỗi chiều. Dữ liệu khối ngoại có thể ngắn hơn lịch sử giá.")
 
     if st.button("▶ Chạy nghiên cứu", type="primary", use_container_width=True):
         old_symbols = os.environ.get("PATTERN_RESEARCH_MAX_SYMBOLS")
