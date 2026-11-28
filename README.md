@@ -135,3 +135,14 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 - The report includes executed-trade diagnostics by setup, exit reason, market regime and normalized-score band, plus the number of selected candidates that could not be simulated.
 - The VNINDEX five-session return is contextual only and is not presented as a matched benchmark for trades with varying holding periods.
 - No strategy is promoted or production BUY logic changed solely because a workflow or unit test passes. Promotion requires adequate trade count, positive out-of-sample expectancy after costs, and robust results across multiple regimes.
+
+
+## Nghiên cứu quy luật hành vi cổ phiếu
+
+- Mở mục **Nghiên cứu quy luật** trong menu Streamlit; trang không tự chạy khi mở.
+- Người dùng bấm **Chạy nghiên cứu** để quét danh sách HOSE/HNX theo thanh khoản, chọn số mã và lookback.
+- Tạo báo cáo point-in-time, đo kết quả ở các horizon Swing 5 phiên, Pullback 7 phiên và Reversal 10 phiên; hiển thị train/holdout walk-forward.
+- Dùng giá OHLCV, xu hướng/động lượng, volume, cấu trúc nến, trạng thái VNINDEX và lịch sử dòng tiền khối ngoại đã chốt (nếu provider có dữ liệu).
+- Các dòng khối ngoại thiếu dữ liệu được để trống/UNKNOWN, không tự quy thành mua ròng. Dữ liệu khối ngoại lịch sử của nguồn hiện tại có giới hạn độ dài, nên một số mẫu cũ có thể thiếu yếu tố này.
+- Báo cáo và CSV lưu trong `pattern_research_output/`; có thể tải trực tiếp trong trang.
+- Đây là công cụ nghiên cứu, không phát lệnh giao dịch và không thay đổi điểm tín hiệu của Scanner. Mẫu hình phải có đủ mẫu và được xác nhận holdout trước khi cân nhắc sử dụng.
