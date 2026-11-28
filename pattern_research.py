@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 COSTS = {"buy_fee": 0.0015, "sell_fee": 0.0015, "sell_tax": 0.0010, "slippage": 0.0020}
-HORIZONS = {"SWING": 5, "REVERSAL": 10, "PULLBACK": 7}
+HORIZONS = {"SWING_2": 2, "SWING_3": 3, "SWING_4": 4, "SWING_5": 5, "REVERSAL": 10, "PULLBACK": 7}
 NUMERIC_FEATURES = [
     "ret_1d_pct", "ret_5d_pct", "ret_10d_pct", "ret_20d_pct",
     "dist_ema20_pct", "dist_ema50_pct", "dist_ma200_pct",
