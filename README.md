@@ -140,8 +140,10 @@ GitHub Actions tự chạy các bước trên khi có thay đổi trên nhánh l
 ## Nghiên cứu quy luật hành vi cổ phiếu
 
 - Mở mục **Nghiên cứu quy luật** trong menu Streamlit; trang không tự chạy khi mở.
-- Người dùng bấm **Chạy nghiên cứu** để quét danh sách HOSE/HNX theo thanh khoản, chọn số mã và lookback.
-- Tạo báo cáo point-in-time, đo kết quả ở các horizon Swing 5 phiên, Pullback 7 phiên và Reversal 10 phiên; hiển thị train/holdout walk-forward.
+- Người dùng bấm **Chạy nghiên cứu** để tải D1, lọc mã có tối thiểu 200 phiên, GTGD bình quân 20 phiên từ 5 tỷ đồng và GTGD trung vị từ 3 tỷ đồng; sau đó chọn tối đa 120 mã thanh khoản cao nhất (mặc định 30).
+- Lookback 260–800 phiên là số phiên tín hiệu được nghiên cứu; bot yêu cầu thêm tối thiểu 200 phiên làm nóng chỉ báo và các phiên tương lai để tính kết quả. Phạm vi thực tế phụ thuộc dữ liệu provider trả về.
+- Tạo báo cáo point-in-time, đo kết quả Swing 5 phiên (trong phạm vi chiến lược swing ngắn 2–5 phiên), Pullback 7 phiên và Reversal 10 phiên; tách train/holdout walk-forward, không dùng dữ liệu tương lai để tạo đặc trưng tại ngày tín hiệu.
+- Báo cáo lưu số mã đạt bộ lọc, mã bị loại, lỗi nguồn, thời gian lịch sử thực tế, phí/thuế/trượt giá và cảnh báo survivorship bias; dữ liệu thiếu khối ngoại giữ UNKNOWN/NaN.
 - Dùng giá OHLCV, xu hướng/động lượng, volume, cấu trúc nến, trạng thái VNINDEX và lịch sử dòng tiền khối ngoại đã chốt (nếu provider có dữ liệu).
 - Các dòng khối ngoại thiếu dữ liệu được để trống/UNKNOWN, không tự quy thành mua ròng. Dữ liệu khối ngoại lịch sử của nguồn hiện tại có giới hạn độ dài, nên một số mẫu cũ có thể thiếu yếu tố này.
 - Báo cáo và CSV lưu trong `pattern_research_output/`; có thể tải trực tiếp trong trang.
