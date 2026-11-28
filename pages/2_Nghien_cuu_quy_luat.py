@@ -43,8 +43,9 @@ def _show_report(report):
     if holdout:
         st.markdown("**Hiệu quả giai đoạn holdout (ngoài mẫu)**")
         rows = []
-        names = {"SWING": "Swing 2–5 phiên", "REVERSAL": "Reversal 5–10 phiên",
-                 "PULLBACK": "Pullback 3–7 phiên"}
+        names = {"SWING_2": "Swing 2 phiên", "SWING_3": "Swing 3 phiên",
+                 "SWING_4": "Swing 4 phiên", "SWING_5": "Swing 5 phiên",
+                 "REVERSAL": "Reversal 10 phiên", "PULLBACK": "Pullback 7 phiên"}
         for key, values in holdout.items():
             rows.append({
                 "Chiến lược": names.get(key, key),
