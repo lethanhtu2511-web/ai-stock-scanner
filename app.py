@@ -1081,6 +1081,7 @@ def main():
                 "Lịch sử quét",
                 "Tự đánh giá",
                 "Backtest lịch sử",
+                "Nghiên cứu quy luật",
                 "Quản lý danh mục",
                 "Thông tin hệ thống",
             ],
@@ -1108,6 +1109,9 @@ def main():
 
     elif page == "Backtest lịch sử":
         st.switch_page("pages/1_Backtest_Lich_su.py")
+
+    elif page == "Nghiên cứu quy luật":
+        st.switch_page("pages/2_Nghien_cuu_quy_luat.py")
 
     elif page == "Quản lý danh mục":
         show_portfolio()
